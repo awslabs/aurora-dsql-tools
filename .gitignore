@@ -4,3 +4,5 @@ out/
 .vscode/settings*
 .vscode-test/
 *.vsix
+# Test workspace files
+**/test-vscode-sqltools.code-workspace

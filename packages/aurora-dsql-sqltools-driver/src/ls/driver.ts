@@ -27,7 +27,7 @@ export default class AuroraDSQLDriver extends AbstractDriver<Pool, PoolConfig> i
       return this.connection;
     }
     try {
-      const { ssl, ...pgOptions }: PoolConfig = this.credentials.pgOptions || {};
+      const { ssl, ...pgOptions }: AuroraDSQLPoolConfig = this.credentials.pgOptions || {};
 
       let poolConfig: AuroraDSQLPoolConfig = {
         ...pgOptions,
@@ -77,6 +77,8 @@ export default class AuroraDSQLDriver extends AbstractDriver<Pool, PoolConfig> i
           const useSsl = {
             ...ssl,
           };
+          // Aurora DSQL only supports server verification via CA certificate
+          // Client certificate authentication (key, cert, pfx) is not supported
           ['ca'].forEach((key) => {
             if (!useSsl[key]) {
               delete useSsl[key];

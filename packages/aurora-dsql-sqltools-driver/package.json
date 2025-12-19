@@ -6,11 +6,11 @@
   "engines": {
     "vscode": "^1.106.0"
   },
-  "publisher": "todo",
-  "license": "Apatche 2.0",
+  "publisher": "amazonwebservices",
+  "license": "MIT-0",
   "repository": {
     "type": "git",
-    "url": "todo"
+    "url": "https://github.com/awslabs/aurora-dsql-vscode"
   },
   "bugs": {},
   "keywords": [
