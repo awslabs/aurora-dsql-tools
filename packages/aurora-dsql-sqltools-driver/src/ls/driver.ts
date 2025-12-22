@@ -7,7 +7,6 @@ import AbstractDriver from '@sqltools/base-driver';
 import queries from './queries';
 import { NSDatabase, IConnectionDriver, MConnectionExplorer, ContextValue, Arg0 } from '@sqltools/types';
 import fs from 'fs';
-import zipObject from 'lodash/zipObject';
 import { v4 as generateId } from 'uuid';
 import queryParse from './parse';
 import { AuroraDSQLPool } from '@aws/aurora-dsql-node-postgres-connector';
@@ -182,7 +181,7 @@ export default class AuroraDSQLDriver extends AbstractDriver<Pool, PoolConfig> i
   }
 
   private mapRows(rows: any[], columns: string[]): any[] {
-    return rows.map((r) => zipObject(columns, r));
+    return rows.map((r) => Object.fromEntries(columns.map((col, i) => [col, r[i]])));
   }
 
   private async getColumns(parent: NSDatabase.ITable): Promise<NSDatabase.IColumn[]> {

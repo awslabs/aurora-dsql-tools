@@ -16,10 +16,9 @@ Features:
 
 ## Installation
 
-1. Start Visual Studio Code
-2. Open the Extensions view
-3. Search for 'Aurora DSQL Driver'
-4. Click 'Install'
+1. Open the Extensions view
+2. Search for 'Aurora DSQL Driver'
+3. Click 'Install'
 
 ## Create an Aurora DSQL Connection
 
@@ -31,34 +30,5 @@ Features:
 6. Click Save click Save Connection.
 
 
-## Developer
-
-### Prerequisites
-
-- Typescript
-- Nodejs
-- Visual Studio Code
-
-### Building
-
-In the project directory run the following commands
-
-```
-npm install
-npm run compile
-```
-
-### Run tests
-
-```
-# Run all tests
-npm test
-
-# Run only unit tests
-npm run test:unit
-
-# Run only integration tests
-npm run test:integration
-```
-
-
+## License
+MIT License

@@ -5,7 +5,7 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "experimentalDecorators": true,
-    "lib": ["es6"],
+    "lib": ["es2019"],
     "module": "commonjs",
     "noEmit": false,
     "removeComments": true,
@@ -21,6 +21,7 @@
     "test/**/*"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    ".vscode-test"
   ]
 }

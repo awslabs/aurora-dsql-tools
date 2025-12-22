@@ -1,11 +1,10 @@
-## My Project
+## Aurora DSQL VS Code Extensions
 
-TODO: Fill this README out!
+This repository contains VS Code Extensions for [Amazon Aurora DSQL](https://aws.amazon.com/rds/aurora/dsql/), a distributed SQL database service that provides high availability and scalability for PostgreSQL-compatible applications.
 
-Be sure to:
+### Aurora DSQL Driver for SQLTools
 
-* Change the title in this README
-* Edit your repository description on GitHub
+Aurora DSQL Driver for SQLTools is a VS Code extension for connecting to Amazon Aurora DSQL. It integrates with SQLTools.
 
 ## Security
 
