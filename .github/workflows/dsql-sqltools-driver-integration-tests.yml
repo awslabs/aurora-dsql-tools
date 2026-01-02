@@ -1,0 +1,93 @@
+name: Aurora DSQL Driver for SQLTools Tests
+
+permissions: {}
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "packages/aurora-dsql-sqltools-driver/**"
+      - ".github/workflows/dsql-sqltools-driver-integration-tests.yml"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "packages/aurora-dsql-sqltools-driver/**"
+      - ".github/workflows/dsql-sqltools-driver-integration-tests.yml"
+  # Give us a button to allow running the workflow on demand for testing.
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: 'Manual Workflow Run'
+        required: false
+        type: string
+  workflow_call:
+
+jobs:
+  setup:
+    name: Setup
+    runs-on: ubuntu-latest
+    outputs:
+      build-version: '20'
+      target-versions: ${{ steps.versions.outputs.matrix }}
+    steps:
+      - id: versions
+        run: echo "matrix=[20, 22, 24]" >> $GITHUB_OUTPUT
+
+  run-tests:
+    name: Aurora DSQL Driver for SQLTools tests
+    needs: [setup]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # required by aws-actions/configure-aws-credentials
+    strategy:
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        node-version: ${{ fromJson(needs.setup.outputs.target-versions) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AURORA_DSQL_VSCODE_IAM_ROLE }}
+          aws-region: ${{ secrets.AURORA_DSQL_INTEGRATION_CLUSTER_REGION }}
+
+      - name: Install dependencies
+        working-directory: ./packages/aurora-dsql-sqltools-driver
+        run: |
+          npm ci
+      
+      - name: Install VSCode and xvfb
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          TZ: America/Vancouver
+        run: |
+          sudo apt-get install wget gpg && wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > microsoft.gpg && install -D -o root -g root -m 644 microsoft.gpg /usr/share/keyrings/microsoft.gpg && rm -f microsoft.gpg
+          sudo tee /etc/apt/sources.list.d/vscode.sources << EOF
+          Types: deb
+          URIs: https://packages.microsoft.com/repos/code
+          Suites: stable
+          Components: main
+          Architectures: amd64,arm64,armhf
+          Signed-By: /usr/share/keyrings/microsoft.gpg
+          EOF
+          sudo apt install apt-transport-https && apt update && apt install code # or code-insiders
+          sudo apt install -y xvfb
+
+      - name: Run tests
+        working-directory: ./packages/aurora-dsql-sqltools-driver
+        env:
+          CLUSTER_ENDPOINT: ${{ secrets.AURORA_DSQL_INTEGRATION_CLUSTER_ENDPOINT }}
+          REGION: ${{ secrets.AURORA_DSQL_INTEGRATION_CLUSTER_REGION }}
+        run: |
+          xvfb-run -a npm run test:unit
+          xvfb-run -a npm run test:integration
+
