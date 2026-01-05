@@ -208,7 +208,6 @@ export default class AuroraDSQLDriver extends AbstractDriver<Pool, PoolConfig> i
         return this.queryResults(this.queries.fetchDatabases());
       case ContextValue.TABLE:
       case ContextValue.VIEW:
-      case ContextValue.MATERIALIZED_VIEW:
         return this.getColumns(item as NSDatabase.ITable);
       case ContextValue.DATABASE:
         return <MConnectionExplorer.IChildItem[]>[
@@ -220,12 +219,6 @@ export default class AuroraDSQLDriver extends AbstractDriver<Pool, PoolConfig> i
         return <MConnectionExplorer.IChildItem[]>[
           { label: 'Tables', type: ContextValue.RESOURCE_GROUP, iconId: 'folder', childType: ContextValue.TABLE },
           { label: 'Views', type: ContextValue.RESOURCE_GROUP, iconId: 'folder', childType: ContextValue.VIEW },
-          {
-            label: 'Materialized Views',
-            type: ContextValue.RESOURCE_GROUP,
-            iconId: 'folder',
-            childType: ContextValue.MATERIALIZED_VIEW,
-          },
           { label: 'Functions', type: ContextValue.RESOURCE_GROUP, iconId: 'folder', childType: ContextValue.FUNCTION },
         ];
     }
@@ -240,8 +233,6 @@ export default class AuroraDSQLDriver extends AbstractDriver<Pool, PoolConfig> i
         return this.queryResults(this.queries.fetchTables(parent as NSDatabase.ISchema));
       case ContextValue.VIEW:
         return this.queryResults(this.queries.fetchViews(parent as NSDatabase.ISchema));
-      case ContextValue.MATERIALIZED_VIEW:
-        return this.queryResults(this.queries.fetchMaterializedViews(parent as NSDatabase.ISchema));
       case ContextValue.FUNCTION:
         return this.queryResults(this.queries.fetchFunctions(parent as NSDatabase.ISchema));
     }
