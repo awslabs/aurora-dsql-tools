@@ -9,16 +9,15 @@ Features:
 - IAM authentication configuration.
 - Standard database operations like browsing schemas, tables, and executing SQL queries.
 
-
-## Prerequisites
-
-- [SQLTools extension](https://vscode-sqltools.mteixeira.dev) installed
-
 ## Installation
 
 1. Open the Extensions view
-2. Search for 'Aurora DSQL Driver'
+2. Search for 'Aurora DSQL Driver for SQLTools'
 3. Click 'Install'
+
+**Note:**
+
+The [SQLTools extension](https://vscode-sqltools.mteixeira.dev) will be automatically installed if not already present.
 
 ## Create an Aurora DSQL Connection
 
