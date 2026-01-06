@@ -2,6 +2,13 @@
  * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  * SPDX-License-Identifier: MIT
  */
+
+/*
+ * This code is based on SQLTools Driver Template
+ * Copyright (c) Matheus Teixeira
+ * Source: https://github.com/mtxr/vsc-sqltools-driver-template/blob/master/src/extension.ts
+ */
+
 import * as vscode from 'vscode';
 import { IExtension, IExtensionPlugin, IDriverExtensionApi } from '@sqltools/types';
 import { ExtensionContext } from 'vscode';

@@ -4,7 +4,10 @@
  */
 
 /*
- * copied from https://github.com/microsoft/vscode-extension-samples/blob/main/helloworld-test-sample/src/test/runTest.ts
+ * This code is based on vscode-extension-samples
+ * Copyright (c) Microsoft
+ * License: MIT
+ * Source: https://github.com/microsoft/vscode-extension-samples/blob/main/helloworld-test-sample/src/test/runTest.ts
  */
 
 import * as path from 'path';

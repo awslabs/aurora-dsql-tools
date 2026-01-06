@@ -2,6 +2,14 @@
  * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  * SPDX-License-Identifier: MIT
  */
+
+/*
+ * Portions of this code are based on SQLTools PostgreSQL Driver
+ * Copyright (c) Matheus Teixeira
+ * License: MIT
+ * Source: https://github.com/mtxr/vscode-sqltools/blob/dev/packages/driver.pg/src/ls/driver.ts
+ */
+
 import { Pool, PoolConfig, PoolClient, types, FieldDef } from 'pg';
 import AbstractDriver from '@sqltools/base-driver';
 import queries from './queries';

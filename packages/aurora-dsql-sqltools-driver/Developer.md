@@ -28,4 +28,15 @@ npm run test:unit
 npm run test:integration
 ```
 
+### Third party notices
 
+The THIRD-PARTY-LICENSES.json file lists the packages used by this extension. 
+It is generated using the npm-license-crawler tool with the following command:
+
+```
+npx npm-license-crawler --onlyDirectDependencies --json THIRD-PARTY-LICENSES.json
+```
+
+**Important!**
+
+Regenerate THIRD-PARTY-LICENSES.json whenever dependencies or their versions change in package.json.
