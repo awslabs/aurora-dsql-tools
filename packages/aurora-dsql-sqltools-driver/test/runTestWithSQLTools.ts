@@ -2,6 +2,14 @@
  * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  * SPDX-License-Identifier: MIT
  */
+
+/*
+ * This code is based on vscode-extension-samples
+ * Copyright (c) Microsoft
+ * License: MIT
+ * Source: https://github.com/microsoft/vscode-extension-samples/blob/main/helloworld-test-sample/src/test/runTest.ts
+ */
+
 import * as path from 'path';
 import { runTests, downloadAndUnzipVSCode, resolveCliArgsFromVSCodeExecutablePath } from '@vscode/test-electron';
 import { execSync } from 'child_process';

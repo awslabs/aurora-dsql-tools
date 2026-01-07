@@ -2,6 +2,14 @@
  * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  * SPDX-License-Identifier: MIT
  */
+
+/*
+ * This code is based on vscode-extension-samples
+ * Copyright (c) Microsoft
+ * License: MIT
+ * Source: https://github.com/microsoft/vscode-extension-samples/blob/main/helloworld-test-sample/src/test/suite/index.ts
+ */
+
 import * as path from 'path';
 import Mocha from 'mocha';
 import { glob } from 'glob';
@@ -15,7 +23,6 @@ export function run(): Promise<void> {
   const mocha = new Mocha({
     ui: 'tdd',
     color: true,
-    reporter: null,
   });
 
   const testsRoot = path.resolve(__dirname, '..');

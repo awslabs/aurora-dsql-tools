@@ -4,10 +4,14 @@
  */
 
 /*
- * Copied from https://github.com/mtxr/vscode-sqltools/blob/dev/packages/util/query/parse.ts
- * Modified for pg driver only
- *
- * Retaining a copy note below the original file had.
+ * This code is based on SQLTools 
+ * Copyright (c) Matheus Teixeira
+ * License: MIT
+ * Source: https://github.com/mtxr/vscode-sqltools/blob/dev/packages/util/query/parse.ts
+ *  
+ * Modified for pg/DSQL driver only
+ * 
+ * Retaining a copy note below from the original file.
  */
 
 /**

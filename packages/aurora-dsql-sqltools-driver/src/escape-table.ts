@@ -4,7 +4,10 @@
  */
 
 /*
- * Copied from https://github.com/mtxr/vscode-sqltools/blob/dev/packages/driver.pg/src/escape-table.ts
+ * This code is based on SQLTools PostgreSQL Driver
+ * Copyright (c) Matheus Teixeira
+ * License: MIT
+ * Source: https://github.com/mtxr/vscode-sqltools/blob/dev/packages/driver.pg/src/escape-table.ts
  */
 
 import { NSDatabase } from '@sqltools/types';
