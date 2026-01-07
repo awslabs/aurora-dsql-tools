@@ -14,13 +14,11 @@ import { NSDatabase } from '@sqltools/types';
 
 export const pgCheckEscape = (w: string | { label: string }) => {
   const identifier = (<any>w).label || w;
-  
+
   if (identifier.length > 63) throw new Error('Identifier too long');
   if (identifier.includes('\0')) throw new Error('Contains null character');
-  
-  return /[^a-z0-9_]/.test(identifier) 
-    ? `"${identifier.replace(/"/g, '""')}"` 
-    : identifier;
+
+  return /[^a-z0-9_]/.test(identifier) ? `"${identifier.replace(/"/g, '""')}"` : identifier;
 };
 
 function escapeTableName(table: Partial<NSDatabase.ITable> | string) {

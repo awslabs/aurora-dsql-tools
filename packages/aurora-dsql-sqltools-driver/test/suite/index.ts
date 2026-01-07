@@ -17,12 +17,11 @@ import { glob } from 'glob';
 export function run(): Promise<void> {
   const testSuite = process.env.TEST_SUITE;
   const testPattern = testSuite ? `**/${testSuite}.test.js` : '**/**.test.js';
-  
+
   console.log(`Running DSQL driver tests (pattern: ${testPattern})...`);
-  
+
   const mocha = new Mocha({
-    ui: 'tdd',
-    color: true,
+    ui: 'tdd'
   });
 
   const testsRoot = path.resolve(__dirname, '..');
@@ -34,7 +33,7 @@ export function run(): Promise<void> {
         if (files.length === 0) {
           console.log(`No test files found matching pattern: ${testPattern}`);
         }
-        
+
         files.forEach((f) => mocha.addFile(path.resolve(testsRoot, f)));
 
         try {
