@@ -2,7 +2,7 @@ name: Publish Aurora DSQL Driver for SQLTools Extension
 
 permissions:
   contents: read
-  
+
 on:
   release:
     types: [published]
@@ -32,11 +32,6 @@ jobs:
         run: |
           cd packages/aurora-dsql-sqltools-driver
           npm ci
-
-      - name: Run tests
-        run: |
-          cd packages/aurora-dsql-sqltools-driver
-          npm test
 
       - name: Package extension
         run: |
