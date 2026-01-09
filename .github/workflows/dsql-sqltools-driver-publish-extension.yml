@@ -1,5 +1,8 @@
 name: Publish Aurora DSQL Driver for SQLTools Extension
 
+permissions:
+  contents: read
+  
 on:
   release:
     types: [published]
