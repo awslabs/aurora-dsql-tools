@@ -22,8 +22,11 @@ import { AuroraDSQLPoolConfig } from '@aws/aurora-dsql-node-postgres-connector';
 
 const rawValue = (v: string) => v;
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 types.setTypeParser((types as any).builtins.TIMESTAMP || 1114, rawValue);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 types.setTypeParser((types as any).builtins.TIMESTAMPTZ || 1184, rawValue);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 types.setTypeParser((types as any).builtins.DATE || 1082, rawValue);
 
 export default class AuroraDSQLDriver extends AbstractDriver<Pool, PoolConfig> implements IConnectionDriver {
@@ -132,6 +135,7 @@ export default class AuroraDSQLDriver extends AbstractDriver<Pool, PoolConfig> i
         cli.release();
         return results;
       })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .then((results: any[] | any) => {
         const queries = queryParse(query.toString());
         if (!Array.isArray(results)) {
@@ -188,6 +192,7 @@ export default class AuroraDSQLDriver extends AbstractDriver<Pool, PoolConfig> i
     }, []);
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private mapRows(rows: any[], columns: string[]): any[] {
     return rows.map((r) => Object.fromEntries(columns.map((col, i) => [col, r[i]])));
   }
@@ -247,6 +252,7 @@ export default class AuroraDSQLDriver extends AbstractDriver<Pool, PoolConfig> i
     return [];
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   public searchItems(itemType: ContextValue, search: string, _extraParams: any = {}): Promise<NSDatabase.SearchableItem[]> {
     switch (itemType) {
       case ContextValue.TABLE:
@@ -262,6 +268,7 @@ export default class AuroraDSQLDriver extends AbstractDriver<Pool, PoolConfig> i
     this.completionsCache = {};
     const items = await this.queryResults('SELECT UPPER(word) AS label, UPPER(catdesc) AS desc FROM pg_get_keywords();');
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     items.forEach((item: any) => {
       this.completionsCache[item.label] = {
         label: item.label,
