@@ -23,8 +23,13 @@ async function main() {
     // Passed to --extensionTestsPath
     const extensionTestsPath = path.resolve(__dirname, './suite/index');
 
+    // Get VS Code version from environment variable, use current version if not specified
+    const vscodeVersion = process.env.TEST_VSCODE_VERSION;
+
     // Download VS Code, unzip it and run the integration test
-    await runTests({ extensionDevelopmentPath, extensionTestsPath });
+    await runTests(
+      vscodeVersion ? { extensionDevelopmentPath, extensionTestsPath, version: vscodeVersion } : { extensionDevelopmentPath, extensionTestsPath }
+    );
   } catch (err) {
     console.error('Failed to run tests');
     console.error(err);
