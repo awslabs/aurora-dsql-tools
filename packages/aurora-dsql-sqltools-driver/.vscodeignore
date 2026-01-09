@@ -15,6 +15,7 @@ eslint.config.js
 package-lock.json
 Developer.md
 THIRD-PARTY-LICENSES.json
+node_modules/@types/**
 node_modules/@typescript-eslint/**
 node_modules/@vscode/test-electron/**
 node_modules/eslint/**

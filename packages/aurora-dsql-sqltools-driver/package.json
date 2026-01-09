@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "icon": "icons/dsqlicon.png",
   "engines": {
-    "vscode": "^1.106.0"
+    "vscode": "^1.85.2"
   },
   "publisher": "amazonwebservices",
   "license": "MIT-0",
