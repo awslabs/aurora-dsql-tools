@@ -31,20 +31,20 @@ jobs:
 
       - name: Install dependencies
         run: |
-          working-directory: ./packages/aurora-dsql-sqltools-driver
           npm ci
+        working-directory: ./packages/aurora-dsql-sqltools-driver
 
       - name: Package extension
         run: |
-          working-directory: ./packages/aurora-dsql-sqltools-driver
           vsce package --allow-star-activation
+        working-directory: ./packages/aurora-dsql-sqltools-driver
 
       # Temporarily disabled for testing - remove 'if: false' to enable publishing
       - name: Publish to VS Code Marketplace
         if: false
         run: |
-          working-directory: ./packages/aurora-dsql-sqltools-driver
           vsce publish -p ${{ secrets.MARKETPLACE_TOKEN }}
+        working-directory: ./packages/aurora-dsql-sqltools-driver
 
       - name: Upload VSIX as artifact
         uses: actions/upload-artifact@v4

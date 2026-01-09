@@ -37,15 +37,15 @@ jobs:
 
       - name: Install dependencies
         run: |
-          working-directory: ./packages/aurora-dsql-sqltools-driver
           npm ci
+        working-directory: ./packages/aurora-dsql-sqltools-driver
 
       - name: Run formatter
         run: |
-          working-directory: ./packages/aurora-dsql-sqltools-driver
           npm run format:check
+        working-directory: ./packages/aurora-dsql-sqltools-driver
 
       - name: Run linter
         run: |
-          working-directory: ./packages/aurora-dsql-sqltools-driver
           npm run lint
+        working-directory: ./packages/aurora-dsql-sqltools-driver
