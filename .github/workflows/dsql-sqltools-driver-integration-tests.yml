@@ -75,7 +75,7 @@ jobs:
         env:
           CLUSTER_ENDPOINT: ${{ secrets.AURORA_DSQL_INTEGRATION_CLUSTER_ENDPOINT }}
           REGION: ${{ secrets.AURORA_DSQL_INTEGRATION_CLUSTER_REGION }}
-          TEST_VSCODE_VERSION: ${{ matrix.vscode-version == 'current' && '' || matrix.vscode-version }}
+          TEST_VSCODE_VERSION: ${{ matrix.vscode-version != 'current' && matrix.vscode-version || '' }}
         run: |
           xvfb-run -a npm run test:unit
           xvfb-run -a npm run test:integration
