@@ -1,7 +1,6 @@
 name: Verify code formatting and linting for the Aurora DSQL Driver
 
-permissions:
-  contents: read
+permissions: {}
 
 on:
   push:
@@ -32,19 +31,19 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install dependencies
         run: |
-          cd packages/aurora-dsql-sqltools-driver
+          working-directory: ./packages/aurora-dsql-sqltools-driver
           npm ci
 
       - name: Run formatter
         run: |
-          cd packages/aurora-dsql-sqltools-driver
-          npm run format
+          working-directory: ./packages/aurora-dsql-sqltools-driver
+          npm run format:check
 
       - name: Run linter
         run: |
-          cd packages/aurora-dsql-sqltools-driver
+          working-directory: ./packages/aurora-dsql-sqltools-driver
           npm run lint

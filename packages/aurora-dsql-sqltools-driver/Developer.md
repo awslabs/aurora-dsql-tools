@@ -34,7 +34,7 @@ Run the following commands before submitting a PR (these are automatically verif
 
 ```
 npm run format
-npm run lint
+npm run lint:fix
 ```
 
 ### Third party notices

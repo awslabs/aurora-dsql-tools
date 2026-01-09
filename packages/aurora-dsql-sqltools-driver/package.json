@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "icon": "icons/dsqlicon.png",
   "engines": {
-    "vscode": "^1.85.2"
+    "vscode": "^1.97.2"
   },
   "publisher": "amazonwebservices",
   "license": "MIT-0",
@@ -56,7 +56,8 @@
     "test-with-sqltools": "npm run compile && node ./out/test/runTestWithSQLTools.js",
     "lint": "eslint src test --ext .ts",
     "lint:fix": "eslint src test --ext .ts --fix",
-    "format": "prettier --write src test"
+    "format": "prettier --write src test",
+    "format:check": "prettier --check src test"
   },
   "dependencies": {
     "@aws/aurora-dsql-node-postgres-connector": "^0.1.6",
@@ -74,6 +75,7 @@
     "@typescript-eslint/eslint-plugin": "^8.50.0",
     "@typescript-eslint/parser": "^8.50.0",
     "@vscode/test-electron": "^2.3.8",
+    "@vscode/vsce": "3.7.1",
     "eslint": "^9.39.2",
     "glob": "^10.3.10",
     "mocha": "^11.7.5",
