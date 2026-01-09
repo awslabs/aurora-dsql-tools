@@ -126,63 +126,65 @@ export default class AuroraDSQLDriver extends AbstractDriver<Pool, PoolConfig> i
     const messages = [];
     let cli: PoolClient;
     const { requestId } = opt;
-    return this.open()
-      .then(async (pool) => {
-        cli = await pool.connect();
-        cli.on('notice', (notice) => messages.push(this.prepareMessage(`${notice.name.toUpperCase()}: ${notice.message}`)));
-        const results = await cli.query({ text: query.toString(), rowMode: 'array' });
-        cli.removeAllListeners('notice');
-        cli.release();
-        return results;
-      })
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .then((results: any[] | any) => {
-        const queries = queryParse(query.toString());
-        if (!Array.isArray(results)) {
-          results = [results];
-        }
+    return (
+      this.open()
+        .then(async (pool) => {
+          cli = await pool.connect();
+          cli.on('notice', (notice) => messages.push(this.prepareMessage(`${notice.name.toUpperCase()}: ${notice.message}`)));
+          const results = await cli.query({ text: query.toString(), rowMode: 'array' });
+          cli.removeAllListeners('notice');
+          cli.release();
+          return results;
+        })
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .then((results: any[] | any) => {
+          const queries = queryParse(query.toString());
+          if (!Array.isArray(results)) {
+            results = [results];
+          }
 
-        return results.map((r, i): NSDatabase.IResult => {
-          const cols = this.getColumnNames(r.fields || []);
-          return {
-            requestId,
-            resultId: generateId(),
-            connId: this.getId(),
-            cols,
-            messages: messages.concat([
-              this.prepareMessage(
-                `${r.command} successfully executed.${
-                  r.command.toLowerCase() !== 'select' && typeof r.rowCount === 'number' ? ` ${r.rowCount} rows were affected.` : ''
-                }`
-              ),
-            ]),
-            query: queries[i],
-            results: this.mapRows(r.rows, cols),
-          };
-        });
-      })
-      .catch((err) => {
-        cli && cli.release();
-        return [
-          <NSDatabase.IResult>{
-            connId: this.getId(),
-            requestId,
-            resultId: generateId(),
-            cols: [],
-            messages: messages.concat([
-              this.prepareMessage(
-                [(err && err.message) || err, err && err.routine === 'scanner_yyerror' && err.position ? `at character ${err.position}` : undefined]
-                  .filter(Boolean)
-                  .join(' ')
-              ),
-            ]),
-            error: true,
-            rawError: err,
-            query,
-            results: [],
-          },
-        ];
-      });
+          return results.map((r, i): NSDatabase.IResult => {
+            const cols = this.getColumnNames(r.fields || []);
+            return {
+              requestId,
+              resultId: generateId(),
+              connId: this.getId(),
+              cols,
+              messages: messages.concat([
+                this.prepareMessage(
+                  `${r.command} successfully executed.${
+                    r.command.toLowerCase() !== 'select' && typeof r.rowCount === 'number' ? ` ${r.rowCount} rows were affected.` : ''
+                  }`
+                ),
+              ]),
+              query: queries[i],
+              results: this.mapRows(r.rows, cols),
+            };
+          });
+        })
+        .catch((err) => {
+          cli && cli.release();
+          return [
+            <NSDatabase.IResult>{
+              connId: this.getId(),
+              requestId,
+              resultId: generateId(),
+              cols: [],
+              messages: messages.concat([
+                this.prepareMessage(
+                  [(err && err.message) || err, err && err.routine === 'scanner_yyerror' && err.position ? `at character ${err.position}` : undefined]
+                    .filter(Boolean)
+                    .join(' ')
+                ),
+              ]),
+              error: true,
+              rawError: err,
+              query,
+              results: [],
+            },
+          ];
+        })
+    );
   };
 
   private getColumnNames(fields: FieldDef[]): string[] {
