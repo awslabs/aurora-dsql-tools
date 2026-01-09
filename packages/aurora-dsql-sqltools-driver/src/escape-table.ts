@@ -13,6 +13,7 @@
 import { NSDatabase } from '@sqltools/types';
 
 export const pgCheckEscape = (w: string | { label: string }) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const identifier = (<any>w).label || w;
 
   if (identifier.length > 63) throw new Error('Identifier too long');

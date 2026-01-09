@@ -1,0 +1,51 @@
+name: Verify code formatting and linting for the Aurora DSQL Driver
+
+permissions: {}
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'packages/aurora-dsql-sqltools-driver/**'
+      - '.github/workflows/dsql-sqltools-driver-code-check.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'packages/aurora-dsql-sqltools-driver/**'
+      - '.github/workflows/dsql-sqltools-driver-code-check.yml'
+  # Give us a button to allow running the workflow on demand for testing.
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: 'Manual Workflow Run'
+        required: false
+        type: string
+
+jobs:
+  lint-and-format:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+        working-directory: ./packages/aurora-dsql-sqltools-driver
+
+      - name: Run formatter
+        run: |
+          npm run format:check
+        working-directory: ./packages/aurora-dsql-sqltools-driver
+
+      - name: Run linter
+        run: |
+          npm run lint
+        working-directory: ./packages/aurora-dsql-sqltools-driver

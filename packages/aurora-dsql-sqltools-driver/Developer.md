@@ -28,6 +28,15 @@ npm run test:unit
 npm run test:integration
 ```
 
+### Formatting and linting 
+
+Run the following commands before submitting a PR (these are automatically verified):
+
+```
+npm run format
+npm run lint:fix
+```
+
 ### Third party notices
 
 The THIRD-PARTY-LICENSES.json file lists the packages used by this extension. 

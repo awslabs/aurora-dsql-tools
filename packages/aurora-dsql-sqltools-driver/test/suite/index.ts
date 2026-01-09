@@ -21,7 +21,7 @@ export function run(): Promise<void> {
   console.log(`Running DSQL driver tests (pattern: ${testPattern})...`);
 
   const mocha = new Mocha({
-    ui: 'tdd'
+    ui: 'tdd',
   });
 
   const testsRoot = path.resolve(__dirname, '..');

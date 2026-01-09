@@ -145,9 +145,11 @@ class QueryParser {
     return result;
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   static getTag(query: string): Array<any> {
     const matchTag = query.match(/^(\$[a-zA-Z]*\$)/i);
     if (matchTag != null && matchTag.length > 1) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result: Array<any> = [];
       const tagSymbol = matchTag[1].trim();
       const indexOfCmd = query.indexOf(tagSymbol);

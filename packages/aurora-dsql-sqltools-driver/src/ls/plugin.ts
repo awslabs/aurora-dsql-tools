@@ -6,7 +6,7 @@
 /*
  * This code is based on SQLTools Driver Template
  * Copyright (c) Matheus Teixeira
- * License: <todo>
+ * License to Modifications: MIT
  * Source: https://github.com/mtxr/vsc-sqltools-driver-template/blob/master/src/ls/plugin.ts
  */
 

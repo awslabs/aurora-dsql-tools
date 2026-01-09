@@ -1,0 +1,50 @@
+name: Publish Aurora DSQL Driver for SQLTools Extension
+
+permissions: {}
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Manually publish the extension'
+        required: false
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+        working-directory: ./packages/aurora-dsql-sqltools-driver
+
+      - name: Package extension
+        run: |
+          npx vsce package --allow-star-activation
+        working-directory: ./packages/aurora-dsql-sqltools-driver
+
+      # Temporarily disabled for testing - remove 'if: false' to enable publishing
+      - name: Publish to VS Code Marketplace
+        if: false
+        run: |
+          npx vsce publish -p ${{ secrets.MARKETPLACE_TOKEN }}
+        working-directory: ./packages/aurora-dsql-sqltools-driver
+
+      - name: Upload VSIX as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aurora-dsql-sqltools-driver-vsix
+          path: packages/aurora-dsql-sqltools-driver/*.vsix
