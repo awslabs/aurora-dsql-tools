@@ -39,13 +39,9 @@ npm run lint:fix
 
 ### Third party notices
 
-The THIRD-PARTY-LICENSES.json file lists the packages used by this extension. 
-It is generated using the npm-license-crawler tool with the following command:
+The THIRD-PARTY-LICENSES.json file lists the packages used by this extension.
+Regenerate it whenever dependencies or their versions change in `package.json`:
 
 ```
-npx npm-license-crawler --onlyDirectDependencies --json THIRD-PARTY-LICENSES.json
+npm run licenses:generate
 ```
-
-**Important!**
-
-Regenerate THIRD-PARTY-LICENSES.json whenever dependencies or their versions change in package.json.

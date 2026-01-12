@@ -1,0 +1,48 @@
+name: Verify third party licenses for the Aurora DSQL Driver
+
+permissions: {}
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'packages/aurora-dsql-sqltools-driver/package.json'
+      - 'packages/aurora-dsql-sqltools-driver/package-lock.json'
+      - 'packages/aurora-dsql-sqltools-driver/THIRD-PARTY-LICENSES.json'
+      - '.github/workflows/dsql-sqltools-driver-third-party-licenses.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'packages/aurora-dsql-sqltools-driver/package.json'
+      - 'packages/aurora-dsql-sqltools-driver/package-lock.json'
+      - 'packages/aurora-dsql-sqltools-driver/THIRD-PARTY-LICENSES.json'
+      - '.github/workflows/dsql-sqltools-driver-third-party-licenses.yml'
+  workflow_dispatch:
+
+jobs:
+  verify-licenses:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: ./packages/aurora-dsql-sqltools-driver
+
+      - name: Generate and compare third party licenses
+        working-directory: ./packages/aurora-dsql-sqltools-driver
+        run: |
+          cp THIRD-PARTY-LICENSES.json THIRD-PARTY-LICENSES.original.json
+          npm run licenses:generate
+          diff THIRD-PARTY-LICENSES.original.json THIRD-PARTY-LICENSES.json || {
+            echo "::error::THIRD-PARTY-LICENSES.json is out of date. Run 'npm run licenses:generate' to update."
+            exit 1
+          }
