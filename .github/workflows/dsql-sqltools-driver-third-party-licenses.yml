@@ -40,8 +40,9 @@ jobs:
       - name: Generate and compare third party licenses
         working-directory: ./packages/aurora-dsql-sqltools-driver
         run: |
-          npx npm-license-crawler --onlyDirectDependencies --json THIRD-PARTY-LICENSES.generated.json
-          diff THIRD-PARTY-LICENSES.json THIRD-PARTY-LICENSES.generated.json || {
-            echo "::error::THIRD-PARTY-LICENSES.json is out of date. Run 'npx npm-license-crawler --onlyDirectDependencies --json THIRD-PARTY-LICENSES.json' to update."
+          cp THIRD-PARTY-LICENSES.json THIRD-PARTY-LICENSES.original.json
+          npm run licenses:generate
+          diff THIRD-PARTY-LICENSES.original.json THIRD-PARTY-LICENSES.json || {
+            echo "::error::THIRD-PARTY-LICENSES.json is out of date. Run 'npm run licenses:generate' to update."
             exit 1
           }
