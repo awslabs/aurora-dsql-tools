@@ -7,10 +7,16 @@ on:
     types: [published]
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Manually publish the extension'
-        required: false
-        type: string
+      publishVSCode:
+        description: 'Publish to VS Code Marketplace'
+        type: boolean
+        required: true
+        default: false
+      publishOVSX:
+        description: 'Publish to Open VSX'
+        type: boolean
+        required: true
+        default: false
 
 jobs:
   publish:
@@ -37,11 +43,13 @@ jobs:
         working-directory: ./packages/aurora-dsql-sqltools-driver
 
       - name: Publish to VS Code Marketplace
+        if: github.event_name == 'release' || github.event.inputs.publishVSCode == 'true'
         run: |
           npx vsce publish -p ${{ secrets.MARKETPLACE_TOKEN }}
         working-directory: ./packages/aurora-dsql-sqltools-driver
 
       - name: Publish to Open VSX
+        if: github.event_name == 'release' || github.event.inputs.publishOVSX == 'true'
         run: |
           npx ovsx publish -p ${{ secrets.OPEN_VSX_TOKEN }}
         working-directory: ./packages/aurora-dsql-sqltools-driver
