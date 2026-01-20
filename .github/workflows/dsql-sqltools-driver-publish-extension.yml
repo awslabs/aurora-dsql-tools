@@ -41,6 +41,11 @@ jobs:
           npx vsce publish -p ${{ secrets.MARKETPLACE_TOKEN }}
         working-directory: ./packages/aurora-dsql-sqltools-driver
 
+      - name: Publish to Open VSX
+        run: |
+          npx ovsx publish -p ${{ secrets.OPEN_VSX_TOKEN }}
+        working-directory: ./packages/aurora-dsql-sqltools-driver
+
       - name: Upload VSIX as artifact
         uses: actions/upload-artifact@v4
         with:
