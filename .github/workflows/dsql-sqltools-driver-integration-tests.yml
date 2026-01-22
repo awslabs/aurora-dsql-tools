@@ -15,14 +15,17 @@ on:
       - ".github/workflows/dsql-sqltools-driver-integration-tests.yml"
   # Give us a button to allow running the workflow on demand for testing.
   workflow_dispatch:
-    inputs:
-      tags:
-        description: 'Manual Workflow Run'
-        required: false
-        type: string
-  workflow_call:
 
 jobs:
+  create-cluster:
+    uses: ./.github/workflows/dsql-cluster-create.yml
+    with:
+      workflow_name: dsql-sqltools-driver-integration-tests
+    secrets:
+      AWS_IAM_ROLE: ${{ secrets.AURORA_DSQL_VSCODE_IAM_ROLE }}
+    permissions:
+      id-token: write # required by aws-actions/configure-aws-credentials
+
   setup:
     name: Setup
     runs-on: ubuntu-latest
@@ -38,7 +41,7 @@ jobs:
 
   run-tests:
     name: Aurora DSQL Driver for SQLTools tests
-    needs: [setup]
+    needs: [setup, create-cluster]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -63,7 +66,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AURORA_DSQL_VSCODE_IAM_ROLE }}
-          aws-region: ${{ secrets.AURORA_DSQL_INTEGRATION_CLUSTER_REGION }}
+          aws-region: ${{ needs.create-cluster.outputs.region }}
 
       - name: Install dependencies
         working-directory: ./packages/aurora-dsql-sqltools-driver
@@ -73,10 +76,21 @@ jobs:
       - name: Run tests
         working-directory: ./packages/aurora-dsql-sqltools-driver
         env:
-          CLUSTER_ENDPOINT: ${{ secrets.AURORA_DSQL_INTEGRATION_CLUSTER_ENDPOINT }}
-          REGION: ${{ secrets.AURORA_DSQL_INTEGRATION_CLUSTER_REGION }}
+          CLUSTER_ENDPOINT: ${{ needs.create-cluster.outputs.cluster-endpoint }}
+          REGION: ${{ needs.create-cluster.outputs.region }}
           TEST_VSCODE_VERSION: ${{ matrix.vscode-version != 'current' && matrix.vscode-version || '' }}
         run: |
           xvfb-run -a npm run test:unit
           xvfb-run -a npm run test:integration
 
+  delete-cluster:
+    if: always() && needs.create-cluster.result == 'success'
+    needs: [create-cluster, run-tests]
+    uses: ./.github/workflows/dsql-cluster-delete.yml
+    with:
+      cluster-id: ${{ needs.create-cluster.outputs.cluster-id }}
+      region: ${{ needs.create-cluster.outputs.region }}
+    secrets:
+      AWS_IAM_ROLE: ${{ secrets.AURORA_DSQL_VSCODE_IAM_ROLE }}
+    permissions:
+      id-token: write # required by aws-actions/configure-aws-credentials
