@@ -1,0 +1,146 @@
+name: SQLTools Driver CI
+
+permissions: {}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'vscode/sqltools-driver/**'
+      - '.github/workflows/vscode-sqltools-driver-ci.yml'
+      - '.github/workflows/dsql-cluster-*.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'vscode/sqltools-driver/**'
+      - '.github/workflows/vscode-sqltools-driver-ci.yml'
+      - '.github/workflows/dsql-cluster-*.yml'
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: vscode/sqltools-driver
+
+jobs:
+  lint-and-format:
+    name: Lint and Format
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run formatter
+        run: npm run format:check
+
+      - name: Run linter
+        run: npm run lint
+
+  third-party-licenses:
+    name: Verify Third-Party Licenses
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify THIRD-PARTY-LICENSES.json is up to date
+        run: |
+          npm run licenses:generate
+          if ! git diff --exit-code THIRD-PARTY-LICENSES.json; then
+            echo "THIRD-PARTY-LICENSES.json is out of date. Please run 'npm run licenses:generate' and commit the changes."
+            exit 1
+          fi
+
+  create-cluster:
+    needs: [lint-and-format]
+    uses: ./.github/workflows/dsql-cluster-create.yml
+    with:
+      workflow_name: sqltools-driver
+    secrets:
+      IAM_ROLE: ${{ secrets.IAM_ROLE }}
+    permissions:
+      id-token: write
+
+  setup:
+    name: Setup Test Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      node-versions: ${{ steps.versions.outputs.matrix }}
+      vscode-versions: ${{ steps.vscode-versions.outputs.matrix }}
+    steps:
+      - id: versions
+        run: echo "matrix=[20, 22, 24]" >> $GITHUB_OUTPUT
+      - id: vscode-versions
+        run: echo "matrix=[\"current\", \"1.97.2\"]" >> $GITHUB_OUTPUT
+
+  test:
+    name: Test (Node ${{ matrix.node-version }}, VS Code ${{ matrix.vscode-version }})
+    needs: [setup, create-cluster]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        node-version: ${{ fromJson(needs.setup.outputs.node-versions) }}
+        vscode-version: ${{ fromJson(needs.setup.outputs.vscode-versions) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.IAM_ROLE }}
+          aws-region: ${{ needs.create-cluster.outputs.region }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        env:
+          CLUSTER_ENDPOINT: ${{ needs.create-cluster.outputs.cluster-endpoint }}
+          REGION: ${{ needs.create-cluster.outputs.region }}
+          TEST_VSCODE_VERSION: ${{ matrix.vscode-version != 'current' && matrix.vscode-version || '' }}
+        run: |
+          xvfb-run -a npm run test:unit
+          xvfb-run -a npm run test:integration
+
+  delete-cluster:
+    if: always() && needs.create-cluster.result == 'success'
+    needs: [create-cluster, test]
+    uses: ./.github/workflows/dsql-cluster-delete.yml
+    with:
+      cluster-id: ${{ needs.create-cluster.outputs.cluster-id }}
+      region: ${{ needs.create-cluster.outputs.region }}
+    secrets:
+      IAM_ROLE: ${{ secrets.IAM_ROLE }}
+    permissions:
+      id-token: write

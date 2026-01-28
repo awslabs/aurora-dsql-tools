@@ -1,10 +1,12 @@
-name: Publish Aurora DSQL Driver for SQLTools Extension
+name: SQLTools Driver Release
 
-permissions: {}
+permissions:
+  contents: read
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'vscode/sqltools-driver/v*'
   workflow_dispatch:
     inputs:
       publishVSCode:
@@ -17,6 +19,10 @@ on:
         type: boolean
         required: true
         default: false
+
+defaults:
+  run:
+    working-directory: vscode/sqltools-driver
 
 jobs:
   publish:
@@ -33,29 +39,21 @@ jobs:
           node-version: '24'
 
       - name: Install dependencies
-        run: |
-          npm ci
-        working-directory: ./packages/aurora-dsql-sqltools-driver
+        run: npm ci
 
       - name: Package extension
-        run: |
-          npx vsce package --allow-star-activation
-        working-directory: ./packages/aurora-dsql-sqltools-driver
+        run: npx vsce package --allow-star-activation
 
       - name: Publish to VS Code Marketplace
-        if: github.event_name == 'release' || github.event.inputs.publishVSCode == 'true'
-        run: |
-          npx vsce publish -p ${{ secrets.MARKETPLACE_TOKEN }}
-        working-directory: ./packages/aurora-dsql-sqltools-driver
+        if: github.event_name == 'push' || github.event.inputs.publishVSCode == 'true'
+        run: npx vsce publish -p ${{ secrets.MARKETPLACE_TOKEN }}
 
       - name: Publish to Open VSX
-        if: github.event_name == 'release' || github.event.inputs.publishOVSX == 'true'
-        run: |
-          npx ovsx publish -p ${{ secrets.OPEN_VSX_TOKEN }}
-        working-directory: ./packages/aurora-dsql-sqltools-driver
+        if: github.event_name == 'push' || github.event.inputs.publishOVSX == 'true'
+        run: npx ovsx publish -p ${{ secrets.OPEN_VSX_TOKEN }}
 
       - name: Upload VSIX as artifact
         uses: actions/upload-artifact@v4
         with:
           name: aurora-dsql-sqltools-driver-vsix
-          path: packages/aurora-dsql-sqltools-driver/*.vsix
+          path: vscode/sqltools-driver/*.vsix
