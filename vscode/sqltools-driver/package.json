@@ -11,10 +11,10 @@
   "license": "MIT-0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/awslabs/aurora-dsql-vscode"
+    "url": "https://github.com/awslabs/aurora-dsql-tools"
   },
   "bugs": {
-    "url": "https://github.com/awslabs/aurora-dsql-vscode/issues"
+    "url": "https://github.com/awslabs/aurora-dsql-tools/issues"
   },
   "keywords": [
     "aws",

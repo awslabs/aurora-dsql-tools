@@ -1,7 +1,7 @@
 # Aurora DSQL Driver for SQLTools
 
-[![GitHub](https://img.shields.io/badge/github-awslabs/aurora--dsql--sqltools--driver-blue?logo=github)](https://github.com/awslabs/aurora-dsql-vscode/tree/main/packages/aurora-dsql-sqltools-driver)
-[![License](https://img.shields.io/badge/license-MIT-brightgreen)](https://github.com/awslabs/aurora-dsql-vscode/blob/main/LICENSE)
+[![GitHub](https://img.shields.io/badge/github-awslabs/aurora--dsql--tools-blue?logo=github)](https://github.com/awslabs/aurora-dsql-tools/tree/main/vscode/sqltools-driver)
+[![License](https://img.shields.io/badge/license-MIT-brightgreen)](https://github.com/awslabs/aurora-dsql-tools/blob/main/vscode/sqltools-driver/LICENSE)
 [![Discord chat](https://img.shields.io/discord/1435027294837276802.svg?logo=discord)](https://discord.com/invite/nEF6ksFWru)
 
 A Visual Studio Code extension for Amazon Aurora DSQL that integrates with SQLTools. Enables developers to connect to and query DSQL databases directly from VS Code.  
