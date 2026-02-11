@@ -64,6 +64,13 @@ You'll also need these dependencies:
     <artifactId>postgresql</artifactId>
     <version>42.7.2</version>
 </dependency>
+
+<!-- STS dependency for EKS/IRSA support -->
+<dependency>
+    <groupId>software.amazon.awssdk</groupId>
+    <artifactId>sts</artifactId>
+    <version>2.41.25</version>
+</dependency>
 ```
 
 ## Quick Start
@@ -206,6 +213,11 @@ RUN echo '<?xml version="1.0" encoding="UTF-8"?>\n\
             <groupId>org.postgresql</groupId>\n\
             <artifactId>postgresql</artifactId>\n\
             <version>42.7.2</version>\n\
+        </dependency>\n\
+        <dependency>\n\
+            <groupId>software.amazon.awssdk</groupId>\n\
+            <artifactId>sts</artifactId>\n\
+            <version>2.41.25</version>\n\
         </dependency>\n\
     </dependencies>\n\
 </project>' > pom.xml
