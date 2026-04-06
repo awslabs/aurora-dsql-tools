@@ -83,6 +83,9 @@ jobs:
   setup:
     name: Setup Test Matrix
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
     outputs:
       node-versions: ${{ steps.versions.outputs.matrix }}
       vscode-versions: ${{ steps.vscode-versions.outputs.matrix }}
