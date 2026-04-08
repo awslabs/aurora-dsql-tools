@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: "gradle"
+    directory: "/flyway"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "npm"
+    directory: "/vscode/sqltools-driver"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
