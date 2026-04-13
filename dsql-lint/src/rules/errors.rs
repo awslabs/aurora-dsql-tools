@@ -75,7 +75,82 @@ pub fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>)
         }
     }
 
+    check_json_columns(stmt, raw_sql, diagnostics);
+    check_truncate(stmt, raw_sql, diagnostics);
+    check_temp_table(stmt, raw_sql, diagnostics);
+    check_array_columns(stmt, raw_sql, diagnostics);
     check_create_index(raw_sql);
+}
+
+/// E006: JSON/JSONB column types are not supported in DSQL.
+fn check_json_columns(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
+    if let Statement::CreateTable(ct) = stmt {
+        for col in &ct.columns {
+            let type_str = col.data_type.to_string().to_uppercase();
+            if matches!(type_str.as_str(), "JSON" | "JSONB") {
+                diagnostics.push(Diagnostic {
+                    line: find_line(raw_sql, &type_str.to_lowercase()),
+                    rule_id: "E006".to_string(),
+                    message: format!(
+                        "Column `{}` uses {type_str}, which is not supported in DSQL.",
+                        col.name
+                    ),
+                    suggestion: "Use TEXT and serialize with JSON.stringify.".to_string(),
+                    is_error: true,
+                });
+            }
+        }
+    }
+}
+
+/// E007: TRUNCATE is not supported in DSQL.
+fn check_truncate(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
+    if let Statement::Truncate(_) = stmt {
+        diagnostics.push(Diagnostic {
+            line: find_line(raw_sql, "truncate"),
+            rule_id: "E007".to_string(),
+            message: "TRUNCATE is not supported in DSQL.".to_string(),
+            suggestion: "Use DELETE FROM table_name instead.".to_string(),
+            is_error: true,
+        });
+    }
+}
+
+/// E008: Temporary tables are not supported in DSQL.
+fn check_temp_table(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
+    if let Statement::CreateTable(ct) = stmt {
+        if ct.temporary {
+            diagnostics.push(Diagnostic {
+                line: find_line(raw_sql, "temp"),
+                rule_id: "E008".to_string(),
+                message: "TEMPORARY tables are not supported in DSQL.".to_string(),
+                suggestion: "Use regular tables or application-level caching.".to_string(),
+                is_error: true,
+            });
+        }
+    }
+}
+
+/// E009: Array column types are not supported in DSQL.
+fn check_array_columns(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
+    if let Statement::CreateTable(ct) = stmt {
+        for col in &ct.columns {
+            let is_array = matches!(&col.data_type, DataType::Array(_))
+                || col.data_type.to_string().contains("[]");
+            if is_array {
+                diagnostics.push(Diagnostic {
+                    line: find_line(raw_sql, &col.name.to_string().to_lowercase()),
+                    rule_id: "E009".to_string(),
+                    message: format!(
+                        "Column `{}` uses an array type, which is not supported in DSQL.",
+                        col.name
+                    ),
+                    suggestion: "Use TEXT and store as comma-separated values.".to_string(),
+                    is_error: true,
+                });
+            }
+        }
+    }
 }
 
 /// Stub for E002 (to be implemented in Task 7).
@@ -171,6 +246,83 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.rule_id == "E005"),
             "Expected E005, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_e006_json_column() {
+        let sql = "CREATE TABLE t (id INT, data JSON);";
+        let diags = parse_and_check(sql);
+        assert!(
+            diags.iter().any(|d| d.rule_id == "E006"),
+            "Expected E006, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_e006_jsonb_column() {
+        let sql = "CREATE TABLE t (id INT, data JSONB);";
+        let diags = parse_and_check(sql);
+        assert!(
+            diags.iter().any(|d| d.rule_id == "E006"),
+            "Expected E006, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_e007_truncate() {
+        let sql = "TRUNCATE TABLE orders;";
+        let diags = parse_and_check(sql);
+        assert!(
+            diags.iter().any(|d| d.rule_id == "E007"),
+            "Expected E007, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_e008_temp_table() {
+        let sql = "CREATE TEMP TABLE scratch (id INT);";
+        let diags = parse_and_check(sql);
+        assert!(
+            diags.iter().any(|d| d.rule_id == "E008"),
+            "Expected E008, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_e008_temporary_table() {
+        let sql = "CREATE TEMPORARY TABLE scratch (id INT);";
+        let diags = parse_and_check(sql);
+        assert!(
+            diags.iter().any(|d| d.rule_id == "E008"),
+            "Expected E008, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_e009_array_type() {
+        let sql = "CREATE TABLE t (id INT, tags TEXT[]);";
+        let diags = parse_and_check(sql);
+        assert!(
+            diags.iter().any(|d| d.rule_id == "E009"),
+            "Expected E009, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_e009_int_array() {
+        let sql = "CREATE TABLE t (id INT, scores INT[]);";
+        let diags = parse_and_check(sql);
+        assert!(
+            diags.iter().any(|d| d.rule_id == "E009"),
+            "Expected E009, got: {:?}",
             diags
         );
     }
