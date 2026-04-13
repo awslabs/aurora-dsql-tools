@@ -6,3 +6,6 @@ out/
 *.vsix
 # Test workspace files
 **/test-vscode-sqltools.code-workspace
+
+# Rust
+target/
