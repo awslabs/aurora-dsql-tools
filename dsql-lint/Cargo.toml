@@ -10,3 +10,15 @@ repository = "https://github.com/awslabs/aurora-dsql-tools"
 homepage = "https://github.com/awslabs/aurora-dsql-tools/tree/main/dsql-lint"
 keywords = ["aws", "aurora", "dsql", "sql", "lint"]
 categories = ["command-line-utilities", "database"]
+
+[dependencies]
+sqlparser = "0.61"
+clap = { version = "4", features = ["derive"] }
+
+[lib]
+name = "dsql_lint"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dsql-lint"
+path = "src/main.rs"
