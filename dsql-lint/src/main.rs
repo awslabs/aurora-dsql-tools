@@ -28,8 +28,10 @@ fn main() {
         let diagnostics = dsql_lint::lint::lint_sql(&sql);
         for d in &diagnostics {
             let severity = if d.is_error { "ERROR" } else { "WARNING" };
+            let preview: String = d.statement.chars().take(80).collect();
             eprintln!("{path}:{}: {severity} — {}", d.line, d.message);
             eprintln!("  → {}", d.suggestion);
+            eprintln!("  | {preview}");
         }
         total_errors += diagnostics.iter().filter(|d| d.is_error).count();
     }

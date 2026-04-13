@@ -5,23 +5,19 @@ fn test_sample_migration_file() {
     let sql = include_str!("fixtures/sample_migration.sql");
     let diags = lint_sql(sql);
 
-    let error_ids: Vec<&str> = diags.iter()
-        .filter(|d| d.is_error)
-        .map(|d| d.rule_id.as_str())
-        .collect();
-
-    assert!(error_ids.contains(&"E003"), "Missing E003 (SERIAL)");
-    assert!(error_ids.contains(&"E001"), "Missing E001 (FOREIGN KEY)");
-    assert!(error_ids.contains(&"E006"), "Missing E006 (JSON)");
-    assert!(error_ids.contains(&"E007"), "Missing E007 (TRUNCATE)");
-    assert!(error_ids.contains(&"E008"), "Missing E008 (TEMP TABLE)");
-    assert!(error_ids.contains(&"E009"), "Missing E009 (Array type)");
+    let errors: Vec<_> = diags.iter().filter(|d| d.is_error).collect();
+    assert!(errors.iter().any(|d| d.message.contains("SERIAL")), "Missing SERIAL error");
+    assert!(errors.iter().any(|d| d.message.contains("FOREIGN KEY")), "Missing FOREIGN KEY error");
+    assert!(errors.iter().any(|d| d.message.contains("JSON")), "Missing JSON error");
+    assert!(errors.iter().any(|d| d.message.contains("TRUNCATE")), "Missing TRUNCATE error");
+    assert!(errors.iter().any(|d| d.message.contains("TEMPORARY")), "Missing TEMP TABLE error");
+    assert!(errors.iter().any(|d| d.message.contains("array")), "Missing array error");
 
     // W001 for settings table (and others missing tenant_id like users, scratch)
     let warnings: Vec<_> = diags.iter()
-        .filter(|d| !d.is_error && d.rule_id == "W001")
+        .filter(|d| !d.is_error && d.message.contains("tenant_id"))
         .collect();
-    assert!(!warnings.is_empty(), "Missing W001 (tenant_id)");
+    assert!(!warnings.is_empty(), "Missing tenant_id warning");
 
     // Valid DML should not produce errors
     let dml_errors: Vec<_> = diags.iter()

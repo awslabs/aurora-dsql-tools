@@ -33,28 +33,22 @@ Exit code `0` if no errors (warnings are OK), `1` if any errors.
 
 ### Errors (will fail on DSQL)
 
-| Rule | Description |
-|------|-------------|
-| E001 | FOREIGN KEY / REFERENCES constraints |
-| E002 | CREATE INDEX without ASYNC |
-| E003 | SERIAL column type |
-| E004 | BIGSERIAL column type |
-| E005 | SMALLSERIAL column type |
-| E006 | JSON / JSONB column type |
-| E007 | TRUNCATE statement |
-| E008 | TEMPORARY / TEMP tables |
-| E009 | Array column types |
-| E010 | CREATE TRIGGER |
-| E011 | CREATE EXTENSION |
-| E012 | PARTITION BY |
-| E013 | CREATE FUNCTION / PROCEDURE |
+- FOREIGN KEY / REFERENCES constraints
+- CREATE INDEX without ASYNC
+- SERIAL / BIGSERIAL / SMALLSERIAL column types
+- JSON / JSONB column types
+- TRUNCATE statement
+- TEMPORARY / TEMP tables
+- Array column types
+- CREATE TRIGGER
+- CREATE EXTENSION
+- PARTITION BY
+- CREATE FUNCTION / PROCEDURE
 
 ### Warnings (best practice)
 
-| Rule | Description |
-|------|-------------|
-| W001 | CREATE TABLE missing tenant_id column |
-| W002 | ALTER TABLE ADD COLUMN with inline DEFAULT or NOT NULL |
+- CREATE TABLE missing tenant_id column
+- ALTER TABLE ADD COLUMN with inline DEFAULT or NOT NULL
 
 ## Library Usage
 
@@ -65,7 +59,7 @@ use dsql_lint::lint::lint_sql;
 
 let diagnostics = lint_sql("CREATE TABLE t (id SERIAL);");
 for d in &diagnostics {
-    println!("{}: {}", d.rule_id, d.message);
+    println!("{}", d.message);
 }
 ```
 
