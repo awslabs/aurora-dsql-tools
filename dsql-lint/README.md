@@ -4,6 +4,8 @@ Lint SQL files for [Amazon Aurora DSQL](https://aws.amazon.com/rds/aurora/dsql/)
 
 Parses SQL and reports errors (unsupported syntax) and warnings (best practice violations) with suggested fixes.
 
+> **Note:** This is an early release covering the most commonly encountered compatibility issues. Additional rules and broader SQL coverage will be added in upcoming releases.
+
 ## Installation
 
 ```bash
