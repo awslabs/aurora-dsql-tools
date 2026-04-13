@@ -173,7 +173,7 @@ fn check_unsupported_statements(
     }
 }
 
-/// E002: CREATE INDEX must use ASYNC in DSQL.
+/// CREATE INDEX must use ASYNC in DSQL.
 ///
 /// Because `ASYNC` is a DSQL-specific keyword that sqlparser doesn't understand,
 /// `lint_sql` strips it before parsing.  We check the *original* raw SQL to

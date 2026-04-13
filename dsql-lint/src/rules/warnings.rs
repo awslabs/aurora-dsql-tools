@@ -13,12 +13,12 @@ fn warning(line: usize, message: impl Into<String>, suggestion: impl Into<String
 }
 
 pub fn check(stmt: &Statement, diagnostics: &mut Vec<Diagnostic>) {
-    check_w001(stmt, diagnostics);
-    check_w002(stmt, diagnostics);
+    check_missing_tenant_id(stmt, diagnostics);
+    check_add_column_constraints(stmt, diagnostics);
 }
 
 /// CREATE TABLE missing `tenant_id` column.
-fn check_w001(stmt: &Statement, diagnostics: &mut Vec<Diagnostic>) {
+fn check_missing_tenant_id(stmt: &Statement, diagnostics: &mut Vec<Diagnostic>) {
     let Statement::CreateTable(ct) = stmt else {
         return;
     };
@@ -38,7 +38,7 @@ fn check_w001(stmt: &Statement, diagnostics: &mut Vec<Diagnostic>) {
 }
 
 /// ALTER TABLE ADD COLUMN with inline DEFAULT or NOT NULL.
-fn check_w002(stmt: &Statement, diagnostics: &mut Vec<Diagnostic>) {
+fn check_add_column_constraints(stmt: &Statement, diagnostics: &mut Vec<Diagnostic>) {
     let Statement::AlterTable(alter_table) = stmt else {
         return;
     };
@@ -68,7 +68,7 @@ mod tests {
     use crate::lint::lint_sql;
 
     #[test]
-    fn test_w001_missing_tenant_id() {
+    fn test_missing_tenant_id() {
         let sql = "CREATE TABLE orders (id INT, amount DECIMAL);";
         let diags = lint_sql(sql);
         assert!(
@@ -79,7 +79,7 @@ mod tests {
     }
 
     #[test]
-    fn test_w001_has_tenant_id() {
+    fn test_has_tenant_id() {
         let sql = "CREATE TABLE orders (id INT, tenant_id VARCHAR(255) NOT NULL, amount DECIMAL);";
         let diags = lint_sql(sql);
         assert!(
@@ -90,7 +90,7 @@ mod tests {
     }
 
     #[test]
-    fn test_w002_add_column_with_default() {
+    fn test_add_column_with_default() {
         let sql = "ALTER TABLE orders ADD COLUMN status VARCHAR(50) DEFAULT 'pending';";
         let diags = lint_sql(sql);
         assert!(
@@ -101,7 +101,7 @@ mod tests {
     }
 
     #[test]
-    fn test_w002_add_column_with_not_null() {
+    fn test_add_column_with_not_null() {
         let sql = "ALTER TABLE orders ADD COLUMN status VARCHAR(50) NOT NULL;";
         let diags = lint_sql(sql);
         assert!(
@@ -112,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn test_w002_add_column_plain_is_ok() {
+    fn test_add_column_plain_is_ok() {
         let sql = "ALTER TABLE orders ADD COLUMN status VARCHAR(50);";
         let diags = lint_sql(sql);
         assert!(

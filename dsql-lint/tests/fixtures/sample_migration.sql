@@ -7,13 +7,13 @@ CREATE TABLE tenants (
     name VARCHAR(255) NOT NULL
 );
 
--- E003: SERIAL type
+-- SERIAL type
 CREATE TABLE users (
     id SERIAL PRIMARY KEY,
     name TEXT
 );
 
--- E001: FOREIGN KEY
+-- FOREIGN KEY
 CREATE TABLE orders (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id VARCHAR(255) NOT NULL,
@@ -21,27 +21,27 @@ CREATE TABLE orders (
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
--- E006: JSON column
+-- JSON column
 CREATE TABLE events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id VARCHAR(255) NOT NULL,
     payload JSON
 );
 
--- E007: TRUNCATE
+-- TRUNCATE
 TRUNCATE TABLE events;
 
--- E008: TEMP TABLE
+-- TEMP TABLE
 CREATE TEMP TABLE scratch (val INT);
 
--- E009: Array type
+-- Array type
 CREATE TABLE tags (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id VARCHAR(255) NOT NULL,
     labels TEXT[]
 );
 
--- W001: Missing tenant_id
+-- Missing tenant_id
 CREATE TABLE settings (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     key VARCHAR(255),

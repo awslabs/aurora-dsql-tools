@@ -31,7 +31,7 @@ fn test_sample_migration_file() {
         "Missing array error"
     );
 
-    // W001 for settings table (and others missing tenant_id like users, scratch)
+    // settings table (and others missing tenant_id like users, scratch)
     let warnings: Vec<_> = diags
         .iter()
         .filter(|d| !d.is_error && d.message.contains("tenant_id"))
