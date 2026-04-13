@@ -1,11 +1,14 @@
-use dsql_lint::lint::lint_sql;
+use dsql_lint::lint::{lint_sql, Severity};
 
 #[test]
 fn test_sample_migration_file() {
     let sql = include_str!("fixtures/sample_migration.sql");
     let diags = lint_sql(sql);
 
-    let errors: Vec<_> = diags.iter().filter(|d| d.is_error).collect();
+    let errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(
         errors.iter().any(|d| d.message.contains("SERIAL")),
         "Missing SERIAL error"
@@ -30,11 +33,15 @@ fn test_sample_migration_file() {
         errors.iter().any(|d| d.message.contains("array")),
         "Missing array error"
     );
+    assert!(
+        errors.iter().any(|d| d.message.contains("ASYNC")),
+        "Missing ASYNC error"
+    );
 
     // settings table (and others missing tenant_id like users, scratch)
     let warnings: Vec<_> = diags
         .iter()
-        .filter(|d| !d.is_error && d.message.contains("tenant_id"))
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("tenant_id"))
         .collect();
     assert!(!warnings.is_empty(), "Missing tenant_id warning");
 
@@ -67,7 +74,10 @@ fn test_clean_file_exits_zero_errors() {
     "#;
 
     let diags = lint_sql(sql);
-    let errors: Vec<_> = diags.iter().filter(|d| d.is_error).collect();
+    let errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(
         errors.is_empty(),
         "Clean SQL should have no errors: {:?}",

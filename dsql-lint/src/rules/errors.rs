@@ -1,7 +1,8 @@
 use regex::Regex;
 use sqlparser::ast::{ColumnOption, DataType, Statement, TableConstraint};
+use std::sync::LazyLock;
 
-use crate::lint::Diagnostic;
+use crate::lint::{Diagnostic, Severity};
 
 fn error(line: usize, message: impl Into<String>, suggestion: impl Into<String>) -> Diagnostic {
     Diagnostic {
@@ -9,7 +10,7 @@ fn error(line: usize, message: impl Into<String>, suggestion: impl Into<String>)
         statement: String::new(),
         message: message.into(),
         suggestion: suggestion.into(),
-        is_error: true,
+        severity: Severity::Error,
     }
 }
 
@@ -147,12 +148,25 @@ fn check_unsupported_statements(
                 "Extensions not available in DSQL.",
             ));
         }
-        Statement::CreateFunction(_) => {
-            diagnostics.push(error(
-                find_line(raw_sql, "create function"),
-                "CREATE FUNCTION is not supported in DSQL.",
-                "Implement in application layer.",
-            ));
+        Statement::CreateFunction(cf) => {
+            let is_sql_language = cf
+                .language
+                .as_ref()
+                .is_some_and(|l| l.value.eq_ignore_ascii_case("sql"));
+            if !is_sql_language {
+                let lang_info = cf
+                    .language
+                    .as_ref()
+                    .map(|l| format!(" (LANGUAGE {})", l.value))
+                    .unwrap_or_default();
+                diagnostics.push(error(
+                    find_line(raw_sql, "create function"),
+                    format!(
+                        "CREATE FUNCTION{lang_info} is not supported in DSQL. Only LANGUAGE SQL is allowed."
+                    ),
+                    "Use LANGUAGE SQL or implement in application layer.",
+                ));
+            }
         }
         Statement::CreateProcedure { .. } => {
             diagnostics.push(error(
@@ -165,6 +179,9 @@ fn check_unsupported_statements(
     }
 }
 
+static INDEX_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)CREATE\s+(UNIQUE\s+)?INDEX\s+(ASYNC\s+)?").unwrap());
+
 /// `ASYNC` is a DSQL-specific keyword that sqlparser doesn't recognise, so
 /// `lint_sql` strips it before parsing. We check the *original* raw SQL to
 /// decide whether ASYNC was present.
@@ -175,10 +192,7 @@ fn check_create_index(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Dia
 
     let idx_name = ci.name.as_ref().map(|n| n.to_string()).unwrap_or_default();
 
-    let re = Regex::new(r"(?i)CREATE\s+(UNIQUE\s+)?INDEX\s+(ASYNC\s+)?").unwrap();
-    let upper_raw = raw_sql.to_uppercase();
-
-    for m in re.find_iter(raw_sql) {
+    for m in INDEX_RE.find_iter(raw_sql) {
         let after_match = &raw_sql[m.end()..];
         let is_our_stmt = if idx_name.is_empty() {
             true
@@ -190,7 +204,7 @@ fn check_create_index(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Dia
         };
 
         if is_our_stmt {
-            let matched = &upper_raw[m.start()..m.end()];
+            let matched = raw_sql[m.start()..m.end()].to_uppercase();
             if !matched.contains("ASYNC") {
                 let line = raw_sql[..m.start()].matches('\n').count() + 1;
                 diagnostics.push(error(
@@ -414,13 +428,26 @@ mod tests {
     }
 
     #[test]
-    fn test_create_function() {
+    fn test_create_function_sql_language_allowed() {
         let sql =
             "CREATE FUNCTION add(a INT, b INT) RETURNS INT AS $$ SELECT a + b; $$ LANGUAGE SQL;";
         let diags = parse_and_check(sql);
         assert!(
-            diags.iter().any(|d| d.message.contains("FUNCTION")),
-            "Expected FUNCTION error, got: {:?}",
+            !diags.iter().any(|d| d.message.contains("FUNCTION")),
+            "LANGUAGE SQL functions should be allowed, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_create_function_plpgsql_errors() {
+        let sql = "CREATE FUNCTION inc(val INT) RETURNS INT AS $$ BEGIN RETURN val + 1; END; $$ LANGUAGE plpgsql;";
+        let diags = parse_and_check(sql);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("FUNCTION") && d.message.contains("LANGUAGE plpgsql")),
+            "Expected FUNCTION error for plpgsql, got: {:?}",
             diags
         );
     }

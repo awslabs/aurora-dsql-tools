@@ -1,6 +1,6 @@
 use sqlparser::ast::{AlterTableOperation, ColumnOption, Statement};
 
-use crate::lint::Diagnostic;
+use crate::lint::{Diagnostic, Severity};
 
 fn warning(line: usize, message: impl Into<String>, suggestion: impl Into<String>) -> Diagnostic {
     Diagnostic {
@@ -8,7 +8,7 @@ fn warning(line: usize, message: impl Into<String>, suggestion: impl Into<String
         statement: String::new(),
         message: message.into(),
         suggestion: suggestion.into(),
-        is_error: false,
+        severity: Severity::Warning,
     }
 }
 

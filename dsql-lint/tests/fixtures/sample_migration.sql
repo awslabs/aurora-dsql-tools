@@ -48,6 +48,9 @@ CREATE TABLE settings (
     value TEXT
 );
 
+-- Sync CREATE INDEX (should require ASYNC)
+CREATE INDEX idx_orders ON orders(user_id);
+
 -- Valid DML (should not error)
 INSERT INTO tenants (id, tenant_id, name) VALUES (gen_random_uuid(), 'acme', 'Acme Corp');
 SELECT * FROM tenants WHERE tenant_id = 'acme';
