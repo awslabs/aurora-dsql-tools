@@ -1,3 +1,4 @@
+use regex::Regex;
 use sqlparser::ast::{ColumnOption, DataType, Statement, TableConstraint};
 
 use crate::lint::Diagnostic;
@@ -79,7 +80,7 @@ pub fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>)
     check_truncate(stmt, raw_sql, diagnostics);
     check_temp_table(stmt, raw_sql, diagnostics);
     check_array_columns(stmt, raw_sql, diagnostics);
-    check_create_index(raw_sql);
+    check_create_index(stmt, raw_sql, diagnostics);
     check_unsupported_statements(stmt, raw_sql, diagnostics);
 }
 
@@ -211,9 +212,63 @@ fn check_unsupported_statements(stmt: &Statement, raw_sql: &str, diagnostics: &m
     }
 }
 
-/// Stub for E002 (to be implemented in Task 7).
-fn check_create_index(_raw_sql: &str) {
-    // E002 will be added later
+/// E002: CREATE INDEX must use ASYNC in DSQL.
+///
+/// Because `ASYNC` is a DSQL-specific keyword that sqlparser doesn't understand,
+/// `lint_sql` strips it before parsing.  We therefore check the *original* raw SQL
+/// to decide whether ASYNC was present.  If a `CreateIndex` statement's corresponding
+/// source text does NOT contain "ASYNC", we emit E002.
+fn check_create_index(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
+    if let Statement::CreateIndex(ci) = stmt {
+        // Find the index name to locate this statement in the original SQL.
+        // We look for "CREATE INDEX" (or "CREATE UNIQUE INDEX") near the index name.
+        let idx_name = ci
+            .name
+            .as_ref()
+            .map(|n| n.to_string())
+            .unwrap_or_default();
+
+        // Search original raw_sql for this CREATE INDEX statement.
+        let re = Regex::new(r"(?i)CREATE\s+(UNIQUE\s+)?INDEX\s+(ASYNC\s+)?").unwrap();
+        let upper_raw = raw_sql.to_uppercase();
+
+        // Find all CREATE INDEX occurrences and match by index name.
+        for m in re.find_iter(raw_sql) {
+            let after_match = &raw_sql[m.end()..];
+            // Check if this match is followed by our index name.
+            let is_our_stmt = if idx_name.is_empty() {
+                // Anonymous index — just check if the pattern is there
+                true
+            } else {
+                after_match
+                    .trim_start()
+                    .to_uppercase()
+                    .starts_with(&idx_name.to_uppercase())
+            };
+
+            if is_our_stmt {
+                let matched = &upper_raw[m.start()..m.end()];
+                if !matched.contains("ASYNC") {
+                    let line = raw_sql[..m.start()].matches('\n').count() + 1;
+                    diagnostics.push(Diagnostic {
+                        line,
+                        rule_id: "E002".to_string(),
+                        message: format!(
+                            "CREATE INDEX without ASYNC is not supported in DSQL.{}",
+                            if !idx_name.is_empty() {
+                                format!(" Index: {idx_name}")
+                            } else {
+                                String::new()
+                            }
+                        ),
+                        suggestion: "Use `CREATE INDEX ASYNC ...` instead.".to_string(),
+                        is_error: true,
+                    });
+                }
+                break;
+            }
+        }
+    }
 }
 
 /// Find the 1-based line number of the first occurrence of `needle` (case-insensitive).
@@ -425,6 +480,62 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.rule_id == "E013"),
             "Expected E013, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_e002_create_index_no_async() {
+        let sql = "CREATE INDEX idx_orders ON orders(customer_id);";
+        let diags = parse_and_check(sql);
+        assert!(
+            diags.iter().any(|d| d.rule_id == "E002"),
+            "Expected E002, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_e002_create_unique_index_no_async() {
+        let sql = "CREATE UNIQUE INDEX idx_email ON users(email);";
+        let diags = parse_and_check(sql);
+        assert!(
+            diags.iter().any(|d| d.rule_id == "E002"),
+            "Expected E002, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_e002_create_index_with_async() {
+        // This uses lint_sql since ASYNC stripping happens there.
+        let sql = "CREATE INDEX ASYNC idx_orders ON orders(customer_id);";
+        let diags = crate::lint::lint_sql(sql);
+        assert!(
+            !diags.iter().any(|d| d.rule_id == "E002"),
+            "Did not expect E002, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_e002_multiline_create_index() {
+        let sql = "CREATE INDEX idx_orders\n  ON orders(customer_id);";
+        let diags = parse_and_check(sql);
+        assert!(
+            diags.iter().any(|d| d.rule_id == "E002"),
+            "Expected E002, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_e002_no_false_positive_on_comment() {
+        let sql = "-- CREATE INDEX idx_foo ON bar(baz);\nSELECT 1;";
+        let diags = parse_and_check(sql);
+        assert!(
+            !diags.iter().any(|d| d.rule_id == "E002"),
+            "Did not expect E002, got: {:?}",
             diags
         );
     }

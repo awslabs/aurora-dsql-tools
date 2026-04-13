@@ -1,5 +1,6 @@
 //! Core linting engine: parse SQL → walk AST → apply rules → collect diagnostics.
 
+use regex::Regex;
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 
@@ -18,7 +19,13 @@ pub struct Diagnostic {
 /// Lint a SQL string and return all diagnostics.
 pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
     let dialect = PostgreSqlDialect {};
-    let statements = match Parser::parse_sql(&dialect, sql) {
+
+    // Pre-process: strip ASYNC from CREATE INDEX statements so sqlparser can parse them.
+    // We remember whether ASYNC was present per-statement by checking the original SQL later.
+    let re = Regex::new(r"(?i)(CREATE\s+(UNIQUE\s+)?INDEX)\s+ASYNC\b").unwrap();
+    let cleaned = re.replace_all(sql, "$1");
+
+    let statements = match Parser::parse_sql(&dialect, &cleaned) {
         Ok(stmts) => stmts,
         Err(e) => {
             return vec![Diagnostic {
