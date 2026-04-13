@@ -1,4 +1,5 @@
 use clap::Parser;
+use dsql_lint::lint::Severity;
 use std::process;
 
 #[derive(Parser)]
@@ -27,19 +28,25 @@ fn main() {
 
         let diagnostics = dsql_lint::lint::lint_sql(&sql);
         for d in &diagnostics {
-            let severity = if d.is_error { "ERROR" } else { "WARNING" };
+            let severity = match d.severity {
+                Severity::Error => "ERROR",
+                Severity::Warning => "WARNING",
+            };
             let preview: String = d.statement.chars().take(80).collect();
             eprintln!("{path}:{}: {severity} — {}", d.line, d.message);
             eprintln!("  → {}", d.suggestion);
             eprintln!("  | {preview}");
         }
-        total_errors += diagnostics.iter().filter(|d| d.is_error).count();
+        total_errors += diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .count();
     }
 
     if total_errors > 0 {
         eprintln!("\n{total_errors} error(s) found.");
         process::exit(1);
-    } else if !args.files.is_empty() {
+    } else {
         eprintln!("All statements compatible with DSQL.");
     }
 }
