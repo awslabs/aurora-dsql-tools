@@ -80,6 +80,7 @@ pub fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>)
     check_temp_table(stmt, raw_sql, diagnostics);
     check_array_columns(stmt, raw_sql, diagnostics);
     check_create_index(raw_sql);
+    check_unsupported_statements(stmt, raw_sql, diagnostics);
 }
 
 /// E006: JSON/JSONB column types are not supported in DSQL.
@@ -150,6 +151,63 @@ fn check_array_columns(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Di
                 });
             }
         }
+    }
+}
+
+/// E010–E013: Unsupported statements (trigger, extension, partition, functions/procedures).
+fn check_unsupported_statements(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
+    match stmt {
+        // E010: CREATE TRIGGER
+        Statement::CreateTrigger(_) => {
+            diagnostics.push(Diagnostic {
+                line: find_line(raw_sql, "create trigger"),
+                rule_id: "E010".to_string(),
+                message: "CREATE TRIGGER is not supported in DSQL.".to_string(),
+                suggestion: "Implement trigger logic in application layer.".to_string(),
+                is_error: true,
+            });
+        }
+        // E011: CREATE EXTENSION
+        Statement::CreateExtension(_) => {
+            diagnostics.push(Diagnostic {
+                line: find_line(raw_sql, "create extension"),
+                rule_id: "E011".to_string(),
+                message: "CREATE EXTENSION is not supported in DSQL.".to_string(),
+                suggestion: "Extensions not available in DSQL.".to_string(),
+                is_error: true,
+            });
+        }
+        // E012: PARTITION BY in CREATE TABLE
+        Statement::CreateTable(ct) if ct.partition_by.is_some() => {
+            diagnostics.push(Diagnostic {
+                line: find_line(raw_sql, "partition by"),
+                rule_id: "E012".to_string(),
+                message: "PARTITION BY is not supported in DSQL.".to_string(),
+                suggestion: "Omit — DSQL manages distribution automatically.".to_string(),
+                is_error: true,
+            });
+        }
+        // E013: CREATE FUNCTION
+        Statement::CreateFunction(_) => {
+            diagnostics.push(Diagnostic {
+                line: find_line(raw_sql, "create function"),
+                rule_id: "E013".to_string(),
+                message: "CREATE FUNCTION is not supported in DSQL.".to_string(),
+                suggestion: "Implement in application layer.".to_string(),
+                is_error: true,
+            });
+        }
+        // E013: CREATE PROCEDURE
+        Statement::CreateProcedure { .. } => {
+            diagnostics.push(Diagnostic {
+                line: find_line(raw_sql, "create procedure"),
+                rule_id: "E013".to_string(),
+                message: "CREATE PROCEDURE is not supported in DSQL.".to_string(),
+                suggestion: "Implement in application layer.".to_string(),
+                is_error: true,
+            });
+        }
+        _ => {}
     }
 }
 
@@ -323,6 +381,50 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.rule_id == "E009"),
             "Expected E009, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_e010_trigger() {
+        let sql = "CREATE TRIGGER my_trigger AFTER INSERT ON orders FOR EACH ROW EXECUTE FUNCTION my_func();";
+        let diags = parse_and_check(sql);
+        assert!(
+            diags.iter().any(|d| d.rule_id == "E010"),
+            "Expected E010, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_e011_extension() {
+        let sql = "CREATE EXTENSION IF NOT EXISTS pgcrypto;";
+        let diags = parse_and_check(sql);
+        assert!(
+            diags.iter().any(|d| d.rule_id == "E011"),
+            "Expected E011, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_e012_partition_by() {
+        let sql = "CREATE TABLE logs (id INT, created_at DATE) PARTITION BY RANGE (created_at);";
+        let diags = parse_and_check(sql);
+        assert!(
+            diags.iter().any(|d| d.rule_id == "E012"),
+            "Expected E012, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_e013_create_function() {
+        let sql = "CREATE FUNCTION add(a INT, b INT) RETURNS INT AS $$ SELECT a + b; $$ LANGUAGE SQL;";
+        let diags = parse_and_check(sql);
+        assert!(
+            diags.iter().any(|d| d.rule_id == "E013"),
+            "Expected E013, got: {:?}",
             diags
         );
     }
