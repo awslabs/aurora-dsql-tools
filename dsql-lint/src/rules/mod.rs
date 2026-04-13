@@ -1,7 +1,7 @@
 //! DSQL compatibility rules applied to parsed SQL AST.
 
-use sqlparser::ast::Statement;
 use crate::lint::Diagnostic;
+use sqlparser::ast::Statement;
 
 pub mod errors;
 pub mod warnings;

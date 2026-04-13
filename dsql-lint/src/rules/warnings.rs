@@ -19,7 +19,9 @@ pub fn check(stmt: &Statement, diagnostics: &mut Vec<Diagnostic>) {
 
 /// CREATE TABLE missing `tenant_id` column.
 fn check_w001(stmt: &Statement, diagnostics: &mut Vec<Diagnostic>) {
-    let Statement::CreateTable(ct) = stmt else { return };
+    let Statement::CreateTable(ct) = stmt else {
+        return;
+    };
 
     let has_tenant_id = ct
         .columns
@@ -37,17 +39,23 @@ fn check_w001(stmt: &Statement, diagnostics: &mut Vec<Diagnostic>) {
 
 /// ALTER TABLE ADD COLUMN with inline DEFAULT or NOT NULL.
 fn check_w002(stmt: &Statement, diagnostics: &mut Vec<Diagnostic>) {
-    let Statement::AlterTable(alter_table) = stmt else { return };
+    let Statement::AlterTable(alter_table) = stmt else {
+        return;
+    };
 
     for op in &alter_table.operations {
         if let AlterTableOperation::AddColumn { column_def, .. } = op {
-            let has_default_or_not_null = column_def.options.iter().any(|opt| {
-                matches!(opt.option, ColumnOption::Default(_) | ColumnOption::NotNull)
-            });
+            let has_default_or_not_null = column_def
+                .options
+                .iter()
+                .any(|opt| matches!(opt.option, ColumnOption::Default(_) | ColumnOption::NotNull));
             if has_default_or_not_null {
                 diagnostics.push(warning(
                     1,
-                    format!("ADD COLUMN '{}' has inline DEFAULT or NOT NULL constraint.", column_def.name.value),
+                    format!(
+                        "ADD COLUMN '{}' has inline DEFAULT or NOT NULL constraint.",
+                        column_def.name.value
+                    ),
                     "Split into steps: ADD COLUMN, UPDATE, ALTER COLUMN",
                 ));
             }

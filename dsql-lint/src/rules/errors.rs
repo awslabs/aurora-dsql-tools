@@ -37,7 +37,10 @@ pub fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>)
                 };
                 diagnostics.push(error(
                     find_line(raw_sql, &type_str.to_lowercase()),
-                    format!("Column `{}` uses {original}, which is not supported in DSQL.", col.name),
+                    format!(
+                        "Column `{}` uses {original}, which is not supported in DSQL.",
+                        col.name
+                    ),
                     format!("Use `{replacement}` instead."),
                 ));
             }
@@ -73,7 +76,10 @@ pub fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>)
             if matches!(type_str.as_str(), "JSON" | "JSONB") {
                 diagnostics.push(error(
                     find_line(raw_sql, &type_str.to_lowercase()),
-                    format!("Column `{}` uses {type_str}, which is not supported in DSQL.", col.name),
+                    format!(
+                        "Column `{}` uses {type_str}, which is not supported in DSQL.",
+                        col.name
+                    ),
                     "Use TEXT and serialize with JSON.stringify.",
                 ));
             }
@@ -95,7 +101,10 @@ pub fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>)
             if is_array {
                 diagnostics.push(error(
                     find_line(raw_sql, &col.name.to_string().to_lowercase()),
-                    format!("Column `{}` uses an array type, which is not supported in DSQL.", col.name),
+                    format!(
+                        "Column `{}` uses an array type, which is not supported in DSQL.",
+                        col.name
+                    ),
                     "Use TEXT and store as comma-separated values.",
                 ));
             }
@@ -126,7 +135,11 @@ fn check_truncate(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnos
     }
 }
 
-fn check_unsupported_statements(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
+fn check_unsupported_statements(
+    stmt: &Statement,
+    raw_sql: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
     match stmt {
         Statement::CreateTrigger(_) => {
             diagnostics.push(error(
@@ -166,13 +179,11 @@ fn check_unsupported_statements(stmt: &Statement, raw_sql: &str, diagnostics: &m
 /// `lint_sql` strips it before parsing.  We check the *original* raw SQL to
 /// decide whether ASYNC was present.
 fn check_create_index(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
-    let Statement::CreateIndex(ci) = stmt else { return };
+    let Statement::CreateIndex(ci) = stmt else {
+        return;
+    };
 
-    let idx_name = ci
-        .name
-        .as_ref()
-        .map(|n| n.to_string())
-        .unwrap_or_default();
+    let idx_name = ci.name.as_ref().map(|n| n.to_string()).unwrap_or_default();
 
     let re = Regex::new(r"(?i)CREATE\s+(UNIQUE\s+)?INDEX\s+(ASYNC\s+)?").unwrap();
     let upper_raw = raw_sql.to_uppercase();
@@ -196,7 +207,11 @@ fn check_create_index(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Dia
                     line,
                     format!(
                         "CREATE INDEX without ASYNC is not supported in DSQL.{}",
-                        if !idx_name.is_empty() { format!(" Index: {idx_name}") } else { String::new() }
+                        if !idx_name.is_empty() {
+                            format!(" Index: {idx_name}")
+                        } else {
+                            String::new()
+                        }
                     ),
                     "Use `CREATE INDEX ASYNC ...` instead.",
                 ));
@@ -236,154 +251,243 @@ mod tests {
     fn test_foreign_key_column_ref() {
         let sql = "CREATE TABLE orders (id INT, customer_id INT REFERENCES customers(id));";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("FOREIGN KEY")), "Expected FK error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("FOREIGN KEY")),
+            "Expected FK error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_foreign_key_table_constraint() {
         let sql = "CREATE TABLE orders (id INT, customer_id INT, FOREIGN KEY (customer_id) REFERENCES customers(id));";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("FOREIGN KEY")), "Expected FK error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("FOREIGN KEY")),
+            "Expected FK error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_no_foreign_key_false_positive() {
         let sql = "CREATE TABLE orders (id INT, customer_id INT);";
         let diags = parse_and_check(sql);
-        assert!(!diags.iter().any(|d| d.message.contains("FOREIGN KEY")), "Unexpected FK error: {:?}", diags);
+        assert!(
+            !diags.iter().any(|d| d.message.contains("FOREIGN KEY")),
+            "Unexpected FK error: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_serial() {
         let sql = "CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT);";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("SERIAL")), "Expected SERIAL error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("SERIAL")),
+            "Expected SERIAL error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_bigserial() {
         let sql = "CREATE TABLE users (id BIGSERIAL PRIMARY KEY);";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("BIGSERIAL")), "Expected BIGSERIAL error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("BIGSERIAL")),
+            "Expected BIGSERIAL error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_smallserial() {
         let sql = "CREATE TABLE users (id SMALLSERIAL PRIMARY KEY);";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("SMALLSERIAL")), "Expected SMALLSERIAL error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("SMALLSERIAL")),
+            "Expected SMALLSERIAL error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_json_column() {
         let sql = "CREATE TABLE t (id INT, data JSON);";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("JSON")), "Expected JSON error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("JSON")),
+            "Expected JSON error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_jsonb_column() {
         let sql = "CREATE TABLE t (id INT, data JSONB);";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("JSONB")), "Expected JSONB error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("JSONB")),
+            "Expected JSONB error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_truncate() {
         let sql = "TRUNCATE TABLE orders;";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("TRUNCATE")), "Expected TRUNCATE error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("TRUNCATE")),
+            "Expected TRUNCATE error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_temp_table() {
         let sql = "CREATE TEMP TABLE scratch (id INT);";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("TEMPORARY")), "Expected TEMP error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("TEMPORARY")),
+            "Expected TEMP error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_temporary_table() {
         let sql = "CREATE TEMPORARY TABLE scratch (id INT);";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("TEMPORARY")), "Expected TEMP error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("TEMPORARY")),
+            "Expected TEMP error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_array_type() {
         let sql = "CREATE TABLE t (id INT, tags TEXT[]);";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("array")), "Expected array error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("array")),
+            "Expected array error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_int_array() {
         let sql = "CREATE TABLE t (id INT, scores INT[]);";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("array")), "Expected array error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("array")),
+            "Expected array error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_trigger() {
         let sql = "CREATE TRIGGER my_trigger AFTER INSERT ON orders FOR EACH ROW EXECUTE FUNCTION my_func();";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("TRIGGER")), "Expected TRIGGER error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("TRIGGER")),
+            "Expected TRIGGER error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_extension() {
         let sql = "CREATE EXTENSION IF NOT EXISTS pgcrypto;";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("EXTENSION")), "Expected EXTENSION error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("EXTENSION")),
+            "Expected EXTENSION error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_partition_by() {
         let sql = "CREATE TABLE logs (id INT, created_at DATE) PARTITION BY RANGE (created_at);";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("PARTITION")), "Expected PARTITION error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("PARTITION")),
+            "Expected PARTITION error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_create_function() {
-        let sql = "CREATE FUNCTION add(a INT, b INT) RETURNS INT AS $$ SELECT a + b; $$ LANGUAGE SQL;";
+        let sql =
+            "CREATE FUNCTION add(a INT, b INT) RETURNS INT AS $$ SELECT a + b; $$ LANGUAGE SQL;";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("FUNCTION")), "Expected FUNCTION error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("FUNCTION")),
+            "Expected FUNCTION error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_create_index_no_async() {
         let sql = "CREATE INDEX idx_orders ON orders(customer_id);";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("ASYNC")), "Expected ASYNC error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("ASYNC")),
+            "Expected ASYNC error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_create_unique_index_no_async() {
         let sql = "CREATE UNIQUE INDEX idx_email ON users(email);";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("ASYNC")), "Expected ASYNC error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("ASYNC")),
+            "Expected ASYNC error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_create_index_with_async() {
         let sql = "CREATE INDEX ASYNC idx_orders ON orders(customer_id);";
         let diags = crate::lint::lint_sql(sql);
-        assert!(!diags.iter().any(|d| d.message.contains("ASYNC")), "Unexpected ASYNC error: {:?}", diags);
+        assert!(
+            !diags.iter().any(|d| d.message.contains("ASYNC")),
+            "Unexpected ASYNC error: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_multiline_create_index() {
         let sql = "CREATE INDEX idx_orders\n  ON orders(customer_id);";
         let diags = parse_and_check(sql);
-        assert!(diags.iter().any(|d| d.message.contains("ASYNC")), "Expected ASYNC error, got: {:?}", diags);
+        assert!(
+            diags.iter().any(|d| d.message.contains("ASYNC")),
+            "Expected ASYNC error, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_no_false_positive_on_comment() {
         let sql = "-- CREATE INDEX idx_foo ON bar(baz);\nSELECT 1;";
         let diags = parse_and_check(sql);
-        assert!(!diags.iter().any(|d| d.message.contains("ASYNC")), "Unexpected ASYNC error: {:?}", diags);
+        assert!(
+            !diags.iter().any(|d| d.message.contains("ASYNC")),
+            "Unexpected ASYNC error: {:?}",
+            diags
+        );
     }
 
     #[test]
