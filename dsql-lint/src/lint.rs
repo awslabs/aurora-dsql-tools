@@ -1,35 +1,32 @@
 //! Core linting engine: parse SQL → walk AST → apply rules → collect diagnostics.
-//!
-//! Follows snowglobe's approach: split input into statements using
-//! `Tokenizer::tokenize_with_location()` (respects quotes/comments, gives accurate
-//! line numbers), then parse and lint each statement individually.
 
 use regex::Regex;
-use sqlparser::dialect::PostgreSqlDialect;
-use sqlparser::parser::Parser;
-use sqlparser::tokenizer::{Token, Tokenizer};
+use sqlparser::{
+    dialect::PostgreSqlDialect,
+    parser::Parser,
+    tokenizer::{Token, Tokenizer},
+};
 
 use crate::rules;
 
-/// A single diagnostic produced by a lint rule.
+/// A single compatibility issue found in the input SQL.
+///
+/// Returned by [`lint_sql`] and consumed by both the CLI (for human-readable output)
+/// and the library crate (for programmatic integration, e.g. in MCP servers).
 #[derive(Debug, Clone, Default)]
 pub struct Diagnostic {
-    /// 1-based line number in the original input.
     pub line: usize,
-    /// The statement text that triggered this diagnostic.
     pub statement: String,
-    /// Human-readable message.
     pub message: String,
-    /// Suggested fix.
     pub suggestion: String,
-    /// true = ERROR (will fail on DSQL), false = WARNING (best practice).
+    /// `true` = ERROR (will fail on DSQL), `false` = WARNING (best practice).
     pub is_error: bool,
 }
 
 /// Split SQL input into `(line_number, statement_text)` pairs on `;`.
 ///
-/// Uses sqlparser's tokenizer with location info to split correctly, respecting
-/// quoted strings and comments. Adapted from snowglobe's `split_statements`.
+/// Uses the tokenizer instead of naive string splitting so semicolons inside
+/// quoted strings or comments don't produce false boundaries.
 fn split_statements(input: &str) -> Vec<(usize, String)> {
     let dialect = PostgreSqlDialect {};
     let Ok(all_tokens) = Tokenizer::new(&dialect, input).tokenize_with_location() else {
@@ -66,12 +63,12 @@ fn split_statements(input: &str) -> Vec<(usize, String)> {
     results
 }
 
-/// Lint a SQL string and return all diagnostics.
 pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
     let dialect = PostgreSqlDialect {};
 
-    // Pre-process: strip ASYNC from CREATE INDEX statements so sqlparser can parse them.
-    // We check the original SQL per-statement later to determine if ASYNC was present.
+    // ASYNC is a DSQL-specific keyword that sqlparser doesn't recognise.
+    // Strip it before parsing so the rest of the statement can be analysed,
+    // then compare against the original text to detect its absence.
     let re = Regex::new(r"(?i)(CREATE\s+(UNIQUE\s+)?INDEX)\s+ASYNC\b").unwrap();
     let cleaned = re.replace_all(sql, "$1");
 
@@ -86,7 +83,6 @@ pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
             continue;
         }
 
-        // Parse this individual statement
         let parsed = match Parser::parse_sql(&dialect, trimmed) {
             Ok(p) => p,
             Err(e) => {
@@ -101,7 +97,6 @@ pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
             }
         };
 
-        // Get the original (pre-ASYNC-stripping) statement text for raw SQL checks
         let original_text = original_stmts
             .get(i)
             .map(|(_, text)| text.as_str())
@@ -111,8 +106,8 @@ pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
             let mut stmt_diags = Vec::new();
             rules::check_statement(stmt, original_text, &mut stmt_diags);
 
-            // Fix up: set the statement text and adjust line number
-            // (rules report line=1 meaning "start of this statement")
+            // Rules report line numbers relative to their statement;
+            // translate to absolute line numbers in the original input.
             for d in &mut stmt_diags {
                 d.line = line_num + d.line - 1;
                 d.statement = original_text.to_string();

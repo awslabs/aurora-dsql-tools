@@ -13,11 +13,9 @@ fn error(line: usize, message: impl Into<String>, suggestion: impl Into<String>)
     }
 }
 
-/// Check a statement for DSQL compatibility errors.
 pub fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
     if let Statement::CreateTable(ct) = stmt {
         for col in &ct.columns {
-            // Serial types
             if let DataType::Custom(name, _) = &col.data_type {
                 let type_str = name.to_string().to_uppercase();
                 let (original, replacement) = match type_str.as_str() {
@@ -46,7 +44,6 @@ pub fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>)
             }
         }
 
-        // Foreign key — column-level REFERENCES
         for col in &ct.columns {
             for opt_def in &col.options {
                 if matches!(&opt_def.option, ColumnOption::ForeignKey(_)) {
@@ -59,7 +56,6 @@ pub fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>)
             }
         }
 
-        // Foreign key — table-level constraint
         for constraint in &ct.constraints {
             if matches!(constraint, TableConstraint::ForeignKey(_)) {
                 diagnostics.push(error(
@@ -70,7 +66,6 @@ pub fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>)
             }
         }
 
-        // JSON/JSONB column types
         for col in &ct.columns {
             let type_str = col.data_type.to_string().to_uppercase();
             if matches!(type_str.as_str(), "JSON" | "JSONB") {
@@ -85,7 +80,6 @@ pub fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>)
             }
         }
 
-        // Temporary tables
         if ct.temporary {
             diagnostics.push(error(
                 find_line(raw_sql, "temp"),
@@ -94,7 +88,6 @@ pub fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>)
             ));
         }
 
-        // Array column types
         for col in &ct.columns {
             let is_array = matches!(&col.data_type, DataType::Array(_))
                 || col.data_type.to_string().contains("[]");
@@ -110,7 +103,6 @@ pub fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>)
             }
         }
 
-        // PARTITION BY
         if ct.partition_by.is_some() {
             diagnostics.push(error(
                 find_line(raw_sql, "partition by"),
@@ -173,10 +165,8 @@ fn check_unsupported_statements(
     }
 }
 
-/// CREATE INDEX must use ASYNC in DSQL.
-///
-/// Because `ASYNC` is a DSQL-specific keyword that sqlparser doesn't understand,
-/// `lint_sql` strips it before parsing.  We check the *original* raw SQL to
+/// `ASYNC` is a DSQL-specific keyword that sqlparser doesn't recognise, so
+/// `lint_sql` strips it before parsing. We check the *original* raw SQL to
 /// decide whether ASYNC was present.
 fn check_create_index(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
     let Statement::CreateIndex(ci) = stmt else {
@@ -221,7 +211,7 @@ fn check_create_index(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Dia
     }
 }
 
-/// Find the 1-based line number of the first occurrence of `needle` (case-insensitive).
+/// Find the 1-based line number of `needle` (case-insensitive) for diagnostic reporting.
 fn find_line(raw_sql: &str, needle: &str) -> usize {
     let lower = raw_sql.to_lowercase();
     if let Some(pos) = lower.find(needle) {
