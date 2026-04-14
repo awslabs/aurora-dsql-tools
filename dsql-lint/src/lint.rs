@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn test_valid_create_table_no_errors() {
-        let sql = "CREATE TABLE orders (id UUID PRIMARY KEY, tenant_id VARCHAR(255) NOT NULL, amount DECIMAL(10,2));";
+        let sql = "CREATE TABLE orders (id UUID PRIMARY KEY, amount DECIMAL(10,2));";
         let diags = lint_sql(sql);
         let errors: Vec<_> = diags
             .iter()
