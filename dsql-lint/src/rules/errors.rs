@@ -4,6 +4,8 @@ use std::sync::LazyLock;
 
 use crate::lint::{Diagnostic, Severity};
 
+use super::find_line;
+
 fn error(line: usize, message: impl Into<String>, suggestion: impl Into<String>) -> Diagnostic {
     Diagnostic {
         line,
@@ -228,8 +230,6 @@ fn check_create_index(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Dia
         }
     }
 }
-
-use super::find_line;
 
 #[cfg(test)]
 mod tests {
