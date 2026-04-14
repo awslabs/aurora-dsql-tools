@@ -80,7 +80,7 @@ pub(crate) fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagn
                         "Column `{}` uses {type_str}, which is not supported in DSQL.",
                         col.name
                     ),
-                    "Use TEXT and serialize with JSON.stringify.",
+                    "Use TEXT to store JSON data as a string.",
                 ));
             }
         }
@@ -102,7 +102,7 @@ pub(crate) fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagn
                         "Column `{}` uses an array type, which is not supported in DSQL.",
                         col.name
                     ),
-                    "Use TEXT and store as comma-separated values.",
+                    "Use a join table for relational data, or store as JSON text.",
                 ));
             }
         }
@@ -177,7 +177,8 @@ fn check_unsupported_statements(
             let is_sql_language = cf
                 .language
                 .as_ref()
-                .is_some_and(|l| l.value.eq_ignore_ascii_case("sql"));
+                .map(|l| l.value.eq_ignore_ascii_case("sql"))
+                .unwrap_or(true);
             if !is_sql_language {
                 let lang_info = cf
                     .language
@@ -304,6 +305,16 @@ mod tests {
             "CREATE FUNCTION add(a INT, b INT) RETURNS INT AS $$ SELECT a + b; $$ LANGUAGE SQL;";
         let diags = parse_and_check(sql);
         assert!(!diags.iter().any(|d| d.message.contains("FUNCTION")));
+    }
+
+    #[test]
+    fn function_without_language_not_flagged() {
+        let sql = "CREATE FUNCTION add(INTEGER, INTEGER) RETURNS INTEGER AS 'select $1 + $2;'";
+        let diags = parse_and_check(sql);
+        assert!(
+            !diags.iter().any(|d| d.message.contains("FUNCTION")),
+            "Function without LANGUAGE clause should default to SQL and not be flagged: {diags:?}"
+        );
     }
 
     #[test]

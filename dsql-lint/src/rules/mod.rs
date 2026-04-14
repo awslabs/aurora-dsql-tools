@@ -16,11 +16,11 @@ fn try_find_line(raw_sql: &str, needle: &str) -> Option<usize> {
         let end_pos = abs_pos + needle_lower.len();
 
         let before_ok = abs_pos == 0
-            || !raw_sql.as_bytes()[abs_pos - 1].is_ascii_alphanumeric()
-                && raw_sql.as_bytes()[abs_pos - 1] != b'_';
+            || (!raw_sql.as_bytes()[abs_pos - 1].is_ascii_alphanumeric()
+                && raw_sql.as_bytes()[abs_pos - 1] != b'_');
         let after_ok = end_pos >= raw_sql.len()
-            || !raw_sql.as_bytes()[end_pos].is_ascii_alphanumeric()
-                && raw_sql.as_bytes()[end_pos] != b'_';
+            || (!raw_sql.as_bytes()[end_pos].is_ascii_alphanumeric()
+                && raw_sql.as_bytes()[end_pos] != b'_');
 
         if before_ok && after_ok {
             return Some(raw_sql[..abs_pos].matches('\n').count() + 1);
