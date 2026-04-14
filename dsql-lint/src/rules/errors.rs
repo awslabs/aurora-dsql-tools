@@ -14,7 +14,7 @@ fn error(line: usize, message: impl Into<String>, suggestion: impl Into<String>)
     }
 }
 
-pub fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
+pub(crate) fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
     if let Statement::CreateTable(ct) = stmt {
         for col in &ct.columns {
             if let DataType::Custom(name, _) = &col.data_type {
@@ -68,8 +68,12 @@ pub fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>)
         }
 
         for col in &ct.columns {
-            let type_str = col.data_type.to_string().to_uppercase();
-            if matches!(type_str.as_str(), "JSON" | "JSONB") {
+            let type_name = match &col.data_type {
+                DataType::JSON => Some("JSON"),
+                DataType::JSONB => Some("JSONB"),
+                _ => None,
+            };
+            if let Some(type_str) = type_name {
                 diagnostics.push(error(
                     find_line(raw_sql, &type_str.to_lowercase()),
                     format!(
@@ -225,15 +229,7 @@ fn check_create_index(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Dia
     }
 }
 
-/// Find the 1-based line number of `needle` (case-insensitive) for diagnostic reporting.
-fn find_line(raw_sql: &str, needle: &str) -> usize {
-    let lower = raw_sql.to_lowercase();
-    if let Some(pos) = lower.find(needle) {
-        raw_sql[..pos].matches('\n').count() + 1
-    } else {
-        1
-    }
-}
+use super::find_line;
 
 #[cfg(test)]
 mod tests {

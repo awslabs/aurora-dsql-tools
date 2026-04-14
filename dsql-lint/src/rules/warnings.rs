@@ -2,6 +2,8 @@ use sqlparser::ast::{AlterTableOperation, ColumnOption, Statement};
 
 use crate::lint::{Diagnostic, Severity};
 
+use super::find_line;
+
 fn warning(line: usize, message: impl Into<String>, suggestion: impl Into<String>) -> Diagnostic {
     Diagnostic {
         line,
@@ -12,9 +14,9 @@ fn warning(line: usize, message: impl Into<String>, suggestion: impl Into<String
     }
 }
 
-pub fn check(stmt: &Statement, diagnostics: &mut Vec<Diagnostic>) {
+pub(crate) fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
     check_missing_tenant_id(stmt, diagnostics);
-    check_add_column_constraints(stmt, diagnostics);
+    check_add_column_constraints(stmt, raw_sql, diagnostics);
 }
 
 /// CREATE TABLE missing `tenant_id` column.
@@ -38,7 +40,11 @@ fn check_missing_tenant_id(stmt: &Statement, diagnostics: &mut Vec<Diagnostic>) 
 }
 
 /// ALTER TABLE ADD COLUMN with inline DEFAULT or NOT NULL.
-fn check_add_column_constraints(stmt: &Statement, diagnostics: &mut Vec<Diagnostic>) {
+fn check_add_column_constraints(
+    stmt: &Statement,
+    raw_sql: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
     let Statement::AlterTable(alter_table) = stmt else {
         return;
     };
@@ -50,8 +56,9 @@ fn check_add_column_constraints(stmt: &Statement, diagnostics: &mut Vec<Diagnost
                 .iter()
                 .any(|opt| matches!(opt.option, ColumnOption::Default(_) | ColumnOption::NotNull));
             if has_default_or_not_null {
+                let line = find_line(raw_sql, &column_def.name.value.to_lowercase());
                 diagnostics.push(warning(
-                    1,
+                    line,
                     format!(
                         "ADD COLUMN '{}' has inline DEFAULT or NOT NULL constraint.",
                         column_def.name.value
