@@ -30,6 +30,10 @@ jobs:
       - name: Install Rust toolchain
         run: rustup update stable && rustup default stable
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: dsql-lint
+
       - name: Check formatting
         run: cargo fmt -- --check
 
@@ -41,3 +45,9 @@ jobs:
 
       - name: Run tests
         run: cargo test
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run cargo audit
+        run: cargo audit

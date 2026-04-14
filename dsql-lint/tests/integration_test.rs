@@ -160,6 +160,28 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
     // Index without ASYNC
     ("index", "CREATE INDEX idx_foo ON t(col);", "ASYNC"),
     ("index", "CREATE UNIQUE INDEX idx_bar ON t(col);", "ASYNC"),
+    // ALTER TABLE — same checks as CREATE TABLE
+    (
+        "alter-serial",
+        "ALTER TABLE t ADD COLUMN id SERIAL;",
+        "SERIAL",
+    ),
+    ("alter-json", "ALTER TABLE t ADD COLUMN data JSON;", "JSON"),
+    (
+        "alter-array",
+        "ALTER TABLE t ADD COLUMN tags TEXT[];",
+        "array",
+    ),
+    (
+        "alter-fk-column",
+        "ALTER TABLE t ADD COLUMN cid INT REFERENCES c(id);",
+        "FOREIGN KEY",
+    ),
+    (
+        "alter-fk-constraint",
+        "ALTER TABLE t ADD CONSTRAINT fk_c FOREIGN KEY (cid) REFERENCES c(id);",
+        "FOREIGN KEY",
+    ),
 ];
 
 #[test]
@@ -167,8 +189,10 @@ fn error_detection_matrix() {
     for (category, sql, expected) in ERROR_CASES {
         let diags = lint_sql(sql);
         assert!(
-            diags.iter().any(|d| d.message.contains(expected)),
-            "[{category}] Expected message containing {expected:?} for:\n  {sql}\n  got: {diags:?}"
+            diags
+                .iter()
+                .any(|d| d.severity == Severity::Error && d.message.contains(expected)),
+            "[{category}] Expected error containing {expected:?} for:\n  {sql}\n  got: {diags:?}"
         );
     }
 }

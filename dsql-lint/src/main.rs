@@ -19,12 +19,17 @@ fn main() {
     }
 
     let mut total_errors = 0;
+    let mut had_read_error = false;
 
     for path in &args.files {
-        let sql = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            eprintln!("Error reading '{path}': {e}");
-            process::exit(1);
-        });
+        let sql = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error reading '{path}': {e}");
+                had_read_error = true;
+                continue;
+            }
+        };
 
         let diagnostics = dsql_lint::lint::lint_sql(&sql);
         for d in &diagnostics {
@@ -43,8 +48,10 @@ fn main() {
             .count();
     }
 
-    if total_errors > 0 {
-        eprintln!("\n{total_errors} error(s) found.");
+    if total_errors > 0 || had_read_error {
+        if total_errors > 0 {
+            eprintln!("\n{total_errors} error(s) found.");
+        }
         process::exit(1);
     } else {
         eprintln!("All statements compatible with DSQL.");

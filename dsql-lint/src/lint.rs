@@ -55,11 +55,11 @@ fn loc_to_byte(input: &str, offsets: &[usize], line: u64, col: u64) -> usize {
 /// Uses the tokenizer to correctly handle semicolons inside quoted strings or
 /// comments. Preserves original text (including newlines) by slicing the input
 /// using token span byte offsets rather than reconstructing from token strings.
-fn split_statements(input: &str) -> Vec<(usize, String)> {
+fn split_statements(input: &str) -> Result<Vec<(usize, String)>, String> {
     let dialect = PostgreSqlDialect {};
-    let Ok(all_tokens) = Tokenizer::new(&dialect, input).tokenize_with_location() else {
-        return vec![(1, input.to_string())];
-    };
+    let all_tokens = Tokenizer::new(&dialect, input)
+        .tokenize_with_location()
+        .map_err(|e| e.to_string())?;
 
     let offsets = line_byte_offsets(input);
     let mut results = Vec::new();
@@ -109,13 +109,26 @@ fn split_statements(input: &str) -> Vec<(usize, String)> {
         }
     }
 
-    results
+    Ok(results)
 }
 
 pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
     let dialect = PostgreSqlDialect {};
-    let stmts = split_statements(sql);
     let mut diagnostics = Vec::new();
+
+    let stmts = match split_statements(sql) {
+        Ok(s) => s,
+        Err(e) => {
+            diagnostics.push(Diagnostic {
+                line: 1,
+                statement: String::new(),
+                message: format!("Failed to tokenize SQL: {e}"),
+                suggestion: "Fix the SQL syntax and try again.".to_string(),
+                severity: Severity::Error,
+            });
+            return diagnostics;
+        }
+    };
 
     for (line_num, stmt_text) in &stmts {
         if stmt_text.trim().is_empty() {
@@ -178,7 +191,7 @@ mod tests {
     #[test]
     fn test_split_preserves_newlines() {
         let sql = "CREATE TABLE t (\n    id INT\n);\nSELECT 1;";
-        let stmts = split_statements(sql);
+        let stmts = split_statements(sql).unwrap();
         assert_eq!(stmts.len(), 2);
         assert!(
             stmts[0].1.contains('\n'),

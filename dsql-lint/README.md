@@ -35,17 +35,17 @@ Exit code `0` if no errors (warnings are OK), `1` if any errors.
 
 ### Errors (will fail on DSQL)
 
-- FOREIGN KEY / REFERENCES constraints
+- FOREIGN KEY / REFERENCES constraints (CREATE TABLE and ALTER TABLE)
 - CREATE INDEX without ASYNC
-- SERIAL / BIGSERIAL / SMALLSERIAL column types
-- JSON / JSONB column types
+- SERIAL / BIGSERIAL / SMALLSERIAL column types (CREATE TABLE and ALTER TABLE ADD COLUMN)
+- JSON / JSONB column types (CREATE TABLE and ALTER TABLE ADD COLUMN)
+- Array column types (CREATE TABLE and ALTER TABLE ADD COLUMN)
 - TRUNCATE statement
 - TEMPORARY / TEMP tables
-- Array column types
 - CREATE TRIGGER
 - CREATE EXTENSION
 - PARTITION BY
-- CREATE FUNCTION / PROCEDURE
+- CREATE FUNCTION / PROCEDURE (non-SQL languages)
 
 ### Warnings (best practice)
 
