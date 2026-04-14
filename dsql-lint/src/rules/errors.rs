@@ -1,6 +1,4 @@
-use regex::Regex;
 use sqlparser::ast::{ColumnOption, DataType, Statement, TableConstraint};
-use std::sync::LazyLock;
 
 use crate::lint::{Diagnostic, Severity};
 
@@ -123,6 +121,28 @@ pub(crate) fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagn
     check_unsupported_statements(stmt, raw_sql, diagnostics);
 }
 
+fn check_create_index(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
+    let Statement::CreateIndex(ci) = stmt else {
+        return;
+    };
+
+    if !ci.r#async {
+        let idx_name = ci.name.as_ref().map(|n| n.to_string()).unwrap_or_default();
+        diagnostics.push(error(
+            find_line(raw_sql, "index"),
+            format!(
+                "CREATE INDEX without ASYNC is not supported in DSQL.{}",
+                if !idx_name.is_empty() {
+                    format!(" Index: {idx_name}")
+                } else {
+                    String::new()
+                }
+            ),
+            "Use `CREATE INDEX ASYNC ...` instead.",
+        ));
+    }
+}
+
 fn check_truncate(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
     if matches!(stmt, Statement::Truncate(_)) {
         diagnostics.push(error(
@@ -181,52 +201,6 @@ fn check_unsupported_statements(
             ));
         }
         _ => {}
-    }
-}
-
-static INDEX_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)CREATE\s+(UNIQUE\s+)?INDEX\s+(ASYNC\s+)?").unwrap());
-
-/// `ASYNC` is a DSQL-specific keyword that sqlparser doesn't recognise, so
-/// `lint_sql` strips it before parsing. We check the *original* raw SQL to
-/// decide whether ASYNC was present.
-fn check_create_index(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
-    let Statement::CreateIndex(ci) = stmt else {
-        return;
-    };
-
-    let idx_name = ci.name.as_ref().map(|n| n.to_string()).unwrap_or_default();
-
-    for m in INDEX_RE.find_iter(raw_sql) {
-        let after_match = &raw_sql[m.end()..];
-        let is_our_stmt = if idx_name.is_empty() {
-            true
-        } else {
-            after_match
-                .trim_start()
-                .to_uppercase()
-                .starts_with(&idx_name.to_uppercase())
-        };
-
-        if is_our_stmt {
-            let matched = raw_sql[m.start()..m.end()].to_uppercase();
-            if !matched.contains("ASYNC") {
-                let line = raw_sql[..m.start()].matches('\n').count() + 1;
-                diagnostics.push(error(
-                    line,
-                    format!(
-                        "CREATE INDEX without ASYNC is not supported in DSQL.{}",
-                        if !idx_name.is_empty() {
-                            format!(" Index: {idx_name}")
-                        } else {
-                            String::new()
-                        }
-                    ),
-                    "Use `CREATE INDEX ASYNC ...` instead.",
-                ));
-            }
-            break;
-        }
     }
 }
 

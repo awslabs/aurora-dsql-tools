@@ -1,12 +1,10 @@
 //! Core linting engine: parse SQL -> walk AST -> apply rules -> collect diagnostics.
 
-use regex::Regex;
 use sqlparser::{
     dialect::PostgreSqlDialect,
     parser::Parser,
     tokenizer::{Token, Tokenizer},
 };
-use std::sync::LazyLock;
 
 use crate::rules;
 
@@ -28,9 +26,6 @@ pub struct Diagnostic {
     pub suggestion: String,
     pub severity: Severity,
 }
-
-static ASYNC_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)(CREATE\s+(UNIQUE\s+)?INDEX)\s+ASYNC\b").unwrap());
 
 /// Precompute byte offset of each line start for (line, col) -> byte conversion.
 fn line_byte_offsets(input: &str) -> Vec<usize> {
@@ -127,11 +122,7 @@ pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
             continue;
         }
 
-        // Strip ASYNC per-statement for parsing (sqlparser doesn't recognise it).
-        // The original stmt_text is passed to rules for ASYNC presence detection.
-        let cleaned = ASYNC_RE.replace_all(stmt_text, "$1");
-
-        let parsed = match Parser::parse_sql(&dialect, &cleaned) {
+        let parsed = match Parser::parse_sql(&dialect, stmt_text) {
             Ok(p) => p,
             Err(e) => {
                 diagnostics.push(Diagnostic {

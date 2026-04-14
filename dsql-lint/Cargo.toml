@@ -12,9 +12,8 @@ keywords = ["aws", "aurora", "dsql", "sql", "lint"]
 categories = ["command-line-utilities", "database"]
 
 [dependencies]
-sqlparser = "0.61"
+sqlparser = { git = "https://github.com/amaksimo/datafusion-sqlparser-rs.git", branch = "dsql-async-index" }
 clap = { version = "4", features = ["derive"] }
-regex = "1"
 
 [lib]
 name = "dsql_lint"
