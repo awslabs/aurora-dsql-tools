@@ -96,8 +96,7 @@ pub(crate) fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagn
         }
 
         for col in &ct.columns {
-            let is_array = matches!(&col.data_type, DataType::Array(_))
-                || col.data_type.to_string().contains("[]");
+            let is_array = matches!(&col.data_type, DataType::Array(_));
             if is_array {
                 diagnostics.push(error(
                     find_line(raw_sql, &col.name.to_string().to_lowercase()),
