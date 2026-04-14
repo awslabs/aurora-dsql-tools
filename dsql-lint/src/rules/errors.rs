@@ -300,7 +300,8 @@ mod tests {
 
     #[test]
     fn sql_function_not_flagged() {
-        let sql = "CREATE FUNCTION add(a INT, b INT) RETURNS INT AS $$ SELECT a + b; $$ LANGUAGE SQL;";
+        let sql =
+            "CREATE FUNCTION add(a INT, b INT) RETURNS INT AS $$ SELECT a + b; $$ LANGUAGE SQL;";
         let diags = parse_and_check(sql);
         assert!(!diags.iter().any(|d| d.message.contains("FUNCTION")));
     }
