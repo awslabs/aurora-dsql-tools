@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use crate::lint::{Diagnostic, Severity};
 
-use super::find_line;
+use super::{find_line, find_line_any};
 
 fn error(line: usize, message: impl Into<String>, suggestion: impl Into<String>) -> Diagnostic {
     Diagnostic {
@@ -89,7 +89,7 @@ pub(crate) fn check(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagn
 
         if ct.temporary {
             diagnostics.push(error(
-                find_line(raw_sql, "temp"),
+                find_line_any(raw_sql, &["temporary", "temp"]),
                 "TEMPORARY tables are not supported in DSQL.",
                 "Use regular tables or application-level caching.",
             ));
