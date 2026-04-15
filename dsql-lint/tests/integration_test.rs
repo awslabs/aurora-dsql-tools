@@ -95,7 +95,7 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
     (
         "serial",
         "CREATE TABLE t (id SERIAL4 PRIMARY KEY);",
-        "SERIAL",
+        "SERIAL4",
     ),
     (
         "serial",
@@ -105,7 +105,7 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
     (
         "serial",
         "CREATE TABLE t (id SERIAL8 PRIMARY KEY);",
-        "BIGSERIAL",
+        "SERIAL8",
     ),
     (
         "serial",
@@ -115,7 +115,7 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
     (
         "serial",
         "CREATE TABLE t (id SERIAL2 PRIMARY KEY);",
-        "SMALLSERIAL",
+        "SERIAL2",
     ),
     // JSON / JSONB
     ("json", "CREATE TABLE t (id INT, data JSON);", "JSON"),
