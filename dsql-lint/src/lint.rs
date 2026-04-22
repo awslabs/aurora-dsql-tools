@@ -296,6 +296,16 @@ mod tests {
     }
 
     #[test]
+    fn test_lint_without_trailing_semicolon() {
+        let sql = "CREATE TABLE t (id SERIAL PRIMARY KEY)";
+        let diags = lint_sql(sql);
+        assert!(
+            diags.iter().any(|d| d.message.contains("SERIAL")),
+            "Should catch errors in SQL without trailing semicolon: {diags:?}"
+        );
+    }
+
+    #[test]
     fn test_fix_sql_clean_statement_verbatim() {
         let sql = "CREATE TABLE orders (id UUID PRIMARY KEY, amount DECIMAL(10,2));";
         let result = fix_sql(sql);

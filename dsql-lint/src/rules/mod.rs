@@ -15,11 +15,11 @@ fn try_find_line(raw_sql: &str, needle: &str) -> Option<usize> {
         let end_pos = abs_pos + needle_lower.len();
 
         let before_ok = abs_pos == 0
-            || (!raw_sql.as_bytes()[abs_pos - 1].is_ascii_alphanumeric()
-                && raw_sql.as_bytes()[abs_pos - 1] != b'_');
-        let after_ok = end_pos >= raw_sql.len()
-            || (!raw_sql.as_bytes()[end_pos].is_ascii_alphanumeric()
-                && raw_sql.as_bytes()[end_pos] != b'_');
+            || (!lower.as_bytes()[abs_pos - 1].is_ascii_alphanumeric()
+                && lower.as_bytes()[abs_pos - 1] != b'_');
+        let after_ok = end_pos >= lower.len()
+            || (!lower.as_bytes()[end_pos].is_ascii_alphanumeric()
+                && lower.as_bytes()[end_pos] != b'_');
 
         if before_ok && after_ok {
             return Some(raw_sql[..abs_pos].matches('\n').count() + 1);
@@ -30,23 +30,20 @@ fn try_find_line(raw_sql: &str, needle: &str) -> Option<usize> {
 }
 
 /// Find the 1-based line number of `needle` (case-insensitive, word-boundary-aware).
-///
-/// Panics if `needle` is not found — callers only search for keywords the AST
-/// already confirmed exist, so a missing match indicates a bug in needle selection.
+/// Returns 1 if `needle` is not found.
 pub(crate) fn find_line(raw_sql: &str, needle: &str) -> usize {
-    try_find_line(raw_sql, needle)
-        .unwrap_or_else(|| panic!("BUG: find_line could not locate `{needle}` in SQL"))
+    try_find_line(raw_sql, needle).unwrap_or(1)
 }
 
 /// Try each needle in order, return the line of the first match.
-/// Panics if none of the needles are found.
+/// Returns 1 if none of the needles are found.
 pub(crate) fn find_line_any(raw_sql: &str, needles: &[&str]) -> usize {
     for needle in needles {
         if let Some(line) = try_find_line(raw_sql, needle) {
             return line;
         }
     }
-    panic!("BUG: find_line_any could not locate any of {needles:?} in SQL")
+    1
 }
 
 pub fn check_statement(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
