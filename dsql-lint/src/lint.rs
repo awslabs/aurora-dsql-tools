@@ -204,13 +204,13 @@ pub fn fix_sql(sql: &str) -> FixOutput {
 
         let mut parsed = match Parser::parse_sql(&dialect, stmt_text) {
             Ok(p) => p,
-            Err(_) => {
+            Err(e) => {
                 fixed_parts.push(stmt_text.trim_end_matches(';').to_string());
                 all_diagnostics.push(Diagnostic {
                     line: *line_num,
                     statement: stmt_text.to_string(),
-                    message: "Unparseable statement".into(),
-                    suggestion: "Fix syntax manually".into(),
+                    message: format!("Failed to parse SQL: {e}"),
+                    suggestion: "Fix the SQL syntax and try again.".to_string(),
                     fix_result: FixResult::Unfixable,
                 });
                 continue;

@@ -12,32 +12,6 @@ use dsql_lint::lint::{fix_sql, FixResult};
 
 const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
     // ── Tier 1: Fixed ─────────────────────────────────────────────────
-    ("serial", "CREATE TABLE t (id SERIAL PRIMARY KEY);", "Fixed"),
-    (
-        "bigserial",
-        "CREATE TABLE t (id BIGSERIAL PRIMARY KEY);",
-        "Fixed",
-    ),
-    (
-        "serial4",
-        "CREATE TABLE t (id SERIAL4 PRIMARY KEY);",
-        "Fixed",
-    ),
-    (
-        "serial8",
-        "CREATE TABLE t (id SERIAL8 PRIMARY KEY);",
-        "Fixed",
-    ),
-    (
-        "smallserial",
-        "CREATE TABLE t (id SMALLSERIAL PRIMARY KEY);",
-        "Fixed",
-    ),
-    (
-        "serial2",
-        "CREATE TABLE t (id SERIAL2 PRIMARY KEY);",
-        "Fixed",
-    ),
     ("json", "CREATE TABLE t (id INT, data JSON);", "Fixed"),
     ("jsonb", "CREATE TABLE t (id INT, data JSONB);", "Fixed"),
     ("index-async", "CREATE INDEX idx ON t(col);", "Fixed"),
@@ -70,6 +44,32 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "Fixed",
     ),
     // ── Tier 2: FixedWithWarning ──────────────────────────────────────
+    ("serial", "CREATE TABLE t (id SERIAL PRIMARY KEY);", "FixedWithWarning"),
+    (
+        "bigserial",
+        "CREATE TABLE t (id BIGSERIAL PRIMARY KEY);",
+        "FixedWithWarning",
+    ),
+    (
+        "serial4",
+        "CREATE TABLE t (id SERIAL4 PRIMARY KEY);",
+        "FixedWithWarning",
+    ),
+    (
+        "serial8",
+        "CREATE TABLE t (id SERIAL8 PRIMARY KEY);",
+        "FixedWithWarning",
+    ),
+    (
+        "smallserial",
+        "CREATE TABLE t (id SMALLSERIAL PRIMARY KEY);",
+        "FixedWithWarning",
+    ),
+    (
+        "serial2",
+        "CREATE TABLE t (id SERIAL2 PRIMARY KEY);",
+        "FixedWithWarning",
+    ),
     (
         "column-fk",
         "CREATE TABLE t (id INT, cid INT REFERENCES c(id));",

@@ -129,10 +129,12 @@ fn run_fix(args: &Args) {
                 .ok()
                 .map(|dir| dir.join(file_name))
         };
-        if resolve(Path::new(path))
+        let input_path = Path::new(path);
+        let same_file = resolve(input_path)
             .zip(resolve(&output_path))
-            .is_some_and(|(a, b)| a == b)
-        {
+            .map(|(a, b)| a == b)
+            .unwrap_or_else(|| input_path == output_path);
+        if same_file {
             eprintln!(
                 "Error: output path '{}' is the same as input '{}'. Use a different output path.",
                 output_path.display(),
