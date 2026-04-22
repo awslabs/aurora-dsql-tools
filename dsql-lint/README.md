@@ -43,7 +43,3 @@ for d in &diagnostics {
     println!("{}", d.message);
 }
 ```
-
-## License
-
-Apache-2.0
