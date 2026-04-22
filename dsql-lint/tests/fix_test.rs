@@ -44,7 +44,11 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "Fixed",
     ),
     // ── Tier 2: FixedWithWarning ──────────────────────────────────────
-    ("serial", "CREATE TABLE t (id SERIAL PRIMARY KEY);", "FixedWithWarning"),
+    (
+        "serial",
+        "CREATE TABLE t (id SERIAL PRIMARY KEY);",
+        "FixedWithWarning",
+    ),
     (
         "bigserial",
         "CREATE TABLE t (id BIGSERIAL PRIMARY KEY);",
