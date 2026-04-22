@@ -307,6 +307,28 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
             AlterTableOperation::AddColumn { column_def, .. } => {
                 check_column(column_def, raw_sql, diagnostics, true);
             }
+            AlterTableOperation::AddConstraint {
+                constraint: TableConstraint::PrimaryKeyUsingIndex { .. },
+                ..
+            } => {
+                diagnostics.push(error(
+                    find_line(raw_sql, "using index"),
+                    "PRIMARY KEY USING INDEX is not supported in DSQL.",
+                    "Create a PRIMARY KEY constraint directly instead of promoting an index.",
+                    FixResult::Unfixable,
+                ));
+            }
+            AlterTableOperation::AddConstraint {
+                constraint: TableConstraint::UniqueUsingIndex { .. },
+                ..
+            } => {
+                diagnostics.push(error(
+                    find_line(raw_sql, "using index"),
+                    "UNIQUE USING INDEX is not supported in DSQL.",
+                    "Create a UNIQUE constraint directly instead of promoting an index.",
+                    FixResult::Unfixable,
+                ));
+            }
             // Row-Level Security
             AlterTableOperation::EnableRowLevelSecurity
             | AlterTableOperation::DisableRowLevelSecurity
@@ -870,6 +892,15 @@ fn check_unsupported_statements(
                 find_line(raw_sql, "copy"),
                 format!("COPY with {target} is not supported in DSQL. Only STDIN/STDOUT are allowed."),
                 "Use COPY ... FROM STDIN / COPY ... TO STDOUT, or load data from the application layer.",
+                FixResult::Unfixable,
+            ));
+        }
+
+        Statement::Lock { .. } => {
+            diagnostics.push(error(
+                find_line(raw_sql, "lock"),
+                "LOCK TABLE is not supported in DSQL.",
+                "Remove LOCK TABLE statements. DSQL uses optimistic concurrency control.",
                 FixResult::Unfixable,
             ));
         }

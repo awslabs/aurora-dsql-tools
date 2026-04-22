@@ -234,11 +234,10 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "CREATE SERVER s FOREIGN DATA WRAPPER w;",
         "CREATE SERVER",
     ),
-    // LOCK TABLE — sqlparser doesn't parse LOCK, caught as parse error
     (
         "lock-table",
         "LOCK TABLE t IN ACCESS EXCLUSIVE MODE;",
-        "Failed to parse SQL",
+        "LOCK TABLE",
     ),
     // VACUUM
     ("vacuum", "VACUUM;", "VACUUM"),
@@ -388,16 +387,15 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "ALTER TABLE t ENABLE REPLICA RULE r1;",
         "ENABLE REPLICA RULE",
     ),
-    // PRIMARY KEY USING INDEX / UNIQUE USING INDEX — sqlparser doesn't parse these, caught as parse errors
     (
         "pk-using-index",
         "ALTER TABLE t ADD PRIMARY KEY USING INDEX my_idx;",
-        "Failed to parse SQL",
+        "PRIMARY KEY USING INDEX",
     ),
     (
         "unique-using-index",
         "ALTER TABLE t ADD UNIQUE USING INDEX my_idx;",
-        "Failed to parse SQL",
+        "UNIQUE USING INDEX",
     ),
     // COPY
     // COPY with server-side file path
