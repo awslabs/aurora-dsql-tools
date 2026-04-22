@@ -1,0 +1,108 @@
+name: dsql-lint CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'dsql-lint/**'
+      - '.github/workflows/dsql-lint-ci.yml'
+      - '.github/workflows/dsql-cluster-*.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'dsql-lint/**'
+      - '.github/workflows/dsql-lint-ci.yml'
+      - '.github/workflows/dsql-cluster-*.yml'
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: dsql-lint
+
+jobs:
+  build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup update stable && rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: dsql-lint
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Run clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Build
+        run: cargo build
+
+      - name: Run unit and integration tests
+        run: cargo test
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run cargo audit
+        run: cargo audit
+
+  create-cluster:
+    needs: build
+    uses: ./.github/workflows/dsql-cluster-create.yml
+    with:
+      workflow_name: dsql-lint
+    secrets:
+      IAM_ROLE: ${{ secrets.IAM_ROLE }}
+    permissions:
+      id-token: write
+
+  cluster-tests:
+    name: DSQL Cluster Tests
+    needs: create-cluster
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup update stable && rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: dsql-lint
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.IAM_ROLE }}
+          aws-region: ${{ needs.create-cluster.outputs.region }}
+
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Run DSQL cluster tests
+        working-directory: dsql-lint
+        env:
+          DSQL_ENDPOINT: ${{ needs.create-cluster.outputs.cluster-endpoint }}
+        run: cargo test -- --ignored --test-threads=1
+
+  delete-cluster:
+    if: always() && needs.create-cluster.result == 'success'
+    needs: [create-cluster, cluster-tests]
+    uses: ./.github/workflows/dsql-cluster-delete.yml
+    with:
+      cluster-id: ${{ needs.create-cluster.outputs.cluster-id }}
+      region: ${{ needs.create-cluster.outputs.region }}
+    secrets:
+      IAM_ROLE: ${{ secrets.IAM_ROLE }}
+    permissions:
+      id-token: write

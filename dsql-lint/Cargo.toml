@@ -5,8 +5,22 @@ edition = "2021"
 rust-version = "1.80"
 description = "Lint SQL files for Aurora DSQL compatibility"
 authors = ["Amazon Web Services"]
-license = "Apache-2.0"
+license = "MIT-0"
 repository = "https://github.com/awslabs/aurora-dsql-tools"
 homepage = "https://github.com/awslabs/aurora-dsql-tools/tree/main/dsql-lint"
 keywords = ["aws", "aurora", "dsql", "sql", "lint"]
 categories = ["command-line-utilities", "database"]
+
+[dependencies]
+sqlparser = { git = "https://github.com/amaksimo/datafusion-sqlparser-rs.git", branch = "dsql-async-index" }
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+
+[lib]
+name = "dsql_lint"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dsql-lint"
+path = "src/main.rs"
+
