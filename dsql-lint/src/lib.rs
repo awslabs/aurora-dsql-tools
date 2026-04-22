@@ -1,1 +1,2 @@
-// Lint SQL files for Aurora DSQL compatibility.
+pub mod lint;
+pub mod rules;
