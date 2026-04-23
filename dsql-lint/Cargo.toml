@@ -12,7 +12,7 @@ keywords = ["aws", "aurora", "dsql", "sql", "lint"]
 categories = ["command-line-utilities", "database"]
 
 [dependencies]
-sqlparser = { git = "https://github.com/amaksimo/datafusion-sqlparser-rs.git", rev = "3d2a225dcb341b135dad414b0cad4e021e83ac87" }
+sqlparser = { package = "sqlparser-dsql", version = "0.61.0" }
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 
