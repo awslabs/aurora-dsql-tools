@@ -437,6 +437,16 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
         "BEGIN;\nCREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\nCOMMIT;\nBEGIN;\nCREATE TABLE c (id INT);\nCOMMIT;",
         "BEGIN;\n\nCREATE TABLE a (id INT);\n\nCOMMIT;\n\nBEGIN;\n\nCREATE TABLE b (id INT);\n\nCOMMIT;\n\nBEGIN;\n\nCREATE TABLE c (id INT);\n\nCOMMIT;\n",
     ),
+    (
+        "txn-trailing-dml",
+        "BEGIN;\nCREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\nINSERT INTO a VALUES (1);\nCOMMIT;",
+        "BEGIN;\n\nCREATE TABLE a (id INT);\n\nCOMMIT;\n\nBEGIN;\n\nCREATE TABLE b (id INT);\n\nCOMMIT;\n\nBEGIN;\n\nINSERT INTO a VALUES (1);\n\nCOMMIT;\n",
+    ),
+    (
+        "txn-leading-dml",
+        "BEGIN;\nINSERT INTO a VALUES (1);\nCREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\nCOMMIT;",
+        "BEGIN;\n\nINSERT INTO a VALUES (1);\n\nCOMMIT;\n\nBEGIN;\n\nCREATE TABLE a (id INT);\n\nCOMMIT;\n\nBEGIN;\n\nCREATE TABLE b (id INT);\n\nCOMMIT;\n",
+    ),
 ];
 
 #[test]
@@ -506,6 +516,18 @@ fn fix_rollback_transaction_not_split() {
         result.sql.matches("BEGIN").count(),
         1,
         "Should not introduce extra BEGIN blocks for ROLLBACK txn, got: {}",
+        result.sql
+    );
+}
+
+#[test]
+fn fix_unclosed_multi_ddl_transaction_unchanged() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nCREATE TABLE b (id INT);";
+    let result = fix_sql(sql);
+    assert_eq!(
+        result.sql.matches("BEGIN").count(),
+        1,
+        "Unclosed transaction should not be split, got: {}",
         result.sql
     );
 }
