@@ -46,6 +46,10 @@ pub(crate) fn find_line_any(raw_sql: &str, needles: &[&str]) -> usize {
     1
 }
 
-pub fn check_statement(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
+pub(crate) fn check_statement(
+    stmt: &mut Statement,
+    raw_sql: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
     errors::check(stmt, raw_sql, diagnostics);
 }

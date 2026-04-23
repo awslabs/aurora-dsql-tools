@@ -1,4 +1,4 @@
-use dsql_lint::lint::{fix_sql, FixResult};
+use dsql_lint::{fix_sql, FixResult};
 
 // ═══════════════════════════════════════════════════════════════════════
 // FIX TIER MATRIX
@@ -211,7 +211,7 @@ fn fix_roundtrip_matrix() {
             continue;
         }
         let result = fix_sql(sql);
-        let re_lint = dsql_lint::lint::lint_sql(&result.sql);
+        let re_lint = dsql_lint::lint_sql(&result.sql);
         assert!(
             re_lint.is_empty(),
             "[{label}] Fixed SQL still has errors:\n  Input: {sql}\n  Fixed: {}\n  Errors: {re_lint:?}",
@@ -445,10 +445,10 @@ fn fix_clean_statement_verbatim() {
 #[test]
 fn fix_sample_migration_reduces_errors() {
     let sql = include_str!("fixtures/sample_migration.sql");
-    let original_diags = dsql_lint::lint::lint_sql(sql);
+    let original_diags = dsql_lint::lint_sql(sql);
 
-    let result = dsql_lint::lint::fix_sql(sql);
-    let re_lint = dsql_lint::lint::lint_sql(&result.sql);
+    let result = dsql_lint::fix_sql(sql);
+    let re_lint = dsql_lint::lint_sql(&result.sql);
 
     assert!(
         re_lint.len() < original_diags.len(),
@@ -469,13 +469,13 @@ fn fix_sample_migration_reduces_errors() {
 #[test]
 fn fix_clean_file_is_verbatim() {
     let sql = include_str!("fixtures/clean_all_types.sql");
-    let result = dsql_lint::lint::fix_sql(sql);
+    let result = dsql_lint::fix_sql(sql);
     assert!(
         result.diagnostics.is_empty(),
         "Clean file should produce no diagnostics, got: {:?}",
         result.diagnostics
     );
-    let re_lint = dsql_lint::lint::lint_sql(&result.sql);
+    let re_lint = dsql_lint::lint_sql(&result.sql);
     assert!(
         re_lint.is_empty(),
         "Re-linting fixed output of clean file produced errors: {re_lint:?}"

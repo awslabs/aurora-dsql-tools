@@ -73,7 +73,7 @@ fn run_lint(args: &Args) {
             }
         };
 
-        let diagnostics = dsql_lint::lint::lint_sql(&sql);
+        let diagnostics = dsql_lint::lint_sql(&sql);
         for d in &diagnostics {
             let preview: String = d.statement.chars().take(80).collect();
             eprintln!("{path}:{}: ERROR — {}", d.line, d.message);
@@ -94,7 +94,7 @@ fn run_lint(args: &Args) {
 }
 
 fn run_fix(args: &Args) {
-    use dsql_lint::lint::FixResult;
+    use dsql_lint::FixResult;
 
     let mut had_unfixable = false;
     let mut had_io_error = false;
@@ -111,7 +111,7 @@ fn run_fix(args: &Args) {
             }
         };
 
-        let result = dsql_lint::lint::fix_sql(&sql);
+        let result = dsql_lint::fix_sql(&sql);
 
         let output_path = if let Some(ref o) = args.output {
             PathBuf::from(o)
