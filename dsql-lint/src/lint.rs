@@ -1,7 +1,5 @@
 //! Core linting engine: parse SQL -> walk AST -> apply rules -> collect diagnostics.
 
-use std::collections::BTreeSet;
-
 use sqlparser::{
     ast::Statement,
     dialect::PostgreSqlDialect,
@@ -242,7 +240,7 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
 
         let begin_idx = i;
         let begin_line = parts[begin_idx].0;
-        let mut ddl_indices = BTreeSet::new();
+        let mut ddl_indices = Vec::new();
         let mut commit_idx = None;
 
         let mut parse_error_in_txn = false;
@@ -270,7 +268,7 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
                 break;
             }
             if p.iter().any(is_ddl) {
-                ddl_indices.insert(j);
+                ddl_indices.push(j);
             }
         }
 
@@ -295,20 +293,31 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
         let ddl_count = ddl_indices.len();
         let begin_text = parts[begin_idx].1.clone();
 
-        let non_ddl_inside: Vec<(usize, String)> = (begin_idx + 1..commit_idx)
-            .filter(|j| !ddl_indices.contains(j))
-            .map(|j| parts[j].clone())
-            .collect();
-
         let mut replacement: Vec<(usize, String)> = Vec::new();
-        for &ddl_idx in &ddl_indices {
-            replacement.push((begin_line, begin_text.clone()));
-            replacement.push(parts[ddl_idx].clone());
-            replacement.push((begin_line, "COMMIT".to_string()));
+        let mut pending_non_ddl: Vec<(usize, String)> = Vec::new();
+
+        for (j, part) in parts
+            .iter()
+            .enumerate()
+            .take(commit_idx)
+            .skip(begin_idx + 1)
+        {
+            if ddl_indices.contains(&j) {
+                if !pending_non_ddl.is_empty() {
+                    replacement.push((begin_line, begin_text.clone()));
+                    replacement.append(&mut pending_non_ddl);
+                    replacement.push((begin_line, "COMMIT".to_string()));
+                }
+                replacement.push((begin_line, begin_text.clone()));
+                replacement.push(part.clone());
+                replacement.push((begin_line, "COMMIT".to_string()));
+            } else {
+                pending_non_ddl.push(part.clone());
+            }
         }
-        if !non_ddl_inside.is_empty() {
+        if !pending_non_ddl.is_empty() {
             replacement.push((begin_line, begin_text.clone()));
-            replacement.extend(non_ddl_inside);
+            replacement.append(&mut pending_non_ddl);
             replacement.push((begin_line, "COMMIT".to_string()));
         }
 

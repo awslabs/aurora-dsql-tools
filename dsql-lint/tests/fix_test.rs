@@ -420,7 +420,7 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
     (
         "txn-ddl-with-dml",
         "BEGIN;\nCREATE TABLE a (id INT);\nINSERT INTO a VALUES (1);\nCREATE TABLE b (id INT);\nCOMMIT;",
-        "BEGIN;\n\nCREATE TABLE a (id INT);\n\nCOMMIT;\n\nBEGIN;\n\nCREATE TABLE b (id INT);\n\nCOMMIT;\n\nBEGIN;\n\nINSERT INTO a VALUES (1);\n\nCOMMIT;\n",
+        "BEGIN;\n\nCREATE TABLE a (id INT);\n\nCOMMIT;\n\nBEGIN;\n\nINSERT INTO a VALUES (1);\n\nCOMMIT;\n\nBEGIN;\n\nCREATE TABLE b (id INT);\n\nCOMMIT;\n",
     ),
     (
         "txn-serial-fix-plus-split",

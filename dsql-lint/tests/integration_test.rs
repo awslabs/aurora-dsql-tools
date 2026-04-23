@@ -852,6 +852,28 @@ fn truncate_counts_as_ddl() {
     );
 }
 
+#[test]
+fn nested_begin_resets_ddl_count() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nBEGIN;\nCREATE TABLE b (id INT);\nCOMMIT;";
+    let diags = lint_sql(sql);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("DDL statements")),
+        "Inner BEGIN resets DDL count — single DDL per effective block: {diags:?}"
+    );
+}
+
+#[test]
+fn parse_error_inside_transaction_warns() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nNOT VALID SQL ???;\nCOMMIT;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.iter().any(|d| d
+            .message
+            .contains("Cannot parse statement inside transaction")),
+        "Should warn about unparseable statement inside transaction: {diags:?}"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // 7. FIXTURE-BASED TESTS
 // ═══════════════════════════════════════════════════════════════════════
