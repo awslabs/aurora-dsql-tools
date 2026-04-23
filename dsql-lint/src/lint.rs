@@ -1,5 +1,7 @@
 //! Core linting engine: parse SQL -> walk AST -> apply rules -> collect diagnostics.
 
+use std::collections::BTreeSet;
+
 use sqlparser::{
     ast::Statement,
     dialect::PostgreSqlDialect,
@@ -240,7 +242,7 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
 
         let begin_idx = i;
         let begin_line = parts[begin_idx].0;
-        let mut ddl_indices = Vec::new();
+        let mut ddl_indices = BTreeSet::new();
         let mut commit_idx = None;
 
         let mut parse_error_in_txn = false;
@@ -262,11 +264,13 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
                 }
             };
             if p.iter().any(is_txn_end) {
-                commit_idx = Some(j);
+                if p.iter().any(is_commit) {
+                    commit_idx = Some(j);
+                }
                 break;
             }
             if p.iter().any(is_ddl) {
-                ddl_indices.push(j);
+                ddl_indices.insert(j);
             }
         }
 

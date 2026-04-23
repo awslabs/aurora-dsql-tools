@@ -497,6 +497,17 @@ fn fix_rollback_transaction_not_split() {
         "ROLLBACK-terminated transaction should not be split: {:?}",
         result.diagnostics
     );
+    assert!(
+        result.sql.contains("ROLLBACK"),
+        "ROLLBACK should be preserved in output, got: {}",
+        result.sql
+    );
+    assert_eq!(
+        result.sql.matches("BEGIN").count(),
+        1,
+        "Should not introduce extra BEGIN blocks for ROLLBACK txn, got: {}",
+        result.sql
+    );
 }
 
 #[test]
