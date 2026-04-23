@@ -29,6 +29,8 @@ migration.sql:3: ERROR — Column `user_id` has a FOREIGN KEY (REFERENCES) const
   → Remove the REFERENCES clause. Enforce referential integrity in application code.
 migration.sql:5: ERROR — ADD COLUMN 'status' with inline DEFAULT or NOT NULL constraint is not supported in DSQL.
   → Split into steps: CREATE TABLE with the column, or ADD COLUMN without constraints then backfill.
+migration.sql:10: ERROR — Transaction contains 2 DDL statements. DSQL supports only one DDL statement per transaction.
+  → Split into separate transactions: wrap each DDL statement in its own BEGIN/COMMIT block.
 ```
 
 Exit code `0` if no errors, `1` if any errors.

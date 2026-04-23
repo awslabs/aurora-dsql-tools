@@ -115,6 +115,171 @@ fn split_statements(input: &str) -> Result<Vec<(usize, String)>, String> {
     Ok(results)
 }
 
+fn is_ddl(stmt: &Statement) -> bool {
+    matches!(
+        stmt,
+        Statement::CreateTable(_)
+            | Statement::CreateIndex(_)
+            | Statement::CreateView(_)
+            | Statement::CreateSequence { .. }
+            | Statement::AlterTable(_)
+            | Statement::Drop { .. }
+    )
+}
+
+fn is_begin(stmt: &Statement) -> bool {
+    matches!(stmt, Statement::StartTransaction { .. })
+}
+
+fn is_commit(stmt: &Statement) -> bool {
+    matches!(stmt, Statement::Commit { .. })
+}
+
+fn multi_ddl_txn_diagnostic(line: usize, ddl_count: usize, fix_result: FixResult) -> Diagnostic {
+    Diagnostic {
+        line,
+        statement: String::new(),
+        message: format!(
+            "Transaction contains {ddl_count} DDL statements. DSQL supports only one DDL statement per transaction."
+        ),
+        suggestion: "Split into separate transactions: wrap each DDL statement in its own BEGIN/COMMIT block.".to_string(),
+        fix_result,
+    }
+}
+
+/// Cross-statement pass: detect transaction blocks (BEGIN … COMMIT) with more
+/// than one DDL statement. DSQL allows only one DDL per transaction.
+fn check_ddl_transactions(stmts: &[(usize, String)], diagnostics: &mut Vec<Diagnostic>) {
+    let dialect = PostgreSqlDialect {};
+    let mut in_txn = false;
+    let mut txn_begin_line: usize = 0;
+    let mut ddl_count: usize = 0;
+
+    for (line_num, stmt_text) in stmts {
+        let parsed = match Parser::parse_sql(&dialect, stmt_text.trim()) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        for stmt in &parsed {
+            if is_begin(stmt) {
+                in_txn = true;
+                txn_begin_line = *line_num;
+                ddl_count = 0;
+            } else if is_commit(stmt) {
+                if in_txn && ddl_count > 1 {
+                    diagnostics.push(multi_ddl_txn_diagnostic(
+                        txn_begin_line,
+                        ddl_count,
+                        FixResult::Unfixable,
+                    ));
+                }
+                in_txn = false;
+            } else if in_txn && is_ddl(stmt) {
+                ddl_count += 1;
+            }
+        }
+    }
+}
+
+/// Fix pass: split transaction blocks containing multiple DDL statements so
+/// each DDL gets its own BEGIN/COMMIT wrapper.
+fn fix_ddl_transactions(
+    parts: &mut Vec<String>,
+    stmts: &[(usize, String)],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let dialect = PostgreSqlDialect {};
+
+    // Line numbers are tracked separately because splicing parts invalidates stmts indices.
+    let mut line_numbers: Vec<usize> = stmts.iter().map(|(l, _)| *l).collect();
+
+    let mut i = 0;
+    while i < parts.len() {
+        let parsed = match Parser::parse_sql(&dialect, parts[i].trim()) {
+            Ok(p) => p,
+            Err(_) => {
+                i += 1;
+                continue;
+            }
+        };
+
+        if !parsed.iter().any(is_begin) {
+            i += 1;
+            continue;
+        }
+
+        let begin_idx = i;
+        let begin_line = line_numbers.get(begin_idx).copied().unwrap_or(1);
+        let mut ddl_indices = Vec::new();
+        let mut commit_idx = None;
+
+        for (j, part) in parts.iter().enumerate().skip(begin_idx + 1) {
+            let p = match Parser::parse_sql(&dialect, part.trim()) {
+                Ok(p) => p,
+                Err(_) => {
+                    continue;
+                }
+            };
+            if p.iter().any(is_commit) {
+                commit_idx = Some(j);
+                break;
+            }
+            if p.iter().any(is_ddl) {
+                ddl_indices.push(j);
+            }
+        }
+
+        let commit_idx = match commit_idx {
+            Some(idx) => idx,
+            None => {
+                i += 1;
+                continue;
+            }
+        };
+
+        if ddl_indices.len() <= 1 {
+            i = commit_idx + 1;
+            continue;
+        }
+
+        let ddl_count = ddl_indices.len();
+        let begin_text = parts[begin_idx].clone();
+
+        let non_ddl_inside: Vec<String> = (begin_idx + 1..commit_idx)
+            .filter(|j| !ddl_indices.contains(j))
+            .map(|j| parts[j].clone())
+            .collect();
+
+        let mut replacement = Vec::new();
+        for &ddl_idx in &ddl_indices {
+            replacement.push(begin_text.clone());
+            replacement.push(parts[ddl_idx].clone());
+            replacement.push("COMMIT".to_string());
+        }
+        replacement.extend(non_ddl_inside);
+
+        let replacement_len = replacement.len();
+        let range_len = commit_idx - begin_idx + 1;
+        parts.splice(begin_idx..begin_idx + range_len, replacement);
+
+        let replacement_lines: Vec<usize> = std::iter::repeat(begin_line)
+            .take(replacement_len)
+            .collect();
+        line_numbers.splice(begin_idx..begin_idx + range_len, replacement_lines);
+
+        diagnostics.push(multi_ddl_txn_diagnostic(
+            begin_line,
+            ddl_count,
+            FixResult::FixedWithWarning(
+                "Split multi-DDL transaction into individual BEGIN/COMMIT blocks".to_string(),
+            ),
+        ));
+
+        i = begin_idx + replacement_len;
+    }
+}
+
 /// Rules take `&mut` and may mutate the AST — kept intentionally so each rule is a single code path for both lint and fix, avoiding duplicated logic that can drift.
 pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
     let dialect = PostgreSqlDialect {};
@@ -166,6 +331,9 @@ pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
             diagnostics.extend(stmt_diags);
         }
     }
+
+    check_ddl_transactions(&stmts, &mut diagnostics);
+
     diagnostics
 }
 
@@ -254,6 +422,8 @@ pub fn fix_sql(sql: &str) -> FixOutput {
         }
         all_diagnostics.extend(stmt_diags);
     }
+
+    fix_ddl_transactions(&mut fixed_parts, &stmts, &mut all_diagnostics);
 
     let mut sql = fixed_parts.join(";\n\n");
     if !sql.is_empty() {

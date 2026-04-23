@@ -720,7 +720,86 @@ fn additional_false_positive_matrix() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 6. FIXTURE-BASED TESTS
+// 6. DDL TRANSACTION DETECTION
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn multi_ddl_in_transaction_detected() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\nCOMMIT;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.iter().any(|d| d.message.contains("2 DDL statements")),
+        "Should detect 2 DDL in one transaction: {diags:?}"
+    );
+}
+
+#[test]
+fn three_ddl_in_transaction_detected() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\nCREATE INDEX ASYNC idx ON a(id);\nCOMMIT;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.iter().any(|d| d.message.contains("3 DDL statements")),
+        "Should detect 3 DDL in one transaction: {diags:?}"
+    );
+}
+
+#[test]
+fn single_ddl_in_transaction_ok() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nCOMMIT;";
+    let diags = lint_sql(sql);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("DDL statements")),
+        "Single DDL in transaction should be fine: {diags:?}"
+    );
+}
+
+#[test]
+fn bare_ddl_without_transaction_ok() {
+    let sql = "CREATE TABLE a (id INT);\nCREATE TABLE b (id INT);";
+    let diags = lint_sql(sql);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("DDL statements")),
+        "Bare DDL outside transactions should be fine: {diags:?}"
+    );
+}
+
+#[test]
+fn ddl_plus_dml_in_transaction_not_flagged() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nINSERT INTO a VALUES (1);\nCOMMIT;";
+    let diags = lint_sql(sql);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("DDL statements")),
+        "One DDL + DML in transaction should be fine: {diags:?}"
+    );
+}
+
+#[test]
+fn multiple_transactions_each_checked() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\nCOMMIT;\nBEGIN;\nCREATE TABLE c (id INT);\nCOMMIT;";
+    let diags = lint_sql(sql);
+    let ddl_txn_diags: Vec<_> = diags
+        .iter()
+        .filter(|d| d.message.contains("DDL statements"))
+        .collect();
+    assert_eq!(
+        ddl_txn_diags.len(),
+        1,
+        "Only the first transaction should be flagged: {ddl_txn_diags:?}"
+    );
+}
+
+#[test]
+fn alter_and_drop_count_as_ddl() {
+    let sql = "BEGIN;\nALTER TABLE t ADD COLUMN x TEXT;\nDROP TABLE IF EXISTS old_t;\nCOMMIT;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.iter().any(|d| d.message.contains("2 DDL statements")),
+        "ALTER TABLE and DROP TABLE should both count as DDL: {diags:?}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 7. FIXTURE-BASED TESTS
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Every supported DSQL type, constraint, and valid DDL pattern in one file.
