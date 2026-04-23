@@ -122,8 +122,19 @@ fn is_ddl(stmt: &Statement) -> bool {
             | Statement::CreateIndex(_)
             | Statement::CreateView(_)
             | Statement::CreateSequence { .. }
+            | Statement::CreateType { .. }
+            | Statement::CreateFunction(_)
+            | Statement::CreateProcedure { .. }
+            | Statement::CreateTrigger(_)
+            | Statement::CreateExtension(_)
+            | Statement::CreateSchema { .. }
+            | Statement::CreateDatabase { .. }
+            | Statement::CreatePolicy(_)
+            | Statement::CreateServer(_)
             | Statement::AlterTable(_)
+            | Statement::AlterIndex { .. }
             | Statement::Drop { .. }
+            | Statement::Truncate(_)
     )
 }
 
@@ -131,14 +142,23 @@ fn is_begin(stmt: &Statement) -> bool {
     matches!(stmt, Statement::StartTransaction { .. })
 }
 
+fn is_txn_end(stmt: &Statement) -> bool {
+    matches!(stmt, Statement::Commit { .. } | Statement::Rollback { .. })
+}
+
 fn is_commit(stmt: &Statement) -> bool {
     matches!(stmt, Statement::Commit { .. })
 }
 
-fn multi_ddl_txn_diagnostic(line: usize, ddl_count: usize, fix_result: FixResult) -> Diagnostic {
+fn multi_ddl_txn_diagnostic(
+    line: usize,
+    ddl_count: usize,
+    begin_text: &str,
+    fix_result: FixResult,
+) -> Diagnostic {
     Diagnostic {
         line,
-        statement: String::new(),
+        statement: begin_text.to_string(),
         message: format!(
             "Transaction contains {ddl_count} DDL statements. DSQL supports only one DDL statement per transaction."
         ),
@@ -153,24 +173,40 @@ fn check_ddl_transactions(stmts: &[(usize, String)], diagnostics: &mut Vec<Diagn
     let dialect = PostgreSqlDialect {};
     let mut in_txn = false;
     let mut txn_begin_line: usize = 0;
+    let mut txn_begin_text = String::new();
     let mut ddl_count: usize = 0;
 
     for (line_num, stmt_text) in stmts {
         let parsed = match Parser::parse_sql(&dialect, stmt_text.trim()) {
             Ok(p) => p,
-            Err(_) => continue,
+            Err(e) => {
+                if in_txn {
+                    diagnostics.push(Diagnostic {
+                        line: *line_num,
+                        statement: stmt_text.to_string(),
+                        message: format!(
+                            "Cannot parse statement inside transaction block: {e}. DDL transaction analysis may be incomplete."
+                        ),
+                        suggestion: "Fix the SQL syntax or manually verify this transaction has at most one DDL statement.".to_string(),
+                        fix_result: FixResult::Unfixable,
+                    });
+                }
+                continue;
+            }
         };
 
         for stmt in &parsed {
             if is_begin(stmt) {
                 in_txn = true;
                 txn_begin_line = *line_num;
+                txn_begin_text = stmt_text.to_string();
                 ddl_count = 0;
-            } else if is_commit(stmt) {
-                if in_txn && ddl_count > 1 {
+            } else if is_txn_end(stmt) {
+                if in_txn && ddl_count > 1 && is_commit(stmt) {
                     diagnostics.push(multi_ddl_txn_diagnostic(
                         txn_begin_line,
                         ddl_count,
+                        &txn_begin_text,
                         FixResult::Unfixable,
                     ));
                 }
@@ -184,19 +220,12 @@ fn check_ddl_transactions(stmts: &[(usize, String)], diagnostics: &mut Vec<Diagn
 
 /// Fix pass: split transaction blocks containing multiple DDL statements so
 /// each DDL gets its own BEGIN/COMMIT wrapper.
-fn fix_ddl_transactions(
-    parts: &mut Vec<String>,
-    stmts: &[(usize, String)],
-    diagnostics: &mut Vec<Diagnostic>,
-) {
+fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<Diagnostic>) {
     let dialect = PostgreSqlDialect {};
-
-    // Line numbers are tracked separately because splicing parts invalidates stmts indices.
-    let mut line_numbers: Vec<usize> = stmts.iter().map(|(l, _)| *l).collect();
 
     let mut i = 0;
     while i < parts.len() {
-        let parsed = match Parser::parse_sql(&dialect, parts[i].trim()) {
+        let parsed = match Parser::parse_sql(&dialect, parts[i].1.trim()) {
             Ok(p) => p,
             Err(_) => {
                 i += 1;
@@ -210,24 +239,40 @@ fn fix_ddl_transactions(
         }
 
         let begin_idx = i;
-        let begin_line = line_numbers.get(begin_idx).copied().unwrap_or(1);
+        let begin_line = parts[begin_idx].0;
         let mut ddl_indices = Vec::new();
         let mut commit_idx = None;
 
-        for (j, part) in parts.iter().enumerate().skip(begin_idx + 1) {
-            let p = match Parser::parse_sql(&dialect, part.trim()) {
+        let mut parse_error_in_txn = false;
+        for (j, (line, text)) in parts.iter().enumerate().skip(begin_idx + 1) {
+            let p = match Parser::parse_sql(&dialect, text.trim()) {
                 Ok(p) => p,
-                Err(_) => {
-                    continue;
+                Err(e) => {
+                    diagnostics.push(Diagnostic {
+                        line: *line,
+                        statement: text.to_string(),
+                        message: format!(
+                            "Cannot parse statement inside transaction: {e}. Skipping auto-fix for this transaction block."
+                        ),
+                        suggestion: "Fix the syntax error, then re-run with --fix.".to_string(),
+                        fix_result: FixResult::Unfixable,
+                    });
+                    parse_error_in_txn = true;
+                    break;
                 }
             };
-            if p.iter().any(is_commit) {
+            if p.iter().any(is_txn_end) {
                 commit_idx = Some(j);
                 break;
             }
             if p.iter().any(is_ddl) {
                 ddl_indices.push(j);
             }
+        }
+
+        if parse_error_in_txn {
+            i += 1;
+            continue;
         }
 
         let commit_idx = match commit_idx {
@@ -244,33 +289,33 @@ fn fix_ddl_transactions(
         }
 
         let ddl_count = ddl_indices.len();
-        let begin_text = parts[begin_idx].clone();
+        let begin_text = parts[begin_idx].1.clone();
 
-        let non_ddl_inside: Vec<String> = (begin_idx + 1..commit_idx)
+        let non_ddl_inside: Vec<(usize, String)> = (begin_idx + 1..commit_idx)
             .filter(|j| !ddl_indices.contains(j))
             .map(|j| parts[j].clone())
             .collect();
 
-        let mut replacement = Vec::new();
+        let mut replacement: Vec<(usize, String)> = Vec::new();
         for &ddl_idx in &ddl_indices {
-            replacement.push(begin_text.clone());
+            replacement.push((begin_line, begin_text.clone()));
             replacement.push(parts[ddl_idx].clone());
-            replacement.push("COMMIT".to_string());
+            replacement.push((begin_line, "COMMIT".to_string()));
         }
-        replacement.extend(non_ddl_inside);
+        if !non_ddl_inside.is_empty() {
+            replacement.push((begin_line, begin_text.clone()));
+            replacement.extend(non_ddl_inside);
+            replacement.push((begin_line, "COMMIT".to_string()));
+        }
 
         let replacement_len = replacement.len();
         let range_len = commit_idx - begin_idx + 1;
         parts.splice(begin_idx..begin_idx + range_len, replacement);
 
-        let replacement_lines: Vec<usize> = std::iter::repeat(begin_line)
-            .take(replacement_len)
-            .collect();
-        line_numbers.splice(begin_idx..begin_idx + range_len, replacement_lines);
-
         diagnostics.push(multi_ddl_txn_diagnostic(
             begin_line,
             ddl_count,
+            &begin_text,
             FixResult::FixedWithWarning(
                 "Split multi-DDL transaction into individual BEGIN/COMMIT blocks".to_string(),
             ),
@@ -345,7 +390,7 @@ pub struct FixOutput {
 pub fn fix_sql(sql: &str) -> FixOutput {
     let dialect = PostgreSqlDialect {};
     let mut all_diagnostics = Vec::new();
-    let mut fixed_parts: Vec<String> = Vec::new();
+    let mut fixed_parts: Vec<(usize, String)> = Vec::new();
 
     let stmts = match split_statements(sql) {
         Ok(s) => s,
@@ -366,14 +411,14 @@ pub fn fix_sql(sql: &str) -> FixOutput {
 
     for (line_num, stmt_text) in &stmts {
         if stmt_text.trim().is_empty() {
-            fixed_parts.push(stmt_text.to_string());
+            fixed_parts.push((*line_num, stmt_text.to_string()));
             continue;
         }
 
         let mut parsed = match Parser::parse_sql(&dialect, stmt_text) {
             Ok(p) => p,
             Err(e) => {
-                fixed_parts.push(stmt_text.trim_end_matches(';').to_string());
+                fixed_parts.push((*line_num, stmt_text.trim_end_matches(';').to_string()));
                 all_diagnostics.push(Diagnostic {
                     line: *line_num,
                     statement: stmt_text.to_string(),
@@ -411,9 +456,9 @@ pub fn fix_sql(sql: &str) -> FixOutput {
                 .map(|s| format!("{:#}", s))
                 .collect::<Vec<_>>()
                 .join(";\n");
-            fixed_parts.push(fixed);
+            fixed_parts.push((*line_num, fixed));
         } else {
-            fixed_parts.push(stmt_text.trim_end_matches(';').to_string());
+            fixed_parts.push((*line_num, stmt_text.trim_end_matches(';').to_string()));
         }
 
         for d in &mut stmt_diags {
@@ -423,9 +468,13 @@ pub fn fix_sql(sql: &str) -> FixOutput {
         all_diagnostics.extend(stmt_diags);
     }
 
-    fix_ddl_transactions(&mut fixed_parts, &stmts, &mut all_diagnostics);
+    fix_ddl_transactions(&mut fixed_parts, &mut all_diagnostics);
 
-    let mut sql = fixed_parts.join(";\n\n");
+    let mut sql = fixed_parts
+        .iter()
+        .map(|(_, s)| s.as_str())
+        .collect::<Vec<_>>()
+        .join(";\n\n");
     if !sql.is_empty() {
         sql.push_str(";\n");
     }

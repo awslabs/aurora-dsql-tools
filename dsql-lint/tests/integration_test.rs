@@ -798,6 +798,60 @@ fn alter_and_drop_count_as_ddl() {
     );
 }
 
+#[test]
+fn rollback_terminates_transaction_no_bleed() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\nROLLBACK;\nBEGIN;\nCREATE TABLE c (id INT);\nCOMMIT;";
+    let diags = lint_sql(sql);
+    let ddl_txn_diags: Vec<_> = diags
+        .iter()
+        .filter(|d| d.message.contains("DDL statements"))
+        .collect();
+    assert!(
+        ddl_txn_diags.is_empty(),
+        "Rolled-back transaction should not be flagged, and DDL count must not bleed: {ddl_txn_diags:?}"
+    );
+}
+
+#[test]
+fn begin_without_commit_no_diagnostic() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nCREATE TABLE b (id INT);";
+    let diags = lint_sql(sql);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("DDL statements")),
+        "Unclosed transaction should not be flagged: {diags:?}"
+    );
+}
+
+#[test]
+fn empty_transaction_no_diagnostic() {
+    let sql = "BEGIN;\nCOMMIT;";
+    let diags = lint_sql(sql);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("DDL statements")),
+        "Empty transaction should not be flagged: {diags:?}"
+    );
+}
+
+#[test]
+fn dml_only_transaction_no_diagnostic() {
+    let sql = "BEGIN;\nINSERT INTO a VALUES (1);\nUPDATE b SET x = 1;\nCOMMIT;";
+    let diags = lint_sql(sql);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("DDL statements")),
+        "DML-only transaction should not be flagged: {diags:?}"
+    );
+}
+
+#[test]
+fn truncate_counts_as_ddl() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nTRUNCATE TABLE a;\nCOMMIT;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.iter().any(|d| d.message.contains("2 DDL statements")),
+        "TRUNCATE should count as DDL: {diags:?}"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // 7. FIXTURE-BASED TESTS
 // ═══════════════════════════════════════════════════════════════════════

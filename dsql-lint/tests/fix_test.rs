@@ -420,7 +420,7 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
     (
         "txn-ddl-with-dml",
         "BEGIN;\nCREATE TABLE a (id INT);\nINSERT INTO a VALUES (1);\nCREATE TABLE b (id INT);\nCOMMIT;",
-        "BEGIN;\n\nCREATE TABLE a (id INT);\n\nCOMMIT;\n\nBEGIN;\n\nCREATE TABLE b (id INT);\n\nCOMMIT;\n\nINSERT INTO a VALUES (1);\n",
+        "BEGIN;\n\nCREATE TABLE a (id INT);\n\nCOMMIT;\n\nBEGIN;\n\nCREATE TABLE b (id INT);\n\nCOMMIT;\n\nBEGIN;\n\nINSERT INTO a VALUES (1);\n\nCOMMIT;\n",
     ),
     (
         "txn-serial-fix-plus-split",
@@ -481,6 +481,36 @@ fn fix_multi_ddl_roundtrip_clean() {
     assert!(
         ddl_txn_errors.is_empty(),
         "Fixed output should have no DDL transaction errors:\n  Fixed SQL: {}\n  Errors: {ddl_txn_errors:?}",
+        result.sql
+    );
+}
+
+#[test]
+fn fix_rollback_transaction_not_split() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\nROLLBACK;";
+    let result = fix_sql(sql);
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("Split multi-DDL")),
+        "ROLLBACK-terminated transaction should not be split: {:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn fix_ddl_with_dml_roundtrip_clean() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nINSERT INTO a VALUES (1);\nCREATE TABLE b (id INT);\nCOMMIT;";
+    let result = fix_sql(sql);
+    let re_lint = dsql_lint::lint_sql(&result.sql);
+    let ddl_txn_errors: Vec<_> = re_lint
+        .iter()
+        .filter(|d| d.message.contains("DDL statements"))
+        .collect();
+    assert!(
+        ddl_txn_errors.is_empty(),
+        "Fixed DDL+DML output should have no DDL transaction errors:\n  Fixed SQL: {}\n  Errors: {ddl_txn_errors:?}",
         result.sql
     );
 }
