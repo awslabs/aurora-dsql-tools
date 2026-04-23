@@ -1,8 +1,8 @@
 use sqlparser::ast::{
     AlterColumnOperation, AlterTableOperation, ColumnDef, ColumnOption, ColumnOptionDef,
-    CopyTarget, CreateTableOptions, DataType, DeclareType, Expr, GeneratedAs, SequenceOptions, Set,
-    SqlOption, Statement, TableConstraint, TransactionIsolationLevel, TransactionMode,
-    UnaryOperator, Value, ValueWithSpan,
+    CopyTarget, CreateTableOptions, DataType, DeclareType, Expr, GeneratedAs, IndexOption,
+    SequenceOptions, Set, SqlOption, Statement, TableConstraint, TransactionIsolationLevel,
+    TransactionMode, UnaryOperator, Value, ValueWithSpan,
 };
 use sqlparser::tokenizer::Span;
 
@@ -552,7 +552,23 @@ fn check_create_index(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec
         ));
     }
 
-    if let Some(index_type) = ci.using.take() {
+    // USING clause — check both `ci.using` and `ci.index_options` since the
+    // parser may place the index type in either field depending on SQL syntax.
+    let using_type = ci.using.take().or_else(|| {
+        ci.index_options
+            .iter()
+            .find_map(|opt| {
+                if let IndexOption::Using(idx_type) = opt {
+                    Some(idx_type.clone())
+                } else {
+                    None
+                }
+            })
+    });
+    if using_type.is_some() {
+        ci.index_options.retain(|opt| !matches!(opt, IndexOption::Using(_)));
+    }
+    if let Some(index_type) = using_type {
         let index_type_str = index_type.to_string();
         let is_btree = index_type_str.eq_ignore_ascii_case("btree");
         let fix_result = if is_btree {

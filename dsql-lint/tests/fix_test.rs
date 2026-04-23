@@ -134,6 +134,17 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "CREATE INDEX ASYNC idx ON t USING hash(col);",
         "FixedWithWarning",
     ),
+    // USING clause after column list (parsed into index_options)
+    (
+        "index-using-btree-after-cols",
+        "CREATE INDEX ASYNC idx ON t(col) USING btree;",
+        "Fixed",
+    ),
+    (
+        "index-using-hash-after-cols",
+        "CREATE INDEX ASYNC idx ON t(col) USING hash;",
+        "FixedWithWarning",
+    ),
     (
         "seq-bad-cache",
         "CREATE SEQUENCE s CACHE 100;",
@@ -289,6 +300,23 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
     (
         "index-using-gin",
         "CREATE INDEX ASYNC idx ON t USING gin(col);",
+        "CREATE INDEX ASYNC idx ON t(col);\n",
+    ),
+    // USING clause after column list (parsed into index_options)
+    (
+        "index-using-btree-after-cols",
+        "CREATE INDEX ASYNC idx ON t(col) USING btree;",
+        "CREATE INDEX ASYNC idx ON t(col);\n",
+    ),
+    (
+        "index-using-hash-after-cols",
+        "CREATE INDEX ASYNC idx ON t(col) USING hash;",
+        "CREATE INDEX ASYNC idx ON t(col);\n",
+    ),
+    // USING after column list without ASYNC (both fixes applied)
+    (
+        "index-using-no-async-after-cols",
+        "CREATE INDEX idx ON t(col) USING btree;",
         "CREATE INDEX ASYNC idx ON t(col);\n",
     ),
     // Sequence fixes

@@ -127,6 +127,23 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "CREATE INDEX ASYNC idx ON t USING hash(col);",
         "USING",
     ),
+    // USING clause after column list (parsed into index_options, not ci.using)
+    (
+        "index-using-btree-after-cols",
+        "CREATE INDEX ASYNC idx ON t(col) USING btree;",
+        "USING",
+    ),
+    (
+        "index-using-hash-after-cols",
+        "CREATE INDEX ASYNC idx ON t(col) USING hash;",
+        "USING",
+    ),
+    // USING after column list without ASYNC (both rules should fire)
+    (
+        "index-using-no-async",
+        "CREATE INDEX idx ON t(col) USING btree;",
+        "USING",
+    ),
     (
         "index-expr",
         "CREATE INDEX ASYNC idx ON t (lower(name));",
