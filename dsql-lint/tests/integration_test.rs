@@ -10,7 +10,7 @@
 
 mod common;
 
-use dsql_lint::lint::lint_sql;
+use dsql_lint::lint_sql;
 
 // ═══════════════════════════════════════════════════════════════════════
 // 1. SUPPORTED TYPES MATRIX

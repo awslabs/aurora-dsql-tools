@@ -18,7 +18,7 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-use dsql_lint::lint::fix_sql;
+use dsql_lint::fix_sql;
 
 const MAX_RETRIES: usize = 5;
 const RETRY_BASE_MS: u64 = 2000;
