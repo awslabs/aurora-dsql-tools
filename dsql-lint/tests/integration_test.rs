@@ -744,33 +744,14 @@ fn three_ddl_in_transaction_detected() {
 }
 
 #[test]
-fn single_ddl_in_transaction_ok() {
-    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nCOMMIT;";
-    let diags = lint_sql(sql);
-    assert!(
-        !diags.iter().any(|d| d.message.contains("DDL statements")),
-        "Single DDL in transaction should be fine: {diags:?}"
-    );
-}
-
-#[test]
-fn bare_ddl_without_transaction_ok() {
-    let sql = "CREATE TABLE a (id INT);\nCREATE TABLE b (id INT);";
-    let diags = lint_sql(sql);
-    assert!(
-        !diags.iter().any(|d| d.message.contains("DDL statements")),
-        "Bare DDL outside transactions should be fine: {diags:?}"
-    );
-}
-
-#[test]
-fn ddl_plus_dml_in_transaction_not_flagged() {
-    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nINSERT INTO a VALUES (1);\nCOMMIT;";
-    let diags = lint_sql(sql);
-    assert!(
-        !diags.iter().any(|d| d.message.contains("DDL statements")),
-        "One DDL + DML in transaction should be fine: {diags:?}"
-    );
+fn clean_multi_statement_cases_produce_no_ddl_transaction_errors() {
+    for (label, sql, _cleanup) in common::CLEAN_MULTI_STATEMENT_CASES {
+        let diags = lint_sql(sql);
+        assert!(
+            !diags.iter().any(|d| d.message.contains("DDL statements")),
+            "[{label}] Clean multi-statement case triggered DDL transaction error:\n  SQL: {sql}\n  Errors: {diags:?}"
+        );
+    }
 }
 
 #[test]
@@ -823,26 +804,6 @@ fn begin_without_commit_no_diagnostic() {
 }
 
 #[test]
-fn empty_transaction_no_diagnostic() {
-    let sql = "BEGIN;\nCOMMIT;";
-    let diags = lint_sql(sql);
-    assert!(
-        !diags.iter().any(|d| d.message.contains("DDL statements")),
-        "Empty transaction should not be flagged: {diags:?}"
-    );
-}
-
-#[test]
-fn dml_only_transaction_no_diagnostic() {
-    let sql = "BEGIN;\nINSERT INTO a VALUES (1);\nUPDATE b SET x = 1;\nCOMMIT;";
-    let diags = lint_sql(sql);
-    assert!(
-        !diags.iter().any(|d| d.message.contains("DDL statements")),
-        "DML-only transaction should not be flagged: {diags:?}"
-    );
-}
-
-#[test]
 fn truncate_counts_as_ddl() {
     let sql = "BEGIN;\nCREATE TABLE a (id INT);\nTRUNCATE TABLE a;\nCOMMIT;";
     let diags = lint_sql(sql);
@@ -853,12 +814,14 @@ fn truncate_counts_as_ddl() {
 }
 
 #[test]
-fn nested_begin_resets_ddl_count() {
+fn nested_begin_does_not_reset_ddl_count() {
+    // PostgreSQL/DSQL treats BEGIN inside an open transaction as a no-op warning.
+    // Both DDLs are in the same transaction.
     let sql = "BEGIN;\nCREATE TABLE a (id INT);\nBEGIN;\nCREATE TABLE b (id INT);\nCOMMIT;";
     let diags = lint_sql(sql);
     assert!(
-        !diags.iter().any(|d| d.message.contains("DDL statements")),
-        "Inner BEGIN resets DDL count — single DDL per effective block: {diags:?}"
+        diags.iter().any(|d| d.message.contains("2 DDL statements")),
+        "Nested BEGIN is a no-op — both DDLs are in the same transaction: {diags:?}"
     );
 }
 

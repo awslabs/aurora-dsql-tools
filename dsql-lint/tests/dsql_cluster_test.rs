@@ -122,6 +122,15 @@ fn cleanup(endpoint: &str, token: &str, sql: &str) {
     }
 }
 
+fn run_cleanup_stmts(endpoint: &str, token: &str, cleanup_sql: &str) {
+    for stmt in cleanup_sql.split(';') {
+        let stmt = stmt.trim();
+        if !stmt.is_empty() {
+            cleanup(endpoint, token, &format!("{stmt};"));
+        }
+    }
+}
+
 fn ensure_base_table(endpoint: &str, token: &str) {
     run_sql(
         endpoint,
@@ -590,6 +599,104 @@ fn sequence_variants_accepted_by_cluster() {
     assert!(
         failures.is_empty(),
         "Sequence variant failures:\n\n{}",
+        failures.join("\n\n")
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 7. CLEAN MULTI-STATEMENT CASES — shared with unit tests
+// ═══════════════════════════════════════════════════════════════════════
+// Validates that every multi-statement SQL pattern the linter passes as
+// "clean" (no DDL transaction errors) actually executes on DSQL.
+// Uses the shared list from tests/common/mod.rs.
+
+#[test]
+#[ignore = "requires DSQL cluster — run via `cargo test --ignored` with DSQL_ENDPOINT set"]
+fn clean_multi_statement_cases_accepted_by_cluster() {
+    let ep = endpoint();
+    let region = region();
+    let token = generate_token(&ep, &region);
+
+    let mut failures = Vec::new();
+
+    for (label, sql, cleanup_sql) in common::CLEAN_MULTI_STATEMENT_CASES {
+        run_cleanup_stmts(&ep, &token, cleanup_sql);
+
+        if let Err(err) = run_sql_file(&ep, &token, sql) {
+            failures.push(format!("[{label}]\n  SQL: {sql}\n  Error: {err}"));
+        }
+
+        run_cleanup_stmts(&ep, &token, cleanup_sql);
+    }
+
+    assert!(
+        failures.is_empty(),
+        "Clean multi-statement failures against DSQL cluster:\n\n{}",
+        failures.join("\n\n")
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 8. DDL TRANSACTION FIX VALIDATION
+// ═══════════════════════════════════════════════════════════════════════
+// Multi-DDL transaction inputs → fix_sql → execute on DSQL.
+// Validates the split output is actually valid DSQL.
+
+const DDL_TXN_FIX_CASES: &[(&str, &str, &str)] = &[
+    (
+        "two-ddl-in-txn",
+        "BEGIN;\nCREATE TABLE _clust_txn_fix_a (id INT);\nCREATE TABLE _clust_txn_fix_b (id INT);\nCOMMIT;",
+        "DROP TABLE IF EXISTS _clust_txn_fix_a; DROP TABLE IF EXISTS _clust_txn_fix_b;",
+    ),
+    (
+        "three-ddl-in-txn",
+        "BEGIN;\nCREATE TABLE _clust_txn_fix_c (id INT);\nCREATE TABLE _clust_txn_fix_d (id INT);\nCREATE TABLE _clust_txn_fix_e (id INT);\nCOMMIT;",
+        "DROP TABLE IF EXISTS _clust_txn_fix_c; DROP TABLE IF EXISTS _clust_txn_fix_d; DROP TABLE IF EXISTS _clust_txn_fix_e;",
+    ),
+    (
+        "ddl-with-dml-in-txn",
+        "BEGIN;\nCREATE TABLE _clust_txn_fix_f (id INT);\nINSERT INTO _clust_txn_fix_f VALUES (1);\nCREATE TABLE _clust_txn_fix_g (id INT);\nCOMMIT;",
+        "DROP TABLE IF EXISTS _clust_txn_fix_f; DROP TABLE IF EXISTS _clust_txn_fix_g;",
+    ),
+    (
+        "nested-begin-in-txn",
+        "BEGIN;\nCREATE TABLE _clust_txn_fix_h (id INT);\nBEGIN;\nCREATE TABLE _clust_txn_fix_i (id INT);\nCOMMIT;",
+        "DROP TABLE IF EXISTS _clust_txn_fix_h; DROP TABLE IF EXISTS _clust_txn_fix_i;",
+    ),
+    (
+        "serial-fix-plus-split",
+        "BEGIN;\nCREATE TABLE _clust_txn_fix_j (id SERIAL PRIMARY KEY);\nCREATE TABLE _clust_txn_fix_k (id INT);\nCOMMIT;",
+        "DROP TABLE IF EXISTS _clust_txn_fix_j; DROP TABLE IF EXISTS _clust_txn_fix_k;",
+    ),
+];
+
+#[test]
+#[ignore = "requires DSQL cluster — run via `cargo test --ignored` with DSQL_ENDPOINT set"]
+fn ddl_transaction_fix_against_cluster() {
+    let ep = endpoint();
+    let region = region();
+    let token = generate_token(&ep, &region);
+
+    let mut failures = Vec::new();
+
+    for (label, input_sql, cleanup_sql) in DDL_TXN_FIX_CASES {
+        run_cleanup_stmts(&ep, &token, cleanup_sql);
+
+        let result = fix_sql(input_sql);
+
+        if let Err(err) = run_sql_file(&ep, &token, &result.sql) {
+            failures.push(format!(
+                "[{label}]\n  Input:  {input_sql}\n  Fixed:  {}\n  Error:  {err}",
+                result.sql
+            ));
+        }
+
+        run_cleanup_stmts(&ep, &token, cleanup_sql);
+    }
+
+    assert!(
+        failures.is_empty(),
+        "DDL transaction fix failures against DSQL cluster:\n\n{}",
         failures.join("\n\n")
     );
 }

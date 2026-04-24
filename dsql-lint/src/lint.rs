@@ -197,10 +197,14 @@ fn check_ddl_transactions(stmts: &[(usize, String)], diagnostics: &mut Vec<Diagn
 
         for stmt in &parsed {
             if is_begin(stmt) {
-                in_txn = true;
-                txn_begin_line = *line_num;
-                txn_begin_text = stmt_text.to_string();
-                ddl_count = 0;
+                if !in_txn {
+                    in_txn = true;
+                    txn_begin_line = *line_num;
+                    txn_begin_text = stmt_text.to_string();
+                    ddl_count = 0;
+                }
+                // Nested BEGIN inside an open transaction is a no-op in PostgreSQL/DSQL —
+                // don't reset the DDL count.
             } else if is_txn_end(stmt) {
                 if in_txn && ddl_count > 1 && is_commit(stmt) {
                     diagnostics.push(multi_ddl_txn_diagnostic(
@@ -224,7 +228,7 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
     let dialect = PostgreSqlDialect {};
 
     let mut i = 0;
-    while i < parts.len() {
+    'outer: while i < parts.len() {
         let parsed = match Parser::parse_sql(&dialect, parts[i].1.trim()) {
             Ok(p) => p,
             Err(_) => {
@@ -243,8 +247,8 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
         let mut ddl_indices = Vec::new();
         let mut commit_idx = None;
 
-        let mut parse_error_in_txn = false;
-        for (j, (line, text)) in parts.iter().enumerate().skip(begin_idx + 1) {
+        let mut nested_begin_indices = Vec::new();
+        'txn: for (j, (line, text)) in parts.iter().enumerate().skip(begin_idx + 1) {
             let p = match Parser::parse_sql(&dialect, text.trim()) {
                 Ok(p) => p,
                 Err(e) => {
@@ -257,24 +261,21 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
                         suggestion: "Fix the syntax error, then re-run with --fix.".to_string(),
                         fix_result: FixResult::Unfixable,
                     });
-                    parse_error_in_txn = true;
-                    break;
+                    i += 1;
+                    continue 'outer;
                 }
             };
             if p.iter().any(is_txn_end) {
                 if p.iter().any(is_commit) {
                     commit_idx = Some(j);
                 }
-                break;
+                break 'txn;
             }
-            if p.iter().any(is_ddl) {
+            if p.iter().any(is_begin) {
+                nested_begin_indices.push(j);
+            } else if p.iter().any(is_ddl) {
                 ddl_indices.push(j);
             }
-        }
-
-        if parse_error_in_txn {
-            i += 1;
-            continue;
         }
 
         let commit_idx = match commit_idx {
@@ -302,7 +303,9 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
             .take(commit_idx)
             .skip(begin_idx + 1)
         {
-            if ddl_indices.contains(&j) {
+            if nested_begin_indices.contains(&j) {
+                continue;
+            } else if ddl_indices.contains(&j) {
                 if !pending_non_ddl.is_empty() {
                     replacement.push((begin_line, begin_text.clone()));
                     replacement.append(&mut pending_non_ddl);

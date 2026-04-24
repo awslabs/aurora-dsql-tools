@@ -447,6 +447,11 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
         "BEGIN;\nINSERT INTO a VALUES (1);\nCREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\nCOMMIT;",
         "BEGIN;\n\nINSERT INTO a VALUES (1);\n\nCOMMIT;\n\nBEGIN;\n\nCREATE TABLE a (id INT);\n\nCOMMIT;\n\nBEGIN;\n\nCREATE TABLE b (id INT);\n\nCOMMIT;\n",
     ),
+    (
+        "txn-nested-begin-stripped",
+        "BEGIN;\nCREATE TABLE a (id INT);\nBEGIN;\nCREATE TABLE b (id INT);\nCOMMIT;",
+        "BEGIN;\n\nCREATE TABLE a (id INT);\n\nCOMMIT;\n\nBEGIN;\n\nCREATE TABLE b (id INT);\n\nCOMMIT;\n",
+    ),
 ];
 
 #[test]
