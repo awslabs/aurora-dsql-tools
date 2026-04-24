@@ -18,7 +18,8 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-use dsql_lint::fix_sql;
+use dsql_lint::{fix_sql, LintRule};
+use strum::IntoEnumIterator;
 
 const MAX_RETRIES: usize = 5;
 const RETRY_BASE_MS: u64 = 2000;
@@ -645,7 +646,7 @@ fn lint_rule_fixes_execute_on_cluster() {
 
     let mut failures = Vec::new();
 
-    for &rule in common::ALL_LINT_RULES {
+    for rule in LintRule::iter() {
         let Some((sql, _expected_msg)) = common::cluster_test_for_rule(rule) else {
             continue;
         };

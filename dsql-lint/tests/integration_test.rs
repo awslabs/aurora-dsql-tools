@@ -10,7 +10,8 @@
 
 mod common;
 
-use dsql_lint::lint_sql;
+use dsql_lint::{lint_sql, LintRule};
+use strum::IntoEnumIterator;
 
 // ═══════════════════════════════════════════════════════════════════════
 // 1. SUPPORTED TYPES MATRIX
@@ -885,7 +886,7 @@ fn fixture_sample_migration() {
 
 #[test]
 fn lint_rule_mapping_produces_expected_diagnostics() {
-    for &rule in common::ALL_LINT_RULES {
+    for rule in LintRule::iter() {
         if let Some((sql, expected_msg)) = common::cluster_test_for_rule(rule) {
             let diags = lint_sql(sql);
             assert!(

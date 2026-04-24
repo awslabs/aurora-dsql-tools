@@ -15,6 +15,7 @@ categories = ["command-line-utilities", "database"]
 sqlparser = { package = "sqlparser-dsql", version = "0.61.0" }
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
+strum = { version = "0.26", features = ["derive"] }
 
 [lib]
 name = "dsql_lint"
