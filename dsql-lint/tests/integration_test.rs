@@ -885,40 +885,7 @@ fn fixture_sample_migration() {
 
 #[test]
 fn lint_rule_mapping_produces_expected_diagnostics() {
-    use dsql_lint::LintRule;
-
-    let all_rules = [
-        LintRule::SerialType,
-        LintRule::JsonType,
-        LintRule::ArrayType,
-        LintRule::ForeignKey,
-        LintRule::TempTable,
-        LintRule::PartitionBy,
-        LintRule::Inherits,
-        LintRule::CreateTableAs,
-        LintRule::Tablespace,
-        LintRule::IdentityType,
-        LintRule::IdentityCache,
-        LintRule::IdentityCacheMissing,
-        LintRule::IndexAsync,
-        LintRule::IndexConcurrently,
-        LintRule::IndexUsing,
-        LintRule::IndexExpression,
-        LintRule::IndexPartial,
-        LintRule::Truncate,
-        LintRule::SequenceType,
-        LintRule::SequenceCache,
-        LintRule::SequenceCacheMissing,
-        LintRule::AddColumnConstraint,
-        LintRule::TransactionIsolation,
-        LintRule::SetTransaction,
-        LintRule::UnsupportedAlterTableOp,
-        LintRule::UnsupportedStatement,
-        LintRule::MultiDdlTransaction,
-        LintRule::ParseError,
-    ];
-
-    for rule in all_rules {
+    for &rule in common::ALL_LINT_RULES {
         if let Some((sql, expected_msg)) = common::cluster_test_for_rule(rule) {
             let diags = lint_sql(sql);
             assert!(

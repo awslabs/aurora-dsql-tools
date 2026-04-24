@@ -114,6 +114,37 @@ pub const CLEAN_STATEMENTS: &[(&str, &str, &str, &str)] = &[
 
 use dsql_lint::LintRule;
 
+pub const ALL_LINT_RULES: &[LintRule] = &[
+    LintRule::SerialType,
+    LintRule::JsonType,
+    LintRule::ArrayType,
+    LintRule::ForeignKey,
+    LintRule::TempTable,
+    LintRule::PartitionBy,
+    LintRule::Inherits,
+    LintRule::CreateTableAs,
+    LintRule::Tablespace,
+    LintRule::IdentityType,
+    LintRule::IdentityCache,
+    LintRule::IdentityCacheMissing,
+    LintRule::IndexAsync,
+    LintRule::IndexConcurrently,
+    LintRule::IndexUsing,
+    LintRule::IndexExpression,
+    LintRule::IndexPartial,
+    LintRule::Truncate,
+    LintRule::SequenceType,
+    LintRule::SequenceCache,
+    LintRule::SequenceCacheMissing,
+    LintRule::AddColumnConstraint,
+    LintRule::TransactionIsolation,
+    LintRule::SetTransaction,
+    LintRule::UnsupportedAlterTableOp,
+    LintRule::UnsupportedStatement,
+    LintRule::MultiDdlTransaction,
+    LintRule::ParseError,
+];
+
 /// Maps every lint rule to representative SQL that triggers it, plus the
 /// expected error substring.
 ///

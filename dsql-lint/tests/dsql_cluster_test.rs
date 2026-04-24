@@ -634,7 +634,7 @@ fn clean_multi_statement_cases_accepted_by_cluster() {
 #[test]
 #[ignore = "requires DSQL cluster — run via `cargo test --ignored` with DSQL_ENDPOINT set"]
 fn lint_rule_fixes_execute_on_cluster() {
-    use dsql_lint::{FixResult, LintRule};
+    use dsql_lint::FixResult;
 
     let ep = endpoint();
     let region = region();
@@ -643,40 +643,9 @@ fn lint_rule_fixes_execute_on_cluster() {
     cleanup(&ep, &token, "DROP TABLE IF EXISTS _clust_base CASCADE;");
     ensure_base_table(&ep, &token);
 
-    let all_rules = [
-        LintRule::SerialType,
-        LintRule::JsonType,
-        LintRule::ArrayType,
-        LintRule::ForeignKey,
-        LintRule::TempTable,
-        LintRule::PartitionBy,
-        LintRule::Inherits,
-        LintRule::CreateTableAs,
-        LintRule::Tablespace,
-        LintRule::IdentityType,
-        LintRule::IdentityCache,
-        LintRule::IdentityCacheMissing,
-        LintRule::IndexAsync,
-        LintRule::IndexConcurrently,
-        LintRule::IndexUsing,
-        LintRule::IndexExpression,
-        LintRule::IndexPartial,
-        LintRule::Truncate,
-        LintRule::SequenceType,
-        LintRule::SequenceCache,
-        LintRule::SequenceCacheMissing,
-        LintRule::AddColumnConstraint,
-        LintRule::TransactionIsolation,
-        LintRule::SetTransaction,
-        LintRule::UnsupportedAlterTableOp,
-        LintRule::UnsupportedStatement,
-        LintRule::MultiDdlTransaction,
-        LintRule::ParseError,
-    ];
-
     let mut failures = Vec::new();
 
-    for rule in all_rules {
+    for &rule in common::ALL_LINT_RULES {
         let Some((sql, _expected_msg)) = common::cluster_test_for_rule(rule) else {
             continue;
         };
