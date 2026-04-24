@@ -135,6 +135,16 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "FixedWithWarning",
     ),
     (
+        "index-using-btree-after-cols",
+        "CREATE INDEX ASYNC idx ON t(col) USING btree;",
+        "Fixed",
+    ),
+    (
+        "index-using-hash-after-cols",
+        "CREATE INDEX ASYNC idx ON t(col) USING hash;",
+        "FixedWithWarning",
+    ),
+    (
         "seq-bad-cache",
         "CREATE SEQUENCE s CACHE 100;",
         "FixedWithWarning",
@@ -289,6 +299,21 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
     (
         "index-using-gin",
         "CREATE INDEX ASYNC idx ON t USING gin(col);",
+        "CREATE INDEX ASYNC idx ON t(col);\n",
+    ),
+    (
+        "index-using-btree-after-cols",
+        "CREATE INDEX ASYNC idx ON t(col) USING btree;",
+        "CREATE INDEX ASYNC idx ON t(col);\n",
+    ),
+    (
+        "index-using-hash-after-cols",
+        "CREATE INDEX ASYNC idx ON t(col) USING hash;",
+        "CREATE INDEX ASYNC idx ON t(col);\n",
+    ),
+    (
+        "index-using-no-async-after-cols",
+        "CREATE INDEX idx ON t(col) USING btree;",
         "CREATE INDEX ASYNC idx ON t(col);\n",
     ),
     // Sequence fixes
