@@ -10,7 +10,8 @@
 
 mod common;
 
-use dsql_lint::lint_sql;
+use dsql_lint::{lint_sql, LintRule};
+use strum::IntoEnumIterator;
 
 // ═══════════════════════════════════════════════════════════════════════
 // 1. SUPPORTED TYPES MATRIX
@@ -873,4 +874,25 @@ fn fixture_sample_migration() {
             || d.message.contains("DELETE")),
         "DML should not produce errors: {diags:#?}"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 8. LINT RULE COVERAGE ENFORCEMENT
+// ═══════════════════════════════════════════════════════════════════════
+// The exhaustive match in `cluster_test_for_rule` is the primary
+// enforcement: new LintRule variant without a match arm = compile error.
+// This test validates that every non-None mapping actually produces
+// the expected diagnostic, catching stale or wrong SQL/message pairs.
+
+#[test]
+fn lint_rule_mapping_produces_expected_diagnostics() {
+    for rule in LintRule::iter() {
+        if let Some((sql, expected_msg)) = common::cluster_test_for_rule(rule) {
+            let diags = lint_sql(sql);
+            assert!(
+                diags.iter().any(|d| d.rule == rule && d.message.contains(expected_msg)),
+                "Rule {rule:?} mapping SQL doesn't trigger expected diagnostic.\n  SQL: {sql}\n  Expected: {expected_msg}\n  Got: {diags:?}"
+            );
+        }
+    }
 }

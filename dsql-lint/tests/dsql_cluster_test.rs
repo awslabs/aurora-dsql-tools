@@ -18,7 +18,8 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-use dsql_lint::fix_sql;
+use dsql_lint::{fix_sql, LintRule};
+use strum::IntoEnumIterator;
 
 const MAX_RETRIES: usize = 5;
 const RETRY_BASE_MS: u64 = 2000;
@@ -624,7 +625,81 @@ fn clean_multi_statement_cases_accepted_by_cluster() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 8. DDL TRANSACTION FIX VALIDATION
+// 8. LINT RULE COVERAGE — compiler-enforced via LintRule enum
+// ═══════════════════════════════════════════════════════════════════════
+// Iterates every LintRule variant via cluster_test_for_rule (exhaustive
+// match — new variant without arm = compile error). For fixable rules,
+// runs fix_sql and executes the result on the cluster. Unfixable rules
+// are validated by the unit test in integration_test.rs.
+
+#[test]
+#[ignore = "requires DSQL cluster — run via `cargo test --ignored` with DSQL_ENDPOINT set"]
+fn lint_rule_fixes_execute_on_cluster() {
+    use dsql_lint::FixResult;
+
+    let ep = endpoint();
+    let region = region();
+    let token = generate_token(&ep, &region);
+
+    cleanup(&ep, &token, "DROP TABLE IF EXISTS _clust_base CASCADE;");
+    ensure_base_table(&ep, &token);
+
+    let mut failures = Vec::new();
+
+    for rule in LintRule::iter() {
+        let Some((sql, _expected_msg)) = common::cluster_test_for_rule(rule) else {
+            continue;
+        };
+
+        let result = fix_sql(sql);
+
+        let has_unfixable = result
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.fix_result, FixResult::Unfixable));
+        if has_unfixable || result.sql.is_empty() {
+            continue;
+        }
+
+        // Clean up objects that might exist from a previous run
+        cleanup(&ep, &token, "DROP TABLE IF EXISTS _r CASCADE;");
+        cleanup(&ep, &token, "DROP TABLE IF EXISTS _r_a CASCADE;");
+        cleanup(&ep, &token, "DROP TABLE IF EXISTS _r_b CASCADE;");
+        cleanup(&ep, &token, "DROP SEQUENCE IF EXISTS _r_seq;");
+        cleanup(&ep, &token, "DROP INDEX IF EXISTS _r_idx;");
+
+        let exec_result = if result.sql.contains(";\n") {
+            run_sql_file(&ep, &token, &result.sql)
+        } else {
+            run_sql(&ep, &token, &result.sql)
+        };
+
+        if let Err(err) = exec_result {
+            failures.push(format!(
+                "[{rule:?}]\n  Input: {sql}\n  Fixed: {}\n  Error: {err}",
+                result.sql
+            ));
+        }
+
+        // Clean up
+        cleanup(&ep, &token, "DROP TABLE IF EXISTS _r CASCADE;");
+        cleanup(&ep, &token, "DROP TABLE IF EXISTS _r_a CASCADE;");
+        cleanup(&ep, &token, "DROP TABLE IF EXISTS _r_b CASCADE;");
+        cleanup(&ep, &token, "DROP SEQUENCE IF EXISTS _r_seq;");
+        cleanup(&ep, &token, "DROP INDEX IF EXISTS _r_idx;");
+    }
+
+    cleanup(&ep, &token, "DROP TABLE IF EXISTS _clust_base CASCADE;");
+
+    assert!(
+        failures.is_empty(),
+        "LintRule fix-and-execute failures against DSQL cluster:\n\n{}",
+        failures.join("\n\n")
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 9. DDL TRANSACTION FIX VALIDATION
 // ═══════════════════════════════════════════════════════════════════════
 // Multi-DDL transaction inputs → fix_sql → execute on DSQL.
 // Validates the split output is actually valid DSQL.
