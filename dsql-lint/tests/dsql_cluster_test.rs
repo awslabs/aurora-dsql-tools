@@ -4,14 +4,14 @@
 //!   1. Every fixable SQL pattern, after `fix_sql`, executes successfully on a real DSQL cluster
 //!   2. Every SQL pattern we pass through as "clean" actually executes on DSQL
 //!
-//! Gated behind the `dsql-cluster` feature flag so `cargo test` skips them locally.
-//! CI runs them via `cargo test --features dsql-cluster` with `DSQL_ENDPOINT` set.
+//! Gated behind the `dsql_cluster` cfg so `cargo test` skips them locally.
+//! CI runs them via `RUSTFLAGS='--cfg dsql_cluster'` with `DSQL_ENDPOINT` set.
 //!
 //! To run locally:
-//!   DSQL_ENDPOINT=<host> cargo test --features dsql-cluster -- --test-threads=1
+//!   DSQL_ENDPOINT=<host> RUSTFLAGS='--cfg dsql_cluster' cargo test -- --test-threads=1
 //!
 //! Prerequisites: `aws` CLI and `psql` in PATH, valid AWS credentials.
-#![cfg(feature = "dsql-cluster")]
+#![cfg(dsql_cluster)]
 
 mod common;
 

@@ -11,8 +11,9 @@ homepage = "https://github.com/awslabs/aurora-dsql-tools/tree/main/dsql-lint"
 keywords = ["aws", "aurora", "dsql", "sql", "lint"]
 categories = ["command-line-utilities", "database"]
 
-[features]
-dsql-cluster = []
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ["cfg(dsql_cluster)"]
 
 [dependencies]
 sqlparser = { package = "sqlparser-dsql", version = "0.61.0" }

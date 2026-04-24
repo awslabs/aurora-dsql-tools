@@ -93,7 +93,7 @@ jobs:
         working-directory: dsql-lint
         env:
           DSQL_ENDPOINT: ${{ needs.create-cluster.outputs.cluster-endpoint }}
-        run: cargo test --features dsql-cluster -- --test-threads=1
+        run: RUSTFLAGS='--cfg dsql_cluster' cargo test -- --test-threads=1
 
   delete-cluster:
     if: always() && needs.create-cluster.result == 'success'
