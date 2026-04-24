@@ -13,6 +13,12 @@ This monorepo contains developer tools for [Amazon Aurora DSQL](https://aws.amaz
 |---------|-------------|-------------|
 | [sqltools-driver](./vscode/sqltools-driver/) | SQLTools driver for Aurora DSQL | [![VS Marketplace](https://img.shields.io/visual-studio-marketplace/v/amazonwebservices.aurora-dsql-driver-for-sqltools)](https://marketplace.visualstudio.com/items?itemName=amazonwebservices.aurora-dsql-driver-for-sqltools) |
 
+### SQL Linting
+
+| Package | Description |
+|---------|-------------|
+| [dsql-lint](./dsql-lint/) | Lint and auto-fix SQL for Aurora DSQL compatibility |
+
 ### Database Migration Tools
 
 | Package | Description | Maven Central |
@@ -23,6 +29,7 @@ This monorepo contains developer tools for [Amazon Aurora DSQL](https://aws.amaz
 
 See the README in each tool's directory for detailed usage instructions:
 
+- [dsql-lint documentation](./dsql-lint/README.md)
 - [SQLTools Driver documentation](./vscode/sqltools-driver/README.md)
 - [Flyway support documentation](./flyway/README.md)
 

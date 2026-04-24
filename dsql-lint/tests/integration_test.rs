@@ -554,20 +554,6 @@ const FALSE_POSITIVE_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Valid SQL that must produce zero errors, period. No substring matching —
-/// these statements are entirely clean and should never trigger anything.
-const CLEAN_STATEMENTS: &[&str] = &[
-    "CREATE VIEW v AS SELECT 1;",
-    "ALTER TABLE t ADD COLUMN description TEXT;",
-    "INSERT INTO t (data) VALUES ('TRUNCATE TABLE foo; CREATE TRIGGER bar');",
-    "SELECT * FROM t WHERE id = 1;",
-    "UPDATE t SET name = 'foo' WHERE id = 1;",
-    "DELETE FROM t WHERE id = 1;",
-    "CREATE VIEW v2 AS SELECT 1;",
-    "BEGIN;",
-    "BEGIN ISOLATION LEVEL REPEATABLE READ;",
-];
-
 #[test]
 fn false_positive_matrix() {
     for (sql, unexpected) in FALSE_POSITIVE_CASES {
@@ -581,11 +567,11 @@ fn false_positive_matrix() {
 
 #[test]
 fn clean_statements_produce_zero_errors() {
-    for sql in CLEAN_STATEMENTS {
+    for (label, sql, _, _) in common::CLEAN_STATEMENTS {
         let diags = lint_sql(sql);
         assert!(
             diags.is_empty(),
-            "Clean SQL triggered errors:\n  SQL: {sql}\n  Errors: {diags:?}"
+            "[{label}] Clean SQL triggered errors:\n  SQL: {sql}\n  Errors: {diags:?}"
         );
     }
 }
@@ -720,7 +706,125 @@ fn additional_false_positive_matrix() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 6. FIXTURE-BASED TESTS
+// 6. DDL TRANSACTION DETECTION
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn multi_ddl_in_transaction_detected() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\nCOMMIT;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.iter().any(|d| d.message.contains("2 DDL statements")),
+        "Should detect 2 DDL in one transaction: {diags:?}"
+    );
+}
+
+#[test]
+fn three_ddl_in_transaction_detected() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\nCREATE INDEX ASYNC idx ON a(id);\nCOMMIT;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.iter().any(|d| d.message.contains("3 DDL statements")),
+        "Should detect 3 DDL in one transaction: {diags:?}"
+    );
+}
+
+#[test]
+fn clean_multi_statement_cases_produce_no_ddl_transaction_errors() {
+    for (label, sql, _cleanup) in common::CLEAN_MULTI_STATEMENT_CASES {
+        let diags = lint_sql(sql);
+        assert!(
+            !diags.iter().any(|d| d.message.contains("DDL statements")),
+            "[{label}] Clean multi-statement case triggered DDL transaction error:\n  SQL: {sql}\n  Errors: {diags:?}"
+        );
+    }
+}
+
+#[test]
+fn multiple_transactions_each_checked() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\nCOMMIT;\nBEGIN;\nCREATE TABLE c (id INT);\nCOMMIT;";
+    let diags = lint_sql(sql);
+    let ddl_txn_diags: Vec<_> = diags
+        .iter()
+        .filter(|d| d.message.contains("DDL statements"))
+        .collect();
+    assert_eq!(
+        ddl_txn_diags.len(),
+        1,
+        "Only the first transaction should be flagged: {ddl_txn_diags:?}"
+    );
+}
+
+#[test]
+fn alter_and_drop_count_as_ddl() {
+    let sql = "BEGIN;\nALTER TABLE t ADD COLUMN x TEXT;\nDROP TABLE IF EXISTS old_t;\nCOMMIT;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.iter().any(|d| d.message.contains("2 DDL statements")),
+        "ALTER TABLE and DROP TABLE should both count as DDL: {diags:?}"
+    );
+}
+
+#[test]
+fn rollback_terminates_transaction_no_bleed() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\nROLLBACK;\nBEGIN;\nCREATE TABLE c (id INT);\nCOMMIT;";
+    let diags = lint_sql(sql);
+    let ddl_txn_diags: Vec<_> = diags
+        .iter()
+        .filter(|d| d.message.contains("DDL statements"))
+        .collect();
+    assert!(
+        ddl_txn_diags.is_empty(),
+        "Rolled-back transaction should not be flagged, and DDL count must not bleed: {ddl_txn_diags:?}"
+    );
+}
+
+#[test]
+fn begin_without_commit_no_diagnostic() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nCREATE TABLE b (id INT);";
+    let diags = lint_sql(sql);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("DDL statements")),
+        "Unclosed transaction should not be flagged: {diags:?}"
+    );
+}
+
+#[test]
+fn truncate_counts_as_ddl() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nTRUNCATE TABLE a;\nCOMMIT;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.iter().any(|d| d.message.contains("2 DDL statements")),
+        "TRUNCATE should count as DDL: {diags:?}"
+    );
+}
+
+#[test]
+fn nested_begin_does_not_reset_ddl_count() {
+    // PostgreSQL/DSQL treats BEGIN inside an open transaction as a no-op warning.
+    // Both DDLs are in the same transaction.
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nBEGIN;\nCREATE TABLE b (id INT);\nCOMMIT;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.iter().any(|d| d.message.contains("2 DDL statements")),
+        "Nested BEGIN is a no-op — both DDLs are in the same transaction: {diags:?}"
+    );
+}
+
+#[test]
+fn parse_error_inside_transaction_warns() {
+    let sql = "BEGIN;\nCREATE TABLE a (id INT);\nNOT VALID SQL ???;\nCOMMIT;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.iter().any(|d| d
+            .message
+            .contains("Cannot parse statement inside transaction")),
+        "Should warn about unparseable statement inside transaction: {diags:?}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 7. FIXTURE-BASED TESTS
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Every supported DSQL type, constraint, and valid DDL pattern in one file.
