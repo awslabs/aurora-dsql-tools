@@ -554,20 +554,6 @@ const FALSE_POSITIVE_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Valid SQL that must produce zero errors, period. No substring matching —
-/// these statements are entirely clean and should never trigger anything.
-const CLEAN_STATEMENTS: &[&str] = &[
-    "CREATE VIEW v AS SELECT 1;",
-    "ALTER TABLE t ADD COLUMN description TEXT;",
-    "INSERT INTO t (data) VALUES ('TRUNCATE TABLE foo; CREATE TRIGGER bar');",
-    "SELECT * FROM t WHERE id = 1;",
-    "UPDATE t SET name = 'foo' WHERE id = 1;",
-    "DELETE FROM t WHERE id = 1;",
-    "CREATE VIEW v2 AS SELECT 1;",
-    "BEGIN;",
-    "BEGIN ISOLATION LEVEL REPEATABLE READ;",
-];
-
 #[test]
 fn false_positive_matrix() {
     for (sql, unexpected) in FALSE_POSITIVE_CASES {
@@ -581,11 +567,11 @@ fn false_positive_matrix() {
 
 #[test]
 fn clean_statements_produce_zero_errors() {
-    for sql in CLEAN_STATEMENTS {
+    for (label, sql, _, _) in common::CLEAN_STATEMENTS {
         let diags = lint_sql(sql);
         assert!(
             diags.is_empty(),
-            "Clean SQL triggered errors:\n  SQL: {sql}\n  Errors: {diags:?}"
+            "[{label}] Clean SQL triggered errors:\n  SQL: {sql}\n  Errors: {diags:?}"
         );
     }
 }

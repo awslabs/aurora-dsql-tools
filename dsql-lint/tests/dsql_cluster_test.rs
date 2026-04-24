@@ -439,8 +439,10 @@ fn clean_types_accepted_by_cluster() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 4. CLEAN STATEMENTS — valid SQL we pass through must execute on DSQL
+// 4. CLEAN STATEMENTS — shared with unit tests
 // ═══════════════════════════════════════════════════════════════════════
+// Uses the shared list from tests/common/mod.rs so that every statement
+// the linter passes as "clean" is also validated on a real DSQL cluster.
 
 #[test]
 #[ignore = "requires DSQL cluster — run via `cargo test --ignored` with DSQL_ENDPOINT set"]
@@ -449,41 +451,26 @@ fn clean_statements_accepted_by_cluster() {
     let region = region();
     let token = generate_token(&ep, &region);
 
-    cleanup(&ep, &token, "DROP VIEW IF EXISTS _clust_view;");
-    cleanup(&ep, &token, "DROP TABLE IF EXISTS _clust_dml CASCADE;");
-    run_sql(&ep, &token, "CREATE TABLE _clust_dml (id INT, name TEXT);").expect("setup failed");
-
-    let cases: &[(&str, &str)] = &[
-        ("create-view", "CREATE VIEW _clust_view AS SELECT 1;"),
-        (
-            "alter-add-col",
-            "ALTER TABLE _clust_dml ADD COLUMN description TEXT;",
-        ),
-        (
-            "insert",
-            "INSERT INTO _clust_dml (id, name) VALUES (1, 'test');",
-        ),
-        ("select", "SELECT * FROM _clust_dml WHERE id = 1;"),
-        (
-            "update",
-            "UPDATE _clust_dml SET name = 'updated' WHERE id = 1;",
-        ),
-        ("delete", "DELETE FROM _clust_dml WHERE id = 1;"),
-        ("begin-rr", "BEGIN ISOLATION LEVEL REPEATABLE READ;"),
-        ("rollback", "ROLLBACK;"),
-        ("begin-plain", "BEGIN;"),
-        ("rollback2", "ROLLBACK;"),
-    ];
+    cleanup(&ep, &token, "DROP TABLE IF EXISTS _clean_base CASCADE;");
+    run_sql(&ep, &token, "CREATE TABLE _clean_base (id INT, name TEXT);").expect("setup failed");
 
     let mut failures = Vec::new();
-    for (label, sql) in cases {
+
+    for (label, sql, setup_sql, cleanup_sql) in common::CLEAN_STATEMENTS {
+        if !setup_sql.is_empty() {
+            run_cleanup_stmts(&ep, &token, setup_sql);
+        }
+
         if let Err(err) = run_sql(&ep, &token, sql) {
             failures.push(format!("[{label}] {sql}\n  Error: {err}"));
         }
+
+        if !cleanup_sql.is_empty() {
+            run_cleanup_stmts(&ep, &token, cleanup_sql);
+        }
     }
 
-    cleanup(&ep, &token, "DROP VIEW IF EXISTS _clust_view;");
-    cleanup(&ep, &token, "DROP TABLE IF EXISTS _clust_dml CASCADE;");
+    cleanup(&ep, &token, "DROP TABLE IF EXISTS _clean_base CASCADE;");
 
     assert!(
         failures.is_empty(),

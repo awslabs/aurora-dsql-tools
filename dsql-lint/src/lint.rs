@@ -196,15 +196,11 @@ fn check_ddl_transactions(stmts: &[(usize, String)], diagnostics: &mut Vec<Diagn
         };
 
         for stmt in &parsed {
-            if is_begin(stmt) {
-                if !in_txn {
-                    in_txn = true;
-                    txn_begin_line = *line_num;
-                    txn_begin_text = stmt_text.to_string();
-                    ddl_count = 0;
-                }
-                // Nested BEGIN inside an open transaction is a no-op in PostgreSQL/DSQL —
-                // don't reset the DDL count.
+            if is_begin(stmt) && !in_txn {
+                in_txn = true;
+                txn_begin_line = *line_num;
+                txn_begin_text = stmt_text.to_string();
+                ddl_count = 0;
             } else if is_txn_end(stmt) {
                 if in_txn && ddl_count > 1 && is_commit(stmt) {
                     diagnostics.push(multi_ddl_txn_diagnostic(

@@ -57,7 +57,62 @@ pub const SUPPORTED_TYPES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Multi-statement SQL that the linter should pass as clean (no DDL transaction errors).
+/// Single statements that must lint clean AND execute on a real DSQL cluster.
+/// Shared between unit and cluster tests so the two lists can't drift.
+///
+/// Each entry: (label, sql, setup_sql, cleanup_sql).
+/// - `setup_sql` / `cleanup_sql` are run before/after in cluster tests.
+/// - Entries are executed sequentially, so order matters for cluster tests
+///   (e.g. create a table before inserting into it).
+pub const CLEAN_STATEMENTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "create-view",
+        "CREATE VIEW _clean_view AS SELECT 1;",
+        "",
+        "DROP VIEW IF EXISTS _clean_view;",
+    ),
+    (
+        "alter-add-col",
+        "ALTER TABLE _clean_base ADD COLUMN description TEXT;",
+        "",
+        "ALTER TABLE _clean_base DROP COLUMN IF EXISTS description;",
+    ),
+    (
+        "insert",
+        "INSERT INTO _clean_base (id, name) VALUES (1, 'test');",
+        "",
+        "",
+    ),
+    ("select", "SELECT * FROM _clean_base WHERE id = 1;", "", ""),
+    (
+        "update",
+        "UPDATE _clean_base SET name = 'updated' WHERE id = 1;",
+        "",
+        "",
+    ),
+    ("delete", "DELETE FROM _clean_base WHERE id = 1;", "", ""),
+    (
+        "begin-repeatable-read",
+        "BEGIN ISOLATION LEVEL REPEATABLE READ;",
+        "",
+        "ROLLBACK;",
+    ),
+    ("begin-plain", "BEGIN;", "", "ROLLBACK;"),
+    (
+        "create-view-v2",
+        "CREATE VIEW _clean_view2 AS SELECT 1;",
+        "",
+        "DROP VIEW IF EXISTS _clean_view2;",
+    ),
+    (
+        "insert-string-with-sql-keywords",
+        "INSERT INTO _clean_base (id, name) VALUES (2, 'TRUNCATE TABLE foo; CREATE TRIGGER bar');",
+        "",
+        "",
+    ),
+];
+
+/// Multi-statement SQL that must lint clean AND execute on a real DSQL cluster.
 /// Shared between unit and cluster tests so both validate the same cases.
 ///
 /// Each entry: (label, sql, cleanup_sql).
