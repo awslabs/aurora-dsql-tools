@@ -890,7 +890,7 @@ fn lint_rule_mapping_produces_expected_diagnostics() {
         if let Some((sql, expected_msg)) = common::cluster_test_for_rule(rule) {
             let diags = lint_sql(sql);
             assert!(
-                diags.iter().any(|d| d.message.contains(expected_msg)),
+                diags.iter().any(|d| d.rule == rule && d.message.contains(expected_msg)),
                 "Rule {rule:?} mapping SQL doesn't trigger expected diagnostic.\n  SQL: {sql}\n  Expected: {expected_msg}\n  Got: {diags:?}"
             );
         }

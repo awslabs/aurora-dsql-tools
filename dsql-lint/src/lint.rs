@@ -21,6 +21,7 @@ pub enum FixResult {
 ///
 /// Adding a new variant here will cause a compile error in
 /// `tests/common/mod.rs` until cluster test data is provided.
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
 pub enum LintRule {
     SerialType,

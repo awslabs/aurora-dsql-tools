@@ -166,7 +166,7 @@ fn check_column(
                 ));
             }
             if let Some(seq_opts) = sequence_options {
-                validate_cache_options(seq_opts, raw_sql, diagnostics);
+                validate_cache_options(LintRule::IdentityCache, seq_opts, raw_sql, diagnostics);
             }
         }
     }
@@ -641,6 +641,7 @@ fn check_truncate(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<Dia
 /// Validate CACHE values in sequence options. Shared between standalone CREATE SEQUENCE
 /// and identity column definitions.
 fn validate_cache_options(
+    cache_rule: LintRule,
     opts: &mut [SequenceOptions],
     raw_sql: &str,
     diagnostics: &mut Vec<Diagnostic>,
@@ -693,7 +694,7 @@ fn validate_cache_options(
             Some(v) => {
                 *opt = cache_1_option();
                 diagnostics.push(error(
-                    LintRule::SequenceCache,
+                    cache_rule,
                     find_line(raw_sql, "cache"),
                     format!(
                         "CACHE value {v} is invalid in DSQL. Only CACHE 1 or CACHE >= 65536 are allowed."
@@ -704,7 +705,7 @@ fn validate_cache_options(
             }
             None => {
                 diagnostics.push(error(
-                    LintRule::SequenceCache,
+                    cache_rule,
                     find_line(raw_sql, "cache"),
                     format!(
                         "CACHE value '{cache_expr}' could not be validated for DSQL. Only CACHE 1 or CACHE >= 65536 are allowed."
@@ -746,7 +747,12 @@ fn check_create_sequence(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut 
     }
 
     // Invalid CACHE value
-    validate_cache_options(sequence_options, raw_sql, diagnostics);
+    validate_cache_options(
+        LintRule::SequenceCache,
+        sequence_options,
+        raw_sql,
+        diagnostics,
+    );
 }
 
 fn check_unsupported_statements(
