@@ -4,13 +4,14 @@
 //!   1. Every fixable SQL pattern, after `fix_sql`, executes successfully on a real DSQL cluster
 //!   2. Every SQL pattern we pass through as "clean" actually executes on DSQL
 //!
-//! All tests are `#[ignore]`-gated so `cargo test` skips them locally.
-//! CI runs them via `cargo test --ignored` with `DSQL_ENDPOINT` set.
+//! Gated behind the `dsql-cluster` feature flag so `cargo test` skips them locally.
+//! CI runs them via `cargo test --features dsql-cluster` with `DSQL_ENDPOINT` set.
 //!
 //! To run locally:
-//!   DSQL_ENDPOINT=<host> cargo test --ignored -- --test-threads=1
+//!   DSQL_ENDPOINT=<host> cargo test --features dsql-cluster -- --test-threads=1
 //!
 //! Prerequisites: `aws` CLI and `psql` in PATH, valid AWS credentials.
+#![cfg(feature = "dsql-cluster")]
 
 mod common;
 
@@ -325,7 +326,6 @@ const FIX_MATRIX: &[(&str, &str, &str)] = &[
 ];
 
 #[test]
-#[ignore = "requires DSQL cluster — run via `cargo test --ignored` with DSQL_ENDPOINT set"]
 fn fix_matrix_against_cluster() {
     let ep = endpoint();
     let region = region();
@@ -379,7 +379,6 @@ fn fix_matrix_against_cluster() {
 // ═══════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "requires DSQL cluster — run via `cargo test --ignored` with DSQL_ENDPOINT set"]
 fn fix_multi_statement_against_cluster() {
     let ep = endpoint();
     let region = region();
@@ -410,7 +409,6 @@ fn fix_multi_statement_against_cluster() {
 // the unit and cluster type lists can't drift.
 
 #[test]
-#[ignore = "requires DSQL cluster — run via `cargo test --ignored` with DSQL_ENDPOINT set"]
 fn clean_types_accepted_by_cluster() {
     let ep = endpoint();
     let region = region();
@@ -446,7 +444,6 @@ fn clean_types_accepted_by_cluster() {
 // the linter passes as "clean" is also validated on a real DSQL cluster.
 
 #[test]
-#[ignore = "requires DSQL cluster — run via `cargo test --ignored` with DSQL_ENDPOINT set"]
 fn clean_statements_accepted_by_cluster() {
     let ep = endpoint();
     let region = region();
@@ -486,7 +483,6 @@ fn clean_statements_accepted_by_cluster() {
 // ═══════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "requires DSQL cluster — run via `cargo test --ignored` with DSQL_ENDPOINT set"]
 fn index_variants_accepted_by_cluster() {
     let ep = endpoint();
     let region = region();
@@ -546,7 +542,6 @@ fn index_variants_accepted_by_cluster() {
 // ═══════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "requires DSQL cluster — run via `cargo test --ignored` with DSQL_ENDPOINT set"]
 fn sequence_variants_accepted_by_cluster() {
     let ep = endpoint();
     let region = region();
@@ -599,7 +594,6 @@ fn sequence_variants_accepted_by_cluster() {
 // Uses the shared list from tests/common/mod.rs.
 
 #[test]
-#[ignore = "requires DSQL cluster — run via `cargo test --ignored` with DSQL_ENDPOINT set"]
 fn clean_multi_statement_cases_accepted_by_cluster() {
     let ep = endpoint();
     let region = region();
@@ -733,7 +727,6 @@ const DDL_TXN_FIX_CASES: &[(&str, &str, &str)] = &[
 ];
 
 #[test]
-#[ignore = "requires DSQL cluster — run via `cargo test --ignored` with DSQL_ENDPOINT set"]
 fn ddl_transaction_fix_against_cluster() {
     let ep = endpoint();
     let region = region();
