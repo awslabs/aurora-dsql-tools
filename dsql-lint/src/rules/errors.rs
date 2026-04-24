@@ -6,7 +6,7 @@ use sqlparser::ast::{
 };
 use sqlparser::tokenizer::Span;
 
-use crate::lint::{Diagnostic, FixResult};
+use crate::lint::{Diagnostic, FixResult, LintRule};
 
 use super::{find_line, find_line_any};
 
@@ -19,12 +19,14 @@ fn cache_1_option() -> SequenceOptions {
 }
 
 fn error(
+    rule: LintRule,
     line: usize,
     message: impl Into<String>,
     suggestion: impl Into<String>,
     fix_result: FixResult,
 ) -> Diagnostic {
     Diagnostic {
+        rule,
         line,
         statement: String::new(),
         message: message.into(),
@@ -54,6 +56,7 @@ fn check_column(
         ) {
             if in_alter_table {
                 diagnostics.push(error(
+                    LintRule::SerialType,
                     find_line(raw_sql, &type_str.to_lowercase()),
                     format!(
                         "Column `{}` uses {type_str}, which is not supported in DSQL.",
@@ -75,6 +78,7 @@ fn check_column(
                     },
                 });
                 diagnostics.push(error(
+                    LintRule::SerialType,
                     find_line(raw_sql, &type_str.to_lowercase()),
                     format!(
                         "Column `{}` uses {type_str}, which is not supported in DSQL.",
@@ -96,6 +100,7 @@ fn check_column(
     if let Some(type_str) = type_name {
         col.data_type = DataType::Text;
         diagnostics.push(error(
+            LintRule::JsonType,
             find_line(raw_sql, &type_str.to_lowercase()),
             format!(
                 "Column `{}` uses {type_str}, which is not supported in DSQL.",
@@ -112,6 +117,7 @@ fn check_column(
     // Array types
     if matches!(&col.data_type, DataType::Array(_)) {
         diagnostics.push(error(
+            LintRule::ArrayType,
             find_line(raw_sql, &col_name_lower),
             format!(
                 "Column `{}` uses an array type, which is not supported in DSQL.",
@@ -134,6 +140,7 @@ fn check_column(
         {
             if in_alter_table {
                 diagnostics.push(error(
+                    LintRule::IdentityType,
                     find_line(raw_sql, &col_name_lower),
                     format!(
                         "Column `{}` uses GENERATED AS IDENTITY, which is not supported in ALTER TABLE ADD COLUMN in DSQL.",
@@ -148,6 +155,7 @@ fn check_column(
                 let old_type = col.data_type.to_string();
                 col.data_type = DataType::BigInt(None);
                 diagnostics.push(error(
+                    LintRule::IdentityType,
                     find_line(raw_sql, &col_name_lower),
                     format!(
                         "Identity column `{}` must use BIGINT type in DSQL. Found: {old_type}.",
@@ -168,6 +176,7 @@ fn check_column(
     col.options.retain(|opt_def| {
         if matches!(opt_def.option, ColumnOption::ForeignKey(_)) {
             diagnostics.push(error(
+                LintRule::ForeignKey,
                 find_line(raw_sql, &col_name_lower),
                 format!("Column `{}` has a FOREIGN KEY (REFERENCES) constraint, which is not supported in DSQL.", col_name),
                 "Remove the REFERENCES clause. Enforce referential integrity in application code.",
@@ -189,6 +198,7 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
         ct.constraints.retain(|constraint| {
             if matches!(constraint, TableConstraint::ForeignKey(_)) {
                 diagnostics.push(error(
+                    LintRule::ForeignKey,
                     find_line(raw_sql, "foreign key"),
                     "Table-level FOREIGN KEY constraint is not supported in DSQL.",
                     "Remove the FOREIGN KEY constraint. Enforce referential integrity in application code.",
@@ -203,6 +213,7 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
         if ct.temporary {
             ct.temporary = false;
             diagnostics.push(error(
+                LintRule::TempTable,
                 find_line_any(raw_sql, &["temporary", "temp"]),
                 "TEMPORARY tables are not supported in DSQL.",
                 "Use regular tables or application-level caching.",
@@ -213,6 +224,7 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
         if ct.partition_by.is_some() {
             ct.partition_by = None;
             diagnostics.push(error(
+                LintRule::PartitionBy,
                 find_line(raw_sql, "partition by"),
                 "PARTITION BY is not supported in DSQL.",
                 "Omit — DSQL manages distribution automatically.",
@@ -224,6 +236,7 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
         if ct.inherits.as_ref().is_some_and(|v| !v.is_empty()) {
             ct.inherits = None;
             diagnostics.push(error(
+                LintRule::Inherits,
                 find_line(raw_sql, "inherits"),
                 "INHERITS clause is not supported in DSQL.",
                 "Flatten the table hierarchy or use application-layer inheritance patterns.",
@@ -234,6 +247,7 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
         // CREATE TABLE AS / SELECT INTO
         if ct.query.is_some() {
             diagnostics.push(error(
+                LintRule::CreateTableAs,
                 find_line_any(raw_sql, &["as select", "as\n", "as"]),
                 "CREATE TABLE AS (SELECT ...) is not supported in DSQL.",
                 "Create the table with explicit column definitions, then INSERT INTO ... SELECT ....",
@@ -251,6 +265,7 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
                 opts.retain(|o| !matches!(o, SqlOption::TableSpace(_)));
                 if opts.len() < len_before {
                     diagnostics.push(error(
+                        LintRule::Tablespace,
                         find_line(raw_sql, "tablespace"),
                         "TABLESPACE clause is not supported in DSQL.",
                         "Remove the TABLESPACE clause. DSQL manages storage automatically.",
@@ -287,6 +302,7 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
                 ..
             } => {
                 diagnostics.push(error(
+                    LintRule::ForeignKey,
                     find_line(raw_sql, "foreign key"),
                     "ALTER TABLE ADD CONSTRAINT with FOREIGN KEY is not supported in DSQL.",
                     "Remove the FOREIGN KEY constraint. Enforce referential integrity in application code.",
@@ -312,6 +328,7 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
                 ..
             } => {
                 diagnostics.push(error(
+                    LintRule::UnsupportedAlterTableOp,
                     find_line(raw_sql, "using index"),
                     "PRIMARY KEY USING INDEX is not supported in DSQL.",
                     "Create a PRIMARY KEY constraint directly instead of promoting an index.",
@@ -323,6 +340,7 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
                 ..
             } => {
                 diagnostics.push(error(
+                    LintRule::UnsupportedAlterTableOp,
                     find_line(raw_sql, "using index"),
                     "UNIQUE USING INDEX is not supported in DSQL.",
                     "Create a UNIQUE constraint directly instead of promoting an index.",
@@ -335,6 +353,7 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
             | AlterTableOperation::ForceRowLevelSecurity
             | AlterTableOperation::NoForceRowLevelSecurity => {
                 diagnostics.push(error(
+                    LintRule::UnsupportedAlterTableOp,
                     find_line(raw_sql, "row level security"),
                     format!("ALTER TABLE {op} is not supported in DSQL."),
                     "Implement row-level access control in the application layer.",
@@ -347,6 +366,7 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
             | AlterTableOperation::EnableAlwaysTrigger { .. }
             | AlterTableOperation::EnableReplicaTrigger { .. } => {
                 diagnostics.push(error(
+                    LintRule::UnsupportedAlterTableOp,
                     find_line(raw_sql, "trigger"),
                     format!("ALTER TABLE {op} is not supported in DSQL."),
                     "Implement trigger logic in the application layer.",
@@ -356,6 +376,7 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
             // Replica identity
             AlterTableOperation::ReplicaIdentity { .. } => {
                 diagnostics.push(error(
+                    LintRule::UnsupportedAlterTableOp,
                     find_line(raw_sql, "replica identity"),
                     "ALTER TABLE REPLICA IDENTITY is not supported in DSQL.",
                     "DSQL does not support logical replication. Remove this statement.",
@@ -365,6 +386,7 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
             // VALIDATE CONSTRAINT
             AlterTableOperation::ValidateConstraint { name } => {
                 diagnostics.push(error(
+                    LintRule::UnsupportedAlterTableOp,
                     find_line(raw_sql, "validate constraint"),
                     format!("ALTER TABLE VALIDATE CONSTRAINT '{name}' is not supported in DSQL."),
                     "Add constraints as valid at creation time.",
@@ -377,6 +399,7 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
             | AlterTableOperation::EnableAlwaysRule { .. }
             | AlterTableOperation::EnableReplicaRule { .. } => {
                 diagnostics.push(error(
+                    LintRule::UnsupportedAlterTableOp,
                     find_line(raw_sql, "rule"),
                     format!("ALTER TABLE {op} is not supported in DSQL."),
                     "Remove rewrite rules. Implement logic in the application layer.",
@@ -408,6 +431,7 @@ fn check_add_column_constraints(
                 .any(|opt| matches!(opt.option, ColumnOption::Default(_) | ColumnOption::NotNull));
             if has_default_or_not_null {
                 diagnostics.push(error(
+                    LintRule::AddColumnConstraint,
                     find_line(raw_sql, &column_def.name.value.to_lowercase()),
                     format!(
                         "ADD COLUMN '{}' with inline DEFAULT or NOT NULL constraint is not supported in DSQL.",
@@ -512,6 +536,7 @@ fn check_alter_table_operations(
             _ => continue,
         };
         diagnostics.push(error(
+            LintRule::UnsupportedAlterTableOp,
             find_line(raw_sql, needle),
             msg,
             suggestion,
@@ -529,6 +554,7 @@ fn check_create_index(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec
         ci.concurrently = false;
         ci.r#async = true;
         diagnostics.push(error(
+            LintRule::IndexConcurrently,
             find_line(raw_sql, "concurrently"),
             "CREATE INDEX CONCURRENTLY is not supported in DSQL.",
             "Use CREATE INDEX ASYNC instead of CONCURRENTLY.",
@@ -538,6 +564,7 @@ fn check_create_index(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec
         ci.r#async = true;
         let idx_name = ci.name.as_ref().map(|n| n.to_string()).unwrap_or_default();
         diagnostics.push(error(
+            LintRule::IndexAsync,
             find_line(raw_sql, "index"),
             format!(
                 "CREATE INDEX without ASYNC is not supported in DSQL.{}",
@@ -565,6 +592,7 @@ fn check_create_index(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec
             ))
         };
         diagnostics.push(error(
+            LintRule::IndexUsing,
             find_line(raw_sql, "using"),
             format!("DSQL does not support the USING clause in CREATE INDEX (found USING {index_type_str}). Remove it — btree is used automatically."),
             "Remove the USING clause. DSQL uses btree indexes by default.",
@@ -576,6 +604,7 @@ fn check_create_index(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec
     for col in &ci.columns {
         if !matches!(&col.column.expr, Expr::Identifier(_)) {
             diagnostics.push(error(
+                LintRule::IndexExpression,
                 find_line(raw_sql, "index"),
                 "Expression indexes are not supported in DSQL. Only simple column references are allowed.",
                 "Add a stored computed column and index that instead, or handle in application layer.",
@@ -588,6 +617,7 @@ fn check_create_index(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec
     // Partial indexes — Unfixable
     if ci.predicate.is_some() {
         diagnostics.push(error(
+            LintRule::IndexPartial,
             find_line(raw_sql, "where"),
             "Partial indexes (CREATE INDEX ... WHERE) are not supported in DSQL.",
             "Create a full index instead, or filter in queries.",
@@ -599,6 +629,7 @@ fn check_create_index(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec
 fn check_truncate(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
     if matches!(stmt, Statement::Truncate(_)) {
         diagnostics.push(error(
+            LintRule::Truncate,
             find_line(raw_sql, "truncate"),
             "TRUNCATE is not supported in DSQL.",
             "Use DELETE FROM table_name instead.",
@@ -662,6 +693,7 @@ fn validate_cache_options(
             Some(v) => {
                 *opt = cache_1_option();
                 diagnostics.push(error(
+                    LintRule::SequenceCache,
                     find_line(raw_sql, "cache"),
                     format!(
                         "CACHE value {v} is invalid in DSQL. Only CACHE 1 or CACHE >= 65536 are allowed."
@@ -672,6 +704,7 @@ fn validate_cache_options(
             }
             None => {
                 diagnostics.push(error(
+                    LintRule::SequenceCache,
                     find_line(raw_sql, "cache"),
                     format!(
                         "CACHE value '{cache_expr}' could not be validated for DSQL. Only CACHE 1 or CACHE >= 65536 are allowed."
@@ -701,6 +734,7 @@ fn check_create_sequence(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut 
             let old_type = dt.to_string();
             *dt = DataType::BigInt(None);
             diagnostics.push(error(
+                LintRule::SequenceType,
                 find_line(raw_sql, "create sequence"),
                 format!(
                     "CREATE SEQUENCE with type {old_type} is not supported in DSQL. Only BIGINT is supported."
@@ -725,6 +759,7 @@ fn check_unsupported_statements(
         Statement::CreateView(cv) if cv.temporary => {
             cv.temporary = false;
             diagnostics.push(error(
+                LintRule::UnsupportedStatement,
                 find_line_any(raw_sql, &["temporary view", "temp view"]),
                 "CREATE TEMPORARY VIEW is not supported in DSQL.",
                 "Use a regular CREATE VIEW instead.",
@@ -735,6 +770,7 @@ fn check_unsupported_statements(
         // CREATE MATERIALIZED VIEW
         Statement::CreateView(cv) if cv.materialized => {
             diagnostics.push(error(
+                LintRule::UnsupportedStatement,
                 find_line(raw_sql, "materialized view"),
                 "CREATE MATERIALIZED VIEW is not supported in DSQL.",
                 "Use a regular CREATE VIEW instead.",
@@ -744,6 +780,7 @@ fn check_unsupported_statements(
 
         Statement::CreateTrigger(_) => {
             diagnostics.push(error(
+                LintRule::UnsupportedStatement,
                 find_line(raw_sql, "create trigger"),
                 "CREATE TRIGGER is not supported in DSQL.",
                 "Implement trigger logic in application layer.",
@@ -752,6 +789,7 @@ fn check_unsupported_statements(
         }
         Statement::CreateExtension(_) => {
             diagnostics.push(error(
+                LintRule::UnsupportedStatement,
                 find_line(raw_sql, "create extension"),
                 "CREATE EXTENSION is not supported in DSQL.",
                 "Extensions not available in DSQL.",
@@ -771,6 +809,7 @@ fn check_unsupported_statements(
                     .map(|l| format!(" (LANGUAGE {})", l.value))
                     .unwrap_or_default();
                 diagnostics.push(error(
+                    LintRule::UnsupportedStatement,
                     find_line(raw_sql, "create function"),
                     format!(
                         "CREATE FUNCTION{lang_info} is not supported in DSQL. Only LANGUAGE SQL is allowed."
@@ -782,6 +821,7 @@ fn check_unsupported_statements(
         }
         Statement::CreateProcedure { .. } => {
             diagnostics.push(error(
+                LintRule::UnsupportedStatement,
                 find_line(raw_sql, "create procedure"),
                 "CREATE PROCEDURE is not supported in DSQL.",
                 "Implement in application layer.",
@@ -792,6 +832,7 @@ fn check_unsupported_statements(
         // CREATE DATABASE
         Statement::CreateDatabase { .. } => {
             diagnostics.push(error(
+                LintRule::UnsupportedStatement,
                 find_line(raw_sql, "create database"),
                 "CREATE DATABASE is not supported in DSQL. Each cluster provides a single 'postgres' database.",
                 "Use separate DSQL clusters for logical separation, or use schemas within a single cluster.",
@@ -802,6 +843,7 @@ fn check_unsupported_statements(
         // CREATE POLICY / Row-Level Security
         Statement::CreatePolicy(_) => {
             diagnostics.push(error(
+                LintRule::UnsupportedStatement,
                 find_line(raw_sql, "create policy"),
                 "CREATE POLICY (Row-Level Security) is not supported in DSQL.",
                 "Implement row-level access control in the application layer.",
@@ -812,6 +854,7 @@ fn check_unsupported_statements(
         // SAVEPOINT
         Statement::Savepoint { .. } => {
             diagnostics.push(error(
+                LintRule::UnsupportedStatement,
                 find_line(raw_sql, "savepoint"),
                 "SAVEPOINT is not supported in DSQL.",
                 "Restructure logic to use separate transactions instead of partial rollbacks.",
@@ -822,6 +865,7 @@ fn check_unsupported_statements(
         // RELEASE SAVEPOINT
         Statement::ReleaseSavepoint { .. } => {
             diagnostics.push(error(
+                LintRule::UnsupportedStatement,
                 find_line(raw_sql, "release savepoint"),
                 "RELEASE SAVEPOINT is not supported in DSQL.",
                 "Restructure logic to use separate transactions instead of partial rollbacks.",
@@ -834,6 +878,7 @@ fn check_unsupported_statements(
             savepoint: Some(_), ..
         } => {
             diagnostics.push(error(
+                LintRule::UnsupportedStatement,
                 find_line(raw_sql, "savepoint"),
                 "ROLLBACK TO SAVEPOINT is not supported in DSQL.",
                 "Restructure logic to use separate transactions instead of partial rollbacks.",
@@ -846,6 +891,7 @@ fn check_unsupported_statements(
             for d in stmts {
                 if matches!(d.declare_type, Some(DeclareType::Cursor)) {
                     diagnostics.push(error(
+                        LintRule::UnsupportedStatement,
                         find_line(raw_sql, "cursor"),
                         "DECLARE CURSOR is not supported in DSQL.",
                         "Use LIMIT/OFFSET pagination or application-side cursoring.",
@@ -859,6 +905,7 @@ fn check_unsupported_statements(
         // CREATE TYPE
         Statement::CreateType { .. } => {
             diagnostics.push(error(
+                LintRule::UnsupportedStatement,
                 find_line(raw_sql, "create type"),
                 "CREATE TYPE is not supported in DSQL.",
                 "Use CHECK constraints for enum-like validation, or TEXT with application-layer validation.",
@@ -869,6 +916,7 @@ fn check_unsupported_statements(
         // CREATE SERVER (FDW)
         Statement::CreateServer(_) => {
             diagnostics.push(error(
+                LintRule::UnsupportedStatement,
                 find_line(raw_sql, "create server"),
                 "CREATE SERVER is not supported in DSQL.",
                 "Access external data sources from the application layer.",
@@ -879,6 +927,7 @@ fn check_unsupported_statements(
         // VACUUM
         Statement::Vacuum(_) => {
             diagnostics.push(error(
+                LintRule::UnsupportedStatement,
                 find_line(raw_sql, "vacuum"),
                 "VACUUM is not supported in DSQL.",
                 "Remove VACUUM commands. DSQL manages maintenance automatically.",
@@ -889,6 +938,7 @@ fn check_unsupported_statements(
         // ALTER INDEX
         Statement::AlterIndex { .. } => {
             diagnostics.push(error(
+                LintRule::UnsupportedStatement,
                 find_line(raw_sql, "alter index"),
                 "ALTER INDEX is not supported in DSQL.",
                 "Drop and recreate the index with the desired properties.",
@@ -903,6 +953,7 @@ fn check_unsupported_statements(
             ..
         } => {
             diagnostics.push(error(
+                LintRule::UnsupportedStatement,
                 find_line(raw_sql, "copy"),
                 format!("COPY with {target} is not supported in DSQL. Only STDIN/STDOUT are allowed."),
                 "Use COPY ... FROM STDIN / COPY ... TO STDOUT, or load data from the application layer.",
@@ -912,6 +963,7 @@ fn check_unsupported_statements(
 
         Statement::Lock { .. } => {
             diagnostics.push(error(
+                LintRule::UnsupportedStatement,
                 find_line(raw_sql, "lock"),
                 "LOCK TABLE is not supported in DSQL.",
                 "Remove LOCK TABLE statements. DSQL uses optimistic concurrency control.",
@@ -938,6 +990,7 @@ fn check_transaction_isolation(
 
     if is_set_transaction {
         diagnostics.push(error(
+            LintRule::SetTransaction,
             find_line(raw_sql, "set transaction"),
             "SET TRANSACTION is not supported in DSQL.",
             "Use `BEGIN ISOLATION LEVEL REPEATABLE READ` instead.",
@@ -952,6 +1005,7 @@ fn check_transaction_isolation(
                 let old_level = level.to_string();
                 *level = TransactionIsolationLevel::RepeatableRead;
                 diagnostics.push(error(
+                    LintRule::TransactionIsolation,
                     find_line(raw_sql, "isolation"),
                     format!(
                         "Transaction isolation level {old_level} is not supported in DSQL. Only REPEATABLE READ is supported."
@@ -982,6 +1036,7 @@ fn check_sequence_cache_missing(
     if !has_cache {
         sequence_options.push(cache_1_option());
         diagnostics.push(error(
+            LintRule::SequenceCacheMissing,
             find_line(raw_sql, "create sequence"),
             "CREATE SEQUENCE without explicit CACHE clause is not supported in DSQL.",
             "Add an explicit CACHE 1 or CACHE 65536 clause.",
@@ -1020,6 +1075,7 @@ fn check_identity_cache_missing(
                         None => *sequence_options = Some(vec![cache_opt]),
                     }
                     diagnostics.push(error(
+                        LintRule::IdentityCacheMissing,
                         find_line(raw_sql, &col.name.to_string().to_lowercase()),
                         format!(
                             "Identity column `{}` without explicit CACHE clause is not supported in DSQL.",

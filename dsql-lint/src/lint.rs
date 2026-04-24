@@ -17,12 +17,49 @@ pub enum FixResult {
     Unfixable,
 }
 
+/// Identifies which lint rule produced a diagnostic.
+///
+/// Adding a new variant here will cause a compile error in
+/// `tests/common/mod.rs` until cluster test data is provided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LintRule {
+    SerialType,
+    JsonType,
+    ArrayType,
+    ForeignKey,
+    TempTable,
+    PartitionBy,
+    Inherits,
+    CreateTableAs,
+    Tablespace,
+    IdentityType,
+    IdentityCache,
+    IdentityCacheMissing,
+    IndexAsync,
+    IndexConcurrently,
+    IndexUsing,
+    IndexExpression,
+    IndexPartial,
+    Truncate,
+    SequenceType,
+    SequenceCache,
+    SequenceCacheMissing,
+    AddColumnConstraint,
+    TransactionIsolation,
+    SetTransaction,
+    UnsupportedAlterTableOp,
+    UnsupportedStatement,
+    MultiDdlTransaction,
+    ParseError,
+}
+
 /// A single compatibility issue found in the input SQL.
 ///
 /// Returned by [`lint_sql`] and consumed by both the CLI (for human-readable output)
 /// and the library crate (for programmatic integration, e.g. in MCP servers).
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
+    pub rule: LintRule,
     pub line: usize,
     pub statement: String,
     pub message: String,
@@ -157,6 +194,7 @@ fn multi_ddl_txn_diagnostic(
     fix_result: FixResult,
 ) -> Diagnostic {
     Diagnostic {
+        rule: LintRule::MultiDdlTransaction,
         line,
         statement: begin_text.to_string(),
         message: format!(
@@ -182,6 +220,7 @@ fn check_ddl_transactions(stmts: &[(usize, String)], diagnostics: &mut Vec<Diagn
             Err(e) => {
                 if in_txn {
                     diagnostics.push(Diagnostic {
+                        rule: LintRule::ParseError,
                         line: *line_num,
                         statement: stmt_text.to_string(),
                         message: format!(
@@ -249,6 +288,7 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
                 Ok(p) => p,
                 Err(e) => {
                     diagnostics.push(Diagnostic {
+                        rule: LintRule::ParseError,
                         line: *line,
                         statement: text.to_string(),
                         message: format!(
@@ -346,6 +386,7 @@ pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
         Ok(s) => s,
         Err(e) => {
             diagnostics.push(Diagnostic {
+                rule: LintRule::ParseError,
                 line: 1,
                 statement: String::new(),
                 message: format!("Failed to tokenize SQL: {e}"),
@@ -365,6 +406,7 @@ pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
             Ok(p) => p,
             Err(e) => {
                 diagnostics.push(Diagnostic {
+                    rule: LintRule::ParseError,
                     line: *line_num,
                     statement: stmt_text.to_string(),
                     message: format!("Failed to parse SQL: {e}"),
@@ -408,6 +450,7 @@ pub fn fix_sql(sql: &str) -> FixOutput {
         Ok(s) => s,
         Err(e) => {
             all_diagnostics.push(Diagnostic {
+                rule: LintRule::ParseError,
                 line: 1,
                 statement: String::new(),
                 message: format!("Failed to tokenize SQL: {e}"),
@@ -432,6 +475,7 @@ pub fn fix_sql(sql: &str) -> FixOutput {
             Err(e) => {
                 fixed_parts.push((*line_num, stmt_text.trim_end_matches(';').to_string()));
                 all_diagnostics.push(Diagnostic {
+                    rule: LintRule::ParseError,
                     line: *line_num,
                     statement: stmt_text.to_string(),
                     message: format!("Failed to parse SQL: {e}"),

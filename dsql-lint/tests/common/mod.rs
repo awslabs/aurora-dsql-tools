@@ -112,6 +112,128 @@ pub const CLEAN_STATEMENTS: &[(&str, &str, &str, &str)] = &[
     ),
 ];
 
+use dsql_lint::LintRule;
+
+/// Maps every lint rule to representative SQL that triggers it, plus the
+/// expected error substring.
+///
+/// Adding a new `LintRule` variant without a match arm here is a compile error.
+/// Return `None` for rules that don't need cluster validation (e.g. parse errors).
+#[allow(dead_code)]
+pub fn cluster_test_for_rule(rule: LintRule) -> Option<(&'static str, &'static str)> {
+    match rule {
+        LintRule::SerialType => Some((
+            "CREATE TABLE _r (id SERIAL PRIMARY KEY);",
+            "SERIAL",
+        )),
+        LintRule::JsonType => Some((
+            "CREATE TABLE _r (id INT, data JSON);",
+            "JSON",
+        )),
+        LintRule::ArrayType => Some((
+            "CREATE TABLE _r (id INT, tags TEXT[]);",
+            "array",
+        )),
+        LintRule::ForeignKey => Some((
+            "CREATE TABLE _r (id INT, cid INT REFERENCES _clust_base(id));",
+            "FOREIGN KEY",
+        )),
+        LintRule::TempTable => Some((
+            "CREATE TEMP TABLE _r (id INT);",
+            "TEMPORARY",
+        )),
+        LintRule::PartitionBy => Some((
+            "CREATE TABLE _r (id INT, d DATE) PARTITION BY RANGE (d);",
+            "PARTITION",
+        )),
+        LintRule::Inherits => Some((
+            "CREATE TABLE _r (extra INT) INHERITS (_clust_base);",
+            "INHERITS",
+        )),
+        LintRule::CreateTableAs => Some((
+            "CREATE TABLE _r AS SELECT 1 AS id;",
+            "CREATE TABLE AS",
+        )),
+        LintRule::Tablespace => Some((
+            "CREATE TABLE _r (id INT) TABLESPACE my_space;",
+            "TABLESPACE",
+        )),
+        LintRule::IdentityType => Some((
+            "CREATE TABLE _r (id INTEGER GENERATED ALWAYS AS IDENTITY);",
+            "Identity column",
+        )),
+        LintRule::IdentityCache => Some((
+            "CREATE TABLE _r (id BIGINT GENERATED ALWAYS AS IDENTITY (CACHE 100));",
+            "CACHE value",
+        )),
+        LintRule::IdentityCacheMissing => Some((
+            "CREATE TABLE _r (id BIGINT GENERATED ALWAYS AS IDENTITY);",
+            "CACHE",
+        )),
+        LintRule::IndexAsync => Some((
+            "CREATE INDEX _r_idx ON _clust_base(col);",
+            "ASYNC",
+        )),
+        LintRule::IndexConcurrently => Some((
+            "CREATE INDEX CONCURRENTLY _r_idx ON _clust_base(col);",
+            "CONCURRENTLY",
+        )),
+        LintRule::IndexUsing => Some((
+            "CREATE INDEX ASYNC _r_idx ON _clust_base USING btree(col);",
+            "USING",
+        )),
+        LintRule::IndexExpression => Some((
+            "CREATE INDEX ASYNC _r_idx ON _clust_base(lower(col));",
+            "Expression",
+        )),
+        LintRule::IndexPartial => Some((
+            "CREATE INDEX ASYNC _r_idx ON _clust_base(col) WHERE col > 0;",
+            "Partial",
+        )),
+        LintRule::Truncate => Some((
+            "TRUNCATE TABLE _clust_base;",
+            "TRUNCATE",
+        )),
+        LintRule::SequenceType => Some((
+            "CREATE SEQUENCE _r_seq AS INTEGER CACHE 1;",
+            "CREATE SEQUENCE with type",
+        )),
+        LintRule::SequenceCache => Some((
+            "CREATE SEQUENCE _r_seq CACHE 100;",
+            "CACHE value",
+        )),
+        LintRule::SequenceCacheMissing => Some((
+            "CREATE SEQUENCE _r_seq;",
+            "CACHE",
+        )),
+        LintRule::AddColumnConstraint => Some((
+            "ALTER TABLE _clust_base ADD COLUMN status VARCHAR(50) DEFAULT 'pending';",
+            "ADD COLUMN",
+        )),
+        LintRule::TransactionIsolation => Some((
+            "BEGIN ISOLATION LEVEL SERIALIZABLE;",
+            "isolation level",
+        )),
+        LintRule::SetTransaction => Some((
+            "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;",
+            "SET TRANSACTION",
+        )),
+        LintRule::UnsupportedAlterTableOp => Some((
+            "ALTER TABLE _clust_base DROP COLUMN col;",
+            "DROP COLUMN",
+        )),
+        LintRule::UnsupportedStatement => Some((
+            "CREATE TRIGGER trg AFTER INSERT ON _clust_base FOR EACH ROW EXECUTE FUNCTION f();",
+            "TRIGGER",
+        )),
+        LintRule::MultiDdlTransaction => Some((
+            "BEGIN;\nCREATE TABLE _r_a (id INT);\nCREATE TABLE _r_b (id INT);\nCOMMIT;",
+            "DDL statements",
+        )),
+        LintRule::ParseError => None,
+    }
+}
+
 /// Multi-statement SQL that must lint clean AND execute on a real DSQL cluster.
 /// Shared between unit and cluster tests so both validate the same cases.
 ///
