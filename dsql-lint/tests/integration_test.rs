@@ -129,6 +129,21 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "USING",
     ),
     (
+        "index-using-btree-after-cols",
+        "CREATE INDEX ASYNC idx ON t(col) USING btree;",
+        "USING",
+    ),
+    (
+        "index-using-hash-after-cols",
+        "CREATE INDEX ASYNC idx ON t(col) USING hash;",
+        "USING",
+    ),
+    (
+        "index-using-no-async",
+        "CREATE INDEX idx ON t(col) USING btree;",
+        "USING",
+    ),
+    (
         "index-expr",
         "CREATE INDEX ASYNC idx ON t (lower(name));",
         "Expression",
