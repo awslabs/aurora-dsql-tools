@@ -205,6 +205,11 @@ fn run_lint(args: &Args) -> i32 {
     let mut json_files: Vec<JsonFileOutput> = Vec::new();
     let mut summary_errors: usize = 0;
     let mut summary_warnings: usize = 0;
+    // Total across all variants (Unfixable + FixedWithWarning + Fixed).
+    // The JSON summary splits errors/warnings by fix_result, but the exit
+    // code must fire for any DSQL incompatibility — otherwise a migration
+    // consisting entirely of Fixed-rated diagnostics would exit 0.
+    let mut total_diagnostics: usize = 0;
 
     for path in &args.files {
         let display = display_name(path);
@@ -228,6 +233,7 @@ fn run_lint(args: &Args) -> i32 {
         };
 
         let diagnostics = dsql_lint::lint_sql(&sql);
+        total_diagnostics += diagnostics.len();
 
         // Summary uses the same split as fix mode: errors = Unfixable,
         // warnings = FixedWithWarning. Gives callers a mode-independent answer
@@ -256,18 +262,20 @@ fn run_lint(args: &Args) -> i32 {
                 fixed_sql: None,
             });
         } else {
+            // Label each diagnostic by its fix_result so human readers get
+            // the same severity split as JSON consumers.
             for d in &diagnostics {
-                eprintln!("{display}:{}: ERROR — {}", d.line, d.message);
+                let severity = match &d.fix_result {
+                    FixResult::Unfixable => "ERROR",
+                    FixResult::FixedWithWarning(_) => "WARNING",
+                    FixResult::Fixed(_) => "INFO",
+                };
+                eprintln!("{display}:{}: {severity} — {}", d.line, d.message);
                 eprintln!("  → {}", d.suggestion);
                 eprintln!("  | {}", make_preview(&d.statement));
             }
         }
     }
-
-    // In lint mode every diagnostic is reported as an error to the user
-    // regardless of its fix_result — the summary split is for the JSON
-    // consumer's benefit. Exit code tracks the total.
-    let total_diagnostics = summary_errors + summary_warnings;
 
     if json_mode {
         emit_json(
@@ -282,7 +290,7 @@ fn run_lint(args: &Args) -> i32 {
 
     if total_diagnostics > 0 || had_read_error {
         if !json_mode && total_diagnostics > 0 {
-            eprintln!("\n{total_diagnostics} error(s) found.");
+            eprintln!("\n{total_diagnostics} issue(s) found.");
         }
         return EXIT_ERRORS;
     }
@@ -299,7 +307,9 @@ fn run_fix(args: &Args) -> i32 {
     let json_mode = args.format == OutputFormat::Json;
     let mut had_unfixable = false;
     let mut had_io_error = false;
-    let mut unfixable_files: Vec<String> = Vec::new();
+    // Count of files (not diagnostics) that had at least one Unfixable.
+    // Only used for the final text-mode summary line.
+    let mut unfixable_file_count: usize = 0;
     let mut comment_note_printed = false;
 
     let mut json_files: Vec<JsonFileOutput> = Vec::new();
@@ -467,7 +477,7 @@ fn run_fix(args: &Args) -> i32 {
         }
 
         if has_unfixable {
-            unfixable_files.push(display.to_string());
+            unfixable_file_count += 1;
         }
 
         for d in &result.diagnostics {
@@ -543,7 +553,7 @@ fn run_fix(args: &Args) -> i32 {
     } else if had_unfixable {
         eprintln!(
             "\nFix complete: {} file(s) had unfixable errors and require manual review.",
-            unfixable_files.len()
+            unfixable_file_count
         );
     }
 

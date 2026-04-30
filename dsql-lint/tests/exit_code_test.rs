@@ -130,3 +130,61 @@ fn clap_usage_error_exits_2() {
         "clap usage errors should exit 2 (distinct from our exit 3)"
     );
 }
+
+#[test]
+fn lint_text_labels_match_fix_result_variant() {
+    // Text-mode severity labels must match the JSON summary split:
+    //   Unfixable        → ERROR
+    //   FixedWithWarning → WARNING
+    //   Fixed            → INFO
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("mixed.sql");
+    // SERIAL → FixedWithWarning (WARNING)
+    // CREATE INDEX without ASYNC → Fixed (INFO)
+    // TRUNCATE → Unfixable (ERROR)
+    std::fs::write(
+        &input,
+        "CREATE TABLE t (id SERIAL PRIMARY KEY);\n\
+         CREATE INDEX idx ON t(id);\n\
+         TRUNCATE TABLE t;",
+    )
+    .unwrap();
+
+    let output = dsql_lint_bin()
+        .arg(input.to_str().unwrap())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(": ERROR —"),
+        "expected ERROR label: {stderr}"
+    );
+    assert!(
+        stderr.contains(": WARNING —"),
+        "expected WARNING label: {stderr}"
+    );
+    assert!(stderr.contains(": INFO —"), "expected INFO label: {stderr}");
+}
+
+#[test]
+fn lint_mode_exits_1_on_fixed_only_diagnostics() {
+    // Regression: CREATE INDEX without ASYNC produces a diagnostic with
+    // fix_result = Fixed. The harmonized summary split counts it under
+    // neither errors nor warnings, but lint mode must still exit 1 — the
+    // input is not DSQL-compatible as written.
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("fixable.sql");
+    std::fs::write(&input, "CREATE INDEX idx ON t(col);").unwrap();
+
+    let status = dsql_lint_bin()
+        .arg(input.to_str().unwrap())
+        .status()
+        .unwrap();
+
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "lint mode must exit 1 on any DSQL incompatibility, even when all diagnostics are Fixed-rated"
+    );
+}
