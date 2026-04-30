@@ -52,7 +52,9 @@ impl std::str::FromStr for OutputFormat {
         match s.to_lowercase().as_str() {
             "text" => Ok(OutputFormat::Text),
             "json" => Ok(OutputFormat::Json),
-            other => Err(format!("unknown format '{other}', expected 'text' or 'json'")),
+            other => Err(format!(
+                "unknown format '{other}', expected 'text' or 'json'"
+            )),
         }
     }
 }
@@ -135,9 +137,7 @@ fn main() {
     let args = Args::parse();
 
     if args.files.is_empty() {
-        eprintln!(
-            "Usage: dsql-lint <file.sql> [file2.sql ...] or dsql-lint - (read from stdin)"
-        );
+        eprintln!("Usage: dsql-lint <file.sql> [file2.sql ...] or dsql-lint - (read from stdin)");
         process::exit(1);
     }
 
@@ -334,13 +334,12 @@ fn run_fix(args: &Args) {
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
                 .unwrap_or(Path::new("."));
-            let write_result =
-                tempfile::NamedTempFile::new_in(write_dir).and_then(|mut tmp| {
-                    use std::io::Write;
-                    tmp.write_all(result.sql.as_bytes())?;
-                    tmp.persist(output_path)?;
-                    Ok(())
-                });
+            let write_result = tempfile::NamedTempFile::new_in(write_dir).and_then(|mut tmp| {
+                use std::io::Write;
+                tmp.write_all(result.sql.as_bytes())?;
+                tmp.persist(output_path)?;
+                Ok(())
+            });
             if let Err(e) = write_result {
                 if json_mode {
                     json_files.push(JsonFileOutput {
@@ -506,12 +505,7 @@ fn run_fix(args: &Args) {
     }
 }
 
-fn emit_fix_json(
-    files: Vec<JsonFileOutput>,
-    errors: usize,
-    warnings: usize,
-    fixed: usize,
-) {
+fn emit_fix_json(files: Vec<JsonFileOutput>, errors: usize, warnings: usize, fixed: usize) {
     let output = JsonOutput {
         files,
         summary: JsonSummary {

@@ -50,7 +50,10 @@ fn json_lint_with_errors() {
         .unwrap();
 
     assert!(!output.status.success());
-    assert!(output.stderr.is_empty(), "JSON mode must not write to stderr");
+    assert!(
+        output.stderr.is_empty(),
+        "JSON mode must not write to stderr"
+    );
 
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout should be valid JSON");
@@ -74,7 +77,10 @@ fn json_lint_with_errors() {
 
     // statement_preview should be whitespace-collapsed
     let preview = d["statement_preview"].as_str().unwrap();
-    assert!(!preview.contains('\n'), "Preview should not contain newlines");
+    assert!(
+        !preview.contains('\n'),
+        "Preview should not contain newlines"
+    );
 
     assert_eq!(json["summary"]["errors"], 1);
 }
@@ -122,7 +128,10 @@ fn json_fix_mode_file_has_output_file() {
         .unwrap();
 
     assert!(output.status.success());
-    assert!(output.stderr.is_empty(), "JSON mode must not write to stderr");
+    assert!(
+        output.stderr.is_empty(),
+        "JSON mode must not write to stderr"
+    );
 
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout should be valid JSON");
@@ -159,7 +168,10 @@ fn json_file_read_error_appears_in_files_array() {
         .unwrap();
 
     assert!(!output.status.success());
-    assert!(output.stderr.is_empty(), "JSON mode must not write to stderr");
+    assert!(
+        output.stderr.is_empty(),
+        "JSON mode must not write to stderr"
+    );
 
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout should be valid JSON");
@@ -195,12 +207,30 @@ fn json_lint_nullable_fields_always_present() {
     let file_entry = &json["files"][0];
 
     // All nullable fields should be present as null (not absent)
-    assert!(file_entry.get("error").is_some(), "error field must be present");
-    assert!(file_entry["error"].is_null(), "error should be null for clean file");
-    assert!(file_entry.get("output_file").is_some(), "output_file field must be present");
-    assert!(file_entry["output_file"].is_null(), "output_file should be null in lint mode");
-    assert!(file_entry.get("fixed_sql").is_some(), "fixed_sql field must be present");
-    assert!(file_entry["fixed_sql"].is_null(), "fixed_sql should be null in lint mode");
+    assert!(
+        file_entry.get("error").is_some(),
+        "error field must be present"
+    );
+    assert!(
+        file_entry["error"].is_null(),
+        "error should be null for clean file"
+    );
+    assert!(
+        file_entry.get("output_file").is_some(),
+        "output_file field must be present"
+    );
+    assert!(
+        file_entry["output_file"].is_null(),
+        "output_file should be null in lint mode"
+    );
+    assert!(
+        file_entry.get("fixed_sql").is_some(),
+        "fixed_sql field must be present"
+    );
+    assert!(
+        file_entry["fixed_sql"].is_null(),
+        "fixed_sql should be null in lint mode"
+    );
 }
 
 #[test]
@@ -231,7 +261,10 @@ fn json_multiple_files_grouped() {
         .output()
         .unwrap();
 
-    assert!(output.stderr.is_empty(), "JSON mode must not write to stderr");
+    assert!(
+        output.stderr.is_empty(),
+        "JSON mode must not write to stderr"
+    );
 
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("should be valid JSON");

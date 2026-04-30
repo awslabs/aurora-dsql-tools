@@ -101,7 +101,10 @@ fn fix_from_stdin_json_mode_embeds_fixed_sql() {
 
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
-    assert!(output.stderr.is_empty(), "JSON mode must not write to stderr");
+    assert!(
+        output.stderr.is_empty(),
+        "JSON mode must not write to stderr"
+    );
 
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout should be valid JSON");
@@ -175,15 +178,15 @@ fn stdin_json_lint_mode_shows_stdin_as_file() {
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("should be valid JSON");
     assert_eq!(json["files"][0]["file"], "<stdin>");
-    assert!(!json["files"][0]["diagnostics"].as_array().unwrap().is_empty());
+    assert!(!json["files"][0]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
 fn no_args_shows_usage_and_exits() {
-    let output = dsql_lint_bin()
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
+    let output = dsql_lint_bin().stdin(Stdio::null()).output().unwrap();
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);

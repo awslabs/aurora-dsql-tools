@@ -40,11 +40,7 @@ fn fix_with_warnings_exits_3() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("warn.sql");
     // FK removal produces FixedWithWarning
-    std::fs::write(
-        &input,
-        "CREATE TABLE t (id INT, cid INT REFERENCES c(id));",
-    )
-    .unwrap();
+    std::fs::write(&input, "CREATE TABLE t (id INT, cid INT REFERENCES c(id));").unwrap();
 
     let status = dsql_lint_bin()
         .arg("--fix")
@@ -120,19 +116,13 @@ fn lint_mode_still_uses_0_and_1() {
 
     let bad = dir.path().join("bad.sql");
     std::fs::write(&bad, "CREATE TABLE t (id SERIAL PRIMARY KEY);").unwrap();
-    let status = dsql_lint_bin()
-        .arg(bad.to_str().unwrap())
-        .status()
-        .unwrap();
+    let status = dsql_lint_bin().arg(bad.to_str().unwrap()).status().unwrap();
     assert_eq!(status.code(), Some(1));
 }
 
 #[test]
 fn clap_usage_error_exits_2() {
-    let output = dsql_lint_bin()
-        .arg("--invalid-flag")
-        .output()
-        .unwrap();
+    let output = dsql_lint_bin().arg("--invalid-flag").output().unwrap();
 
     assert_eq!(
         output.status.code(),
