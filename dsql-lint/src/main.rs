@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 #[derive(Parser)]
-#[command(name = "dsql-lint")]
+#[command(name = "dsql-lint", version)]
 #[command(about = "Lint SQL files for Aurora DSQL compatibility")]
 struct Args {
     /// SQL files to lint

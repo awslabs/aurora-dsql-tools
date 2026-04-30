@@ -11,6 +11,9 @@ use crate::rules;
 
 /// Indicates whether a rule was able to automatically fix the issue it detected.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(tag = "status", content = "detail"))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum FixResult {
     Fixed(String),
     FixedWithWarning(String),
@@ -23,6 +26,8 @@ pub enum FixResult {
 /// `tests/common/mod.rs` until cluster test data is provided.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum LintRule {
     SerialType,
     JsonType,
@@ -59,9 +64,11 @@ pub enum LintRule {
 /// Returned by [`lint_sql`] and consumed by both the CLI (for human-readable output)
 /// and the library crate (for programmatic integration, e.g. in MCP servers).
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Diagnostic {
     pub rule: LintRule,
     pub line: usize,
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub statement: String,
     pub message: String,
     pub suggestion: String,
