@@ -27,6 +27,11 @@ fn json_lint_clean_file() {
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout should be valid JSON");
 
+    assert_eq!(
+        json["schema_version"], 1,
+        "schema_version must be present and equal to 1"
+    );
+
     let files = json["files"].as_array().expect("should have 'files' array");
     assert_eq!(files.len(), 1);
 

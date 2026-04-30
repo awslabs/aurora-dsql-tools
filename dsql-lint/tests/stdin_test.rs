@@ -195,3 +195,30 @@ fn no_args_shows_usage_and_exits() {
         "Should show usage when no args: {stderr}"
     );
 }
+
+#[test]
+fn stdin_non_utf8_produces_explicit_error() {
+    let mut child = dsql_lint_bin()
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // Invalid UTF-8: lone continuation byte
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&[0xFF, 0xFE])
+        .unwrap();
+
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("non-UTF-8"),
+        "Expected explicit non-UTF-8 error, got: {stderr}"
+    );
+}

@@ -1,8 +1,13 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use serde::Serialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
+
+/// Version of the JSON output schema. Increment only on breaking changes
+/// (renamed/removed fields, changed semantics). Additive changes keep the
+/// same version.
+const JSON_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Parser)]
 #[command(name = "dsql-lint", version)]
@@ -34,33 +39,21 @@ struct Args {
     #[arg(short, long)]
     output: Option<String>,
 
-    /// Output format: text (default) or json
-    #[arg(long, default_value = "text")]
+    /// Output format
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     format: OutputFormat,
 }
 
-#[derive(Clone, Copy, Default, PartialEq)]
+#[derive(Clone, Copy, Default, PartialEq, ValueEnum)]
 enum OutputFormat {
     #[default]
     Text,
     Json,
 }
 
-impl std::str::FromStr for OutputFormat {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "text" => Ok(OutputFormat::Text),
-            "json" => Ok(OutputFormat::Json),
-            other => Err(format!(
-                "unknown format '{other}', expected 'text' or 'json'"
-            )),
-        }
-    }
-}
-
 #[derive(Serialize)]
 struct JsonOutput {
+    schema_version: u32,
     files: Vec<JsonFileOutput>,
     summary: JsonSummary,
 }
@@ -106,7 +99,19 @@ fn display_name(path: &str) -> &str {
 fn read_source(path: &str) -> std::io::Result<String> {
     if is_stdin(path) {
         let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf)?;
+        std::io::stdin().read_to_string(&mut buf).map_err(|e| {
+            // read_to_string wraps non-UTF-8 bytes as InvalidData with an opaque
+            // "stream did not contain valid UTF-8" message. Replace with something
+            // more useful for CI logs.
+            if e.kind() == std::io::ErrorKind::InvalidData {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "stdin contained non-UTF-8 bytes",
+                )
+            } else {
+                e
+            }
+        })?;
         Ok(buf)
     } else {
         std::fs::read_to_string(path)
@@ -205,16 +210,16 @@ fn run_lint(args: &Args) {
             });
         } else {
             for d in &diagnostics {
-                let preview: String = d.statement.chars().take(80).collect();
                 eprintln!("{display}:{}: ERROR — {}", d.line, d.message);
                 eprintln!("  → {}", d.suggestion);
-                eprintln!("  | {preview}");
+                eprintln!("  | {}", make_preview(&d.statement));
             }
         }
     }
 
     if json_mode {
         let output = JsonOutput {
+            schema_version: JSON_SCHEMA_VERSION,
             files: json_files,
             summary: JsonSummary {
                 errors: total_errors,
@@ -420,10 +425,9 @@ fn run_fix(args: &Args) {
                     eprintln!("{display}:{}: WARNING — {}", d.line, warning);
                 }
                 FixResult::Unfixable => {
-                    let preview: String = d.statement.chars().take(80).collect();
                     eprintln!("{display}:{}: ERROR (unfixable) — {}", d.line, d.message);
                     eprintln!("  → {}", d.suggestion);
-                    eprintln!("  | {preview}");
+                    eprintln!("  | {}", make_preview(&d.statement));
                     if !had_unfixable || unfixable_files.last().map(|s| s.as_str()) != Some(display)
                     {
                         unfixable_files.push(display.to_string());
@@ -507,6 +511,7 @@ fn run_fix(args: &Args) {
 
 fn emit_fix_json(files: Vec<JsonFileOutput>, errors: usize, warnings: usize, fixed: usize) {
     let output = JsonOutput {
+        schema_version: JSON_SCHEMA_VERSION,
         files,
         summary: JsonSummary {
             errors,

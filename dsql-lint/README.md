@@ -10,6 +10,14 @@ Parses SQL and reports errors (unsupported syntax) with suggested fixes. Include
 
 ### Installation
 
+Via npm (prebuilt native binary, no Rust toolchain required):
+
+```bash
+npm install -g @aws/dsql-lint
+```
+
+Or via Cargo:
+
 ```bash
 cargo install dsql-lint
 ```
@@ -18,6 +26,8 @@ cargo install dsql-lint
 
 ```bash
 dsql-lint migration.sql [migration2.sql ...]
+dsql-lint --version
+dsql-lint --help
 ```
 
 ### Example Output
@@ -33,15 +43,29 @@ migration.sql:10: ERROR — Transaction contains 2 DDL statements. DSQL supports
   → Split into separate transactions: wrap each DDL statement in its own BEGIN/COMMIT block.
 ```
 
-Exit code `0` if no errors, `1` if any errors.
+### Read from stdin
+
+Pass `-` instead of a filename to read SQL from standard input:
+
+```bash
+cat migration.sql | dsql-lint -
+prisma migrate diff --from-empty --to-schema schema.prisma --script | dsql-lint -
+```
+
+In `--fix` mode (text output) the fixed SQL streams to stdout, making it composable with pipes:
+
+```bash
+cat migration.sql | dsql-lint --fix - > migration-dsql.sql
+```
 
 ### Auto-Fix Mode
 
 Use `--fix` to generate DSQL-compatible SQL:
 
 ```bash
-dsql-lint --fix migration.sql           # writes migration-fixed.sql
-dsql-lint --fix -o out.sql migration.sql  # custom output path
+dsql-lint --fix migration.sql              # writes migration-fixed.sql
+dsql-lint --fix -o out.sql migration.sql   # custom output path
+dsql-lint --fix -o out.sql -               # read stdin, write to out.sql
 ```
 
 #### Example Output
@@ -55,10 +79,95 @@ Fixed output written to: migration-fixed.sql
 ```
 
 - `FIXED` — safe, mechanical transformation
-- `WARNING` — fix applied but may require application code changes
+- `WARNING` — fix applied but may require application code changes (e.g. removed foreign key, removed cache hint)
 - `ERROR (unfixable)` — cannot be auto-fixed, requires manual intervention
 
-Exit code `0` if all issues were fixed, `1` if unfixable errors remain.
+### JSON output
+
+Add `--format json` to emit machine-readable output on stdout (stderr is silent). Intended for ORM integrations and CI tooling.
+
+```bash
+dsql-lint --format json migration.sql
+echo "$SQL" | dsql-lint --fix --format json -
+```
+
+Shape:
+
+```json
+{
+  "schema_version": 1,
+  "files": [
+    {
+      "file": "migration.sql",
+      "diagnostics": [
+        {
+          "rule": "serial_type",
+          "line": 1,
+          "message": "Column `id` uses SERIAL...",
+          "suggestion": "Use BIGINT GENERATED...",
+          "statement_preview": "CREATE TABLE t (id SERIAL PRIMARY KEY)",
+          "fix_result": { "status": "fixed_with_warning", "detail": "Replaced SERIAL..." }
+        }
+      ],
+      "error": null,
+      "output_file": "migration-fixed.sql",
+      "fixed_sql": null
+    }
+  ],
+  "summary": { "errors": 0, "warnings": 1, "fixed": 1 }
+}
+```
+
+Schema notes:
+
+- `schema_version`: integer, incremented only on breaking changes. Additive fields do not bump the version.
+- `files[]`: always present, one entry per input (stdin is listed as `"<stdin>"`).
+- `error`: `null` when the file was read successfully; string message on I/O error (in which case `diagnostics` is empty).
+- `output_file`: path to the written fixed SQL in `--fix` mode for file inputs; `null` in lint mode or for stdin without `-o`.
+- `fixed_sql`: populated **only** for stdin inputs in `--fix` mode. `null` otherwise. Avoids bloating output for large file-based migrations.
+- All nullable fields serialize as explicit `null`, never absent.
+
+Stable wire contract for programmatic consumers:
+
+- `rule` — stable string vocabulary (see *Lint rule vocabulary* below).
+- `fix_result.status` — one of `"fixed"`, `"fixed_with_warning"`, `"unfixable"`.
+- **`fix_result.detail` is informational only.** The prose is subject to copy-edits between releases. Match on `rule` + `fix_result.status` for programmatic logic; surface `detail` to humans only.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Clean (no issues) or `--fix` applied all fixes without warnings |
+| 1 | Lint mode: errors found. Fix mode: unfixable errors remain, or I/O error |
+| 2 | Usage error (invalid arguments) — owned by the clap argument parser |
+| 3 | Fix mode only: all issues fixed, but some produced warnings (review recommended) |
+
+Exit code 3 is the common case when `--fix` removes foreign keys or converts SERIAL to IDENTITY — the migration is DSQL-compatible but may require application-side changes. Scripts using `set -e` should handle it explicitly:
+
+```bash
+dsql-lint --fix migration.sql; rc=$?
+if [ $rc -eq 1 ]; then
+  echo 'unfixable errors' && exit 1
+fi
+# rc 0 or 3 both mean fix succeeded (3 = review warnings)
+```
+
+### Lint rule vocabulary
+
+`rule` values emitted in JSON output (stable wire contract — renames are breaking changes):
+
+```
+serial_type, json_type, array_type, foreign_key, temp_table,
+partition_by, inherits, create_table_as, tablespace,
+identity_type, identity_cache, identity_cache_missing,
+index_async, index_concurrently, index_using, index_expression, index_partial,
+truncate, sequence_type, sequence_cache, sequence_cache_missing,
+add_column_constraint, transaction_isolation, set_transaction,
+unsupported_alter_table_op, unsupported_statement,
+multi_ddl_transaction, parse_error
+```
+
+New rules may be added in non-breaking releases. Consumers matching on `rule` should default-handle unknown values gracefully.
 
 ## Library
 
@@ -81,4 +190,11 @@ for d in &diagnostics {
 // Fix: get DSQL-compatible SQL
 let output = fix_sql("CREATE TABLE t (id SERIAL);");
 println!("{}", output.sql);
+```
+
+The `serde` feature (on by default) derives `Serialize` on `Diagnostic`, `FixResult`, and `LintRule`. To opt out (avoids pulling in `serde`/`serde_json`):
+
+```toml
+[dependencies]
+dsql-lint = { version = "0.1", default-features = false }
 ```
