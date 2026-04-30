@@ -49,7 +49,7 @@ Pass `-` instead of a filename to read SQL from standard input:
 
 ```bash
 cat migration.sql | dsql-lint -
-prisma migrate diff --from-empty --to-schema schema.prisma --script | dsql-lint -
+some-migration-generator | dsql-lint -
 ```
 
 In `--fix` mode (text output) the fixed SQL streams to stdout, making it composable with pipes:
