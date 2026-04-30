@@ -143,7 +143,10 @@ Schema notes:
 - `output_file`: path to the written fixed SQL in `--fix` mode for file inputs; `null` in lint mode or for stdin without `-o`.
 - `fixed_sql`: populated **only** for stdin inputs in `--fix` mode. `null` otherwise. Avoids bloating output for large file-based migrations.
 - On each `files[]` entry, the nullable fields `error`, `output_file`, and `fixed_sql` are always present — missing values are explicit `null`, never omitted keys.
-- `summary.errors` and `summary.warnings` use the same split in lint and fix mode: `errors` counts diagnostics whose `fix_result.status` is `unfixable`, `warnings` counts `fixed_with_warning`. A clean `--fix` would resolve `warnings` diagnostics with advisory output, and `errors` diagnostics would remain unfixable.
+- `summary.errors`, `summary.warnings`, and `summary.fixed` are **disjoint** — each diagnostic contributes to exactly one bucket, so `errors + warnings + fixed` equals the total diagnostic count. The split is the same in lint and fix mode:
+  - `errors` counts diagnostics whose `fix_result.status` is `unfixable`, plus any per-file I/O failure (so `summary.errors == 0` agrees with a zero exit code).
+  - `warnings` counts `fixed_with_warning` diagnostics.
+  - `fixed` counts `fixed` diagnostics (fix mode only — `0` in lint mode).
 
 Stable wire contract for programmatic consumers:
 

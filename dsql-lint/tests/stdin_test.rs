@@ -197,6 +197,26 @@ fn no_args_shows_usage_and_exits() {
 }
 
 #[test]
+fn stdin_arg_cannot_appear_twice() {
+    // `-` reads from stdin; it cannot be repeated (the stream can only be
+    // consumed once). Parsing once at the clap boundary lets us reject this
+    // explicitly instead of silently re-reading an empty stdin.
+    let output = dsql_lint_bin()
+        .arg("-")
+        .arg("-")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("stdin") || stderr.contains("'-'"),
+        "Expected error about duplicate stdin, got: {stderr}"
+    );
+}
+
+#[test]
 fn stdin_non_utf8_produces_explicit_error() {
     let mut child = dsql_lint_bin()
         .arg("-")
@@ -221,4 +241,50 @@ fn stdin_non_utf8_produces_explicit_error() {
         stderr.contains("non-UTF-8"),
         "Expected explicit non-UTF-8 error, got: {stderr}"
     );
+}
+
+#[test]
+fn file_non_utf8_produces_explicit_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bad.sql");
+    std::fs::write(&path, [0xFF, 0xFE]).unwrap();
+
+    let output = dsql_lint_bin().arg(&path).output().unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("non-UTF-8"),
+        "Expected explicit non-UTF-8 error, got: {stderr}"
+    );
+}
+
+#[test]
+fn fix_stdin_broken_pipe_exits_0() {
+    // Consumer closes stdout early (e.g. `... | head -c 0`). Writing fixed SQL
+    // to the closed pipe returns ErrorKind::BrokenPipe; dsql-lint must exit 0,
+    // not panic from `print!` and not swallow the error to a wrong exit code.
+    let mut child = dsql_lint_bin()
+        .arg("--fix")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // Drop stdout read-half immediately so the downstream write hits BrokenPipe.
+    drop(child.stdout.take());
+
+    // Write enough SQL to force a stdout write attempt after the read-half is
+    // gone. A single CREATE INDEX is a reliable trigger.
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"CREATE INDEX idx ON t(col);")
+        .unwrap();
+
+    let status = child.wait().unwrap();
+    assert_eq!(status.code(), Some(0));
 }

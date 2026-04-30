@@ -23,7 +23,6 @@ fn fix_clean_exits_0() {
 fn fix_all_fixed_no_warnings_exits_0() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("fixable.sql");
-    // CREATE INDEX without ASYNC produces Fixed (not FixedWithWarning)
     std::fs::write(&input, "CREATE INDEX idx ON t(col);").unwrap();
 
     let status = dsql_lint_bin()

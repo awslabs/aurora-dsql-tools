@@ -24,10 +24,13 @@ pub enum FixResult {
 
 /// Identifies which lint rule produced a diagnostic.
 ///
-/// The `snake_case` serialization is a stable wire contract (see the README
-/// rule-vocabulary table); renames are breaking changes. New rules may be
-/// added in minor releases — the enum is `#[non_exhaustive]` so consumers
-/// must include a `_` arm when matching.
+/// When serialized (via the `serde` feature), each variant becomes its
+/// `snake_case` form — e.g. `SerialType` → `"serial_type"`. These strings
+/// are the on-wire identifier documented in the README rule-vocabulary
+/// table, so variant renames change the JSON output.
+///
+/// The enum is `#[non_exhaustive]`: new rules can be added in minor
+/// releases, and downstream consumers must include a `_` arm when matching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
 #[cfg_attr(
     feature = "serde",
@@ -75,6 +78,10 @@ pub enum LintRule {
 pub struct Diagnostic {
     pub rule: LintRule,
     pub line: usize,
+    /// Raw SQL of the offending statement. Excluded from `Serialize` via
+    /// `#[serde(skip)]` because it can be long and multi-line; callers that
+    /// want it in JSON should wrap `Diagnostic` in their own type (the CLI
+    /// uses a `statement_preview` field for this).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub statement: String,
     pub message: String,

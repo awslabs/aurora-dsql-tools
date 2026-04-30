@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn dsql_lint_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_dsql-lint"))
@@ -408,6 +408,59 @@ fn json_lint_summary_splits_errors_and_warnings() {
 }
 
 #[test]
+fn json_fix_summary_buckets_are_disjoint() {
+    // A FixedWithWarning diagnostic must count as a warning, not as both
+    // warning + fixed. Buckets are disjoint so `errors + warnings + fixed`
+    // equals the diagnostic total.
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("mixed.sql");
+    // Fixed: CREATE INDEX → ASYNC. FixedWithWarning: SERIAL → IDENTITY.
+    // Unfixable: TRUNCATE.
+    std::fs::write(
+        &input,
+        "CREATE INDEX idx ON t(col);\n\
+         CREATE TABLE t (id SERIAL PRIMARY KEY);\n\
+         TRUNCATE TABLE foo;",
+    )
+    .unwrap();
+
+    let output = dsql_lint_bin()
+        .arg("--fix")
+        .arg("--format")
+        .arg("json")
+        .arg(input.to_str().unwrap())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout should be valid JSON");
+    assert_eq!(json["summary"]["fixed"], 1, "one Fixed diagnostic");
+    assert_eq!(json["summary"]["warnings"], 1, "one FixedWithWarning");
+    assert_eq!(json["summary"]["errors"], 1, "one Unfixable");
+}
+
+#[test]
+fn json_io_failure_increments_summary_errors() {
+    // summary.errors must stay in sync with the non-zero exit code so JSON
+    // consumers gating on `summary.errors == 0` don't mistake a failed run
+    // for a clean one.
+    let output = dsql_lint_bin()
+        .arg("--format")
+        .arg("json")
+        .arg("/nonexistent/file.sql")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout should be valid JSON");
+    assert_eq!(
+        json["summary"]["errors"], 1,
+        "I/O failure should count toward summary.errors"
+    );
+}
+
+#[test]
 fn json_fix_same_file_error_does_not_drop_queued_files() {
     // Even though `-o` with multiple files is blocked, the scenario the
     // reviewer flagged is: one file in the batch has a conflicting derived
@@ -441,4 +494,27 @@ fn json_fix_same_file_error_does_not_drop_queued_files() {
         "Error field should carry the same-file message"
     );
     assert_eq!(json["schema_version"], 1);
+}
+
+#[test]
+fn json_broken_pipe_exits_0() {
+    // Consumer closes stdout before dsql-lint writes the JSON. emit_json must
+    // map ErrorKind::BrokenPipe to exit 0, not panic from println! and not
+    // surface the wrong exit code to scripts gating on it.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.sql");
+    std::fs::write(&path, "CREATE TABLE t (id SERIAL);").unwrap();
+
+    let mut child = dsql_lint_bin()
+        .arg("--format")
+        .arg("json")
+        .arg(&path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take().unwrap());
+
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
 }
