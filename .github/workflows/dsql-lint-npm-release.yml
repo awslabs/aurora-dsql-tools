@@ -66,6 +66,24 @@ jobs:
              npm/dsql-lint-${{ matrix.npm-platform }}/bin/dsql-lint.exe
         shell: pwsh
 
+      # Smoke test: invoke the wrapper against the freshly-built binary on its
+      # native runner. Catches layout drift between the wrapper's
+      # require.resolve path and the staged package structure. Skipped for
+      # linux-arm64 because the ARM binary can't exec on an x64 runner.
+      - name: Smoke-test wrapper resolves and execs the native binary
+        if: matrix.npm-platform != 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg="@aws/dsql-lint-${{ matrix.npm-platform }}"
+          mkdir -p "npm/dsql-lint/node_modules/@aws"
+          ln -s "$PWD/npm/dsql-lint-${{ matrix.npm-platform }}" \
+                "npm/dsql-lint/node_modules/$pkg"
+          if [ "${{ matrix.os }}" != "windows-latest" ]; then
+            chmod +x "npm/dsql-lint-${{ matrix.npm-platform }}/bin/dsql-lint"
+          fi
+          node npm/dsql-lint/bin/dsql-lint --version
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
