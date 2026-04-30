@@ -1,4 +1,5 @@
 use clap::Parser;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -17,6 +18,62 @@ struct Args {
     /// Output file path (only with --fix and a single input file)
     #[arg(short, long)]
     output: Option<String>,
+
+    /// Output format: text (default) or json
+    #[arg(long, default_value = "text")]
+    format: OutputFormat,
+}
+
+#[derive(Clone, Copy, Default, PartialEq)]
+enum OutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+impl std::str::FromStr for OutputFormat {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "text" => Ok(OutputFormat::Text),
+            "json" => Ok(OutputFormat::Json),
+            other => Err(format!("unknown format '{other}', expected 'text' or 'json'")),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct JsonOutput {
+    files: Vec<JsonFileOutput>,
+    summary: JsonSummary,
+}
+
+#[derive(Serialize)]
+struct JsonFileOutput {
+    file: String,
+    diagnostics: Vec<JsonDiagnostic>,
+    error: Option<String>,
+    output_file: Option<String>,
+    fixed_sql: Option<String>,
+}
+
+#[derive(Serialize)]
+struct JsonDiagnostic {
+    #[serde(flatten)]
+    diagnostic: dsql_lint::Diagnostic,
+    statement_preview: String,
+}
+
+#[derive(Serialize)]
+struct JsonSummary {
+    errors: usize,
+    warnings: usize,
+    fixed: usize,
+}
+
+fn make_preview(statement: &str) -> String {
+    let collapsed: String = statement.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed.chars().take(80).collect()
 }
 
 fn default_output_path(input: &str) -> PathBuf {
@@ -60,27 +117,76 @@ fn main() {
 }
 
 fn run_lint(args: &Args) {
+    let json_mode = args.format == OutputFormat::Json;
     let mut total_errors = 0;
     let mut had_read_error = false;
+    let mut json_files: Vec<JsonFileOutput> = Vec::new();
 
     for path in &args.files {
         let sql = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("Error reading '{path}': {e}");
+                if json_mode {
+                    json_files.push(JsonFileOutput {
+                        file: path.clone(),
+                        diagnostics: Vec::new(),
+                        error: Some(format!("Error reading '{path}': {e}")),
+                        output_file: None,
+                        fixed_sql: None,
+                    });
+                } else {
+                    eprintln!("Error reading '{path}': {e}");
+                }
                 had_read_error = true;
                 continue;
             }
         };
 
         let diagnostics = dsql_lint::lint_sql(&sql);
-        for d in &diagnostics {
-            let preview: String = d.statement.chars().take(80).collect();
-            eprintln!("{path}:{}: ERROR — {}", d.line, d.message);
-            eprintln!("  → {}", d.suggestion);
-            eprintln!("  | {preview}");
-        }
         total_errors += diagnostics.len();
+
+        if json_mode {
+            let json_diags: Vec<JsonDiagnostic> = diagnostics
+                .into_iter()
+                .map(|d| JsonDiagnostic {
+                    statement_preview: make_preview(&d.statement),
+                    diagnostic: d,
+                })
+                .collect();
+            json_files.push(JsonFileOutput {
+                file: path.clone(),
+                diagnostics: json_diags,
+                error: None,
+                output_file: None,
+                fixed_sql: None,
+            });
+        } else {
+            for d in &diagnostics {
+                let preview: String = d.statement.chars().take(80).collect();
+                eprintln!("{path}:{}: ERROR — {}", d.line, d.message);
+                eprintln!("  → {}", d.suggestion);
+                eprintln!("  | {preview}");
+            }
+        }
+    }
+
+    if json_mode {
+        let output = JsonOutput {
+            files: json_files,
+            summary: JsonSummary {
+                errors: total_errors,
+                warnings: 0,
+                fixed: 0,
+            },
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).expect("json serialization should not fail")
+        );
+        if total_errors > 0 || had_read_error {
+            process::exit(1);
+        }
+        return;
     }
 
     if total_errors > 0 || had_read_error {
@@ -96,16 +202,32 @@ fn run_lint(args: &Args) {
 fn run_fix(args: &Args) {
     use dsql_lint::FixResult;
 
+    let json_mode = args.format == OutputFormat::Json;
     let mut had_unfixable = false;
     let mut had_io_error = false;
     let mut unfixable_files: Vec<String> = Vec::new();
     let mut comment_note_printed = false;
 
+    let mut json_files: Vec<JsonFileOutput> = Vec::new();
+    let mut summary_errors: usize = 0;
+    let mut summary_warnings: usize = 0;
+    let mut summary_fixed: usize = 0;
+
     for path in &args.files {
         let sql = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("Error reading '{path}': {e}");
+                if json_mode {
+                    json_files.push(JsonFileOutput {
+                        file: path.clone(),
+                        diagnostics: Vec::new(),
+                        error: Some(format!("Error reading '{path}': {e}")),
+                        output_file: None,
+                        fixed_sql: None,
+                    });
+                } else {
+                    eprintln!("Error reading '{path}': {e}");
+                }
                 had_io_error = true;
                 continue;
             }
@@ -135,12 +257,25 @@ fn run_fix(args: &Args) {
             .map(|(a, b)| a == b)
             .unwrap_or_else(|| input_path == output_path);
         if same_file {
-            eprintln!(
+            let msg = format!(
                 "Error: output path '{}' is the same as input '{}'. Use a different output path.",
                 output_path.display(),
                 path
             );
-            process::exit(1);
+            if json_mode {
+                json_files.push(JsonFileOutput {
+                    file: path.clone(),
+                    diagnostics: Vec::new(),
+                    error: Some(msg),
+                    output_file: None,
+                    fixed_sql: None,
+                });
+                emit_fix_json(json_files, summary_errors, summary_warnings, summary_fixed);
+                process::exit(1);
+            } else {
+                eprintln!("{msg}");
+                process::exit(1);
+            }
         }
 
         let write_dir = output_path
@@ -154,11 +289,63 @@ fn run_fix(args: &Args) {
             Ok(())
         });
         if let Err(e) = write_result {
-            eprintln!("Error writing '{}': {e}", output_path.display());
+            if json_mode {
+                json_files.push(JsonFileOutput {
+                    file: path.clone(),
+                    diagnostics: Vec::new(),
+                    error: Some(format!("Error writing '{}': {e}", output_path.display())),
+                    output_file: None,
+                    fixed_sql: None,
+                });
+            } else {
+                eprintln!("Error writing '{}': {e}", output_path.display());
+            }
             had_io_error = true;
             continue;
         }
 
+        // Aggregate counts for JSON summary.
+        for d in &result.diagnostics {
+            match &d.fix_result {
+                FixResult::Fixed(_) => summary_fixed += 1,
+                FixResult::FixedWithWarning(_) => {
+                    summary_fixed += 1;
+                    summary_warnings += 1;
+                }
+                FixResult::Unfixable => summary_errors += 1,
+            }
+        }
+
+        if json_mode {
+            let json_diags: Vec<JsonDiagnostic> = result
+                .diagnostics
+                .iter()
+                .map(|d| JsonDiagnostic {
+                    statement_preview: make_preview(&d.statement),
+                    diagnostic: d.clone(),
+                })
+                .collect();
+            let has_unfixable = result
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.fix_result, FixResult::Unfixable));
+            if has_unfixable {
+                had_unfixable = true;
+                if unfixable_files.last().map(|s| s.as_str()) != Some(path.as_str()) {
+                    unfixable_files.push(path.clone());
+                }
+            }
+            json_files.push(JsonFileOutput {
+                file: path.clone(),
+                diagnostics: json_diags,
+                error: None,
+                output_file: Some(output_path.display().to_string()),
+                fixed_sql: None,
+            });
+            continue;
+        }
+
+        // --- Text-mode per-file reporting (existing behavior) ---
         for d in &result.diagnostics {
             match &d.fix_result {
                 FixResult::Fixed(msg) => {
@@ -222,6 +409,14 @@ fn run_fix(args: &Args) {
         }
     }
 
+    if json_mode {
+        emit_fix_json(json_files, summary_errors, summary_warnings, summary_fixed);
+        if had_unfixable || had_io_error {
+            process::exit(1);
+        }
+        return;
+    }
+
     if had_unfixable {
         eprintln!(
             "\nFix complete: {} file(s) had unfixable errors and require manual review.",
@@ -232,4 +427,24 @@ fn run_fix(args: &Args) {
     if had_unfixable || had_io_error {
         process::exit(1);
     }
+}
+
+fn emit_fix_json(
+    files: Vec<JsonFileOutput>,
+    errors: usize,
+    warnings: usize,
+    fixed: usize,
+) {
+    let output = JsonOutput {
+        files,
+        summary: JsonSummary {
+            errors,
+            warnings,
+            fixed,
+        },
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).expect("json serialization should not fail")
+    );
 }
