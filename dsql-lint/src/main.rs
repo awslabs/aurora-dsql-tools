@@ -1,5 +1,6 @@
 use clap::Parser;
 use serde::Serialize;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -7,7 +8,7 @@ use std::process;
 #[command(name = "dsql-lint", version)]
 #[command(about = "Lint SQL files for Aurora DSQL compatibility")]
 struct Args {
-    /// SQL files to lint
+    /// SQL files to lint (use '-' to read from stdin)
     files: Vec<String>,
 
     /// Fix mode: output DSQL-compatible SQL to a new file.
@@ -71,6 +72,31 @@ struct JsonSummary {
     fixed: usize,
 }
 
+const STDIN_ARG: &str = "-";
+const STDIN_DISPLAY: &str = "<stdin>";
+
+fn is_stdin(path: &str) -> bool {
+    path == STDIN_ARG
+}
+
+fn display_name(path: &str) -> &str {
+    if is_stdin(path) {
+        STDIN_DISPLAY
+    } else {
+        path
+    }
+}
+
+fn read_source(path: &str) -> std::io::Result<String> {
+    if is_stdin(path) {
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf)?;
+        Ok(buf)
+    } else {
+        std::fs::read_to_string(path)
+    }
+}
+
 fn make_preview(statement: &str) -> String {
     let collapsed: String = statement.split_whitespace().collect::<Vec<_>>().join(" ");
     collapsed.chars().take(80).collect()
@@ -95,7 +121,9 @@ fn main() {
     let args = Args::parse();
 
     if args.files.is_empty() {
-        eprintln!("Usage: dsql-lint <file.sql> [file2.sql ...]");
+        eprintln!(
+            "Usage: dsql-lint <file.sql> [file2.sql ...] or dsql-lint - (read from stdin)"
+        );
         process::exit(1);
     }
 
@@ -123,7 +151,8 @@ fn run_lint(args: &Args) {
     let mut json_files: Vec<JsonFileOutput> = Vec::new();
 
     for path in &args.files {
-        let sql = match std::fs::read_to_string(path) {
+        let display = display_name(path);
+        let sql = match read_source(path) {
             Ok(s) => s,
             Err(e) => {
                 if json_mode {
@@ -154,7 +183,7 @@ fn run_lint(args: &Args) {
                 })
                 .collect();
             json_files.push(JsonFileOutput {
-                file: path.clone(),
+                file: display.to_string(),
                 diagnostics: json_diags,
                 error: None,
                 output_file: None,
@@ -163,7 +192,7 @@ fn run_lint(args: &Args) {
         } else {
             for d in &diagnostics {
                 let preview: String = d.statement.chars().take(80).collect();
-                eprintln!("{path}:{}: ERROR — {}", d.line, d.message);
+                eprintln!("{display}:{}: ERROR — {}", d.line, d.message);
                 eprintln!("  → {}", d.suggestion);
                 eprintln!("  | {preview}");
             }
@@ -214,7 +243,9 @@ fn run_fix(args: &Args) {
     let mut summary_fixed: usize = 0;
 
     for path in &args.files {
-        let sql = match std::fs::read_to_string(path) {
+        let display = display_name(path);
+        let stdin_input = is_stdin(path);
+        let sql = match read_source(path) {
             Ok(s) => s,
             Err(e) => {
                 if json_mode {
@@ -235,73 +266,82 @@ fn run_fix(args: &Args) {
 
         let result = dsql_lint::fix_sql(&sql);
 
-        let output_path = if let Some(ref o) = args.output {
-            PathBuf::from(o)
-        } else {
-            default_output_path(path)
+        // Determine output destination.
+        //   - Explicit --output: write to that path
+        //   - stdin, no --output: don't write to disk (stream via stdout or JSON field)
+        //   - file, no --output: write to default "<stem>-fixed.<ext>"
+        let output_path: Option<PathBuf> = match (&args.output, stdin_input) {
+            (Some(o), _) => Some(PathBuf::from(o)),
+            (None, true) => None,
+            (None, false) => Some(default_output_path(path)),
         };
 
-        let resolve = |p: &Path| -> Option<PathBuf> {
-            let parent = p
+        if let Some(ref output_path) = output_path {
+            if !stdin_input {
+                let resolve = |p: &Path| -> Option<PathBuf> {
+                    let parent = p
+                        .parent()
+                        .filter(|p| !p.as_os_str().is_empty())
+                        .unwrap_or(Path::new("."));
+                    let file_name = p.file_name()?;
+                    std::fs::canonicalize(parent)
+                        .ok()
+                        .map(|dir| dir.join(file_name))
+                };
+                let input_path = Path::new(path);
+                let same_file = resolve(input_path)
+                    .zip(resolve(output_path))
+                    .map(|(a, b)| a == b)
+                    .unwrap_or_else(|| input_path == output_path.as_path());
+                if same_file {
+                    let msg = format!(
+                        "Error: output path '{}' is the same as input '{}'. Use a different output path.",
+                        output_path.display(),
+                        path
+                    );
+                    if json_mode {
+                        json_files.push(JsonFileOutput {
+                            file: display.to_string(),
+                            diagnostics: Vec::new(),
+                            error: Some(msg),
+                            output_file: None,
+                            fixed_sql: None,
+                        });
+                        emit_fix_json(json_files, summary_errors, summary_warnings, summary_fixed);
+                        process::exit(1);
+                    } else {
+                        eprintln!("{msg}");
+                        process::exit(1);
+                    }
+                }
+            }
+
+            let write_dir = output_path
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
                 .unwrap_or(Path::new("."));
-            let file_name = p.file_name()?;
-            std::fs::canonicalize(parent)
-                .ok()
-                .map(|dir| dir.join(file_name))
-        };
-        let input_path = Path::new(path);
-        let same_file = resolve(input_path)
-            .zip(resolve(&output_path))
-            .map(|(a, b)| a == b)
-            .unwrap_or_else(|| input_path == output_path);
-        if same_file {
-            let msg = format!(
-                "Error: output path '{}' is the same as input '{}'. Use a different output path.",
-                output_path.display(),
-                path
-            );
-            if json_mode {
-                json_files.push(JsonFileOutput {
-                    file: path.clone(),
-                    diagnostics: Vec::new(),
-                    error: Some(msg),
-                    output_file: None,
-                    fixed_sql: None,
+            let write_result =
+                tempfile::NamedTempFile::new_in(write_dir).and_then(|mut tmp| {
+                    use std::io::Write;
+                    tmp.write_all(result.sql.as_bytes())?;
+                    tmp.persist(output_path)?;
+                    Ok(())
                 });
-                emit_fix_json(json_files, summary_errors, summary_warnings, summary_fixed);
-                process::exit(1);
-            } else {
-                eprintln!("{msg}");
-                process::exit(1);
+            if let Err(e) = write_result {
+                if json_mode {
+                    json_files.push(JsonFileOutput {
+                        file: display.to_string(),
+                        diagnostics: Vec::new(),
+                        error: Some(format!("Error writing '{}': {e}", output_path.display())),
+                        output_file: None,
+                        fixed_sql: None,
+                    });
+                } else {
+                    eprintln!("Error writing '{}': {e}", output_path.display());
+                }
+                had_io_error = true;
+                continue;
             }
-        }
-
-        let write_dir = output_path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let write_result = tempfile::NamedTempFile::new_in(write_dir).and_then(|mut tmp| {
-            use std::io::Write;
-            tmp.write_all(result.sql.as_bytes())?;
-            tmp.persist(&output_path)?;
-            Ok(())
-        });
-        if let Err(e) = write_result {
-            if json_mode {
-                json_files.push(JsonFileOutput {
-                    file: path.clone(),
-                    diagnostics: Vec::new(),
-                    error: Some(format!("Error writing '{}': {e}", output_path.display())),
-                    output_file: None,
-                    fixed_sql: None,
-                });
-            } else {
-                eprintln!("Error writing '{}': {e}", output_path.display());
-            }
-            had_io_error = true;
-            continue;
         }
 
         // Aggregate counts for JSON summary.
@@ -331,36 +371,49 @@ fn run_fix(args: &Args) {
                 .any(|d| matches!(d.fix_result, FixResult::Unfixable));
             if has_unfixable {
                 had_unfixable = true;
-                if unfixable_files.last().map(|s| s.as_str()) != Some(path.as_str()) {
-                    unfixable_files.push(path.clone());
+                if unfixable_files.last().map(|s| s.as_str()) != Some(display) {
+                    unfixable_files.push(display.to_string());
                 }
             }
+            // stdin + no --output: embed fixed SQL in JSON instead of a file path
+            let fixed_sql = if stdin_input && output_path.is_none() {
+                Some(result.sql.clone())
+            } else {
+                None
+            };
+            let output_file = output_path.as_ref().map(|p| p.display().to_string());
             json_files.push(JsonFileOutput {
-                file: path.clone(),
+                file: display.to_string(),
                 diagnostics: json_diags,
                 error: None,
-                output_file: Some(output_path.display().to_string()),
-                fixed_sql: None,
+                output_file,
+                fixed_sql,
             });
             continue;
         }
 
-        // --- Text-mode per-file reporting (existing behavior) ---
+        // --- Text-mode per-file reporting ---
+        // stdin + no --output: stream fixed SQL to stdout
+        if stdin_input && output_path.is_none() {
+            print!("{}", result.sql);
+        }
+
         for d in &result.diagnostics {
             match &d.fix_result {
                 FixResult::Fixed(msg) => {
-                    eprintln!("{path}:{}: FIXED — {}", d.line, msg);
+                    eprintln!("{display}:{}: FIXED — {}", d.line, msg);
                 }
                 FixResult::FixedWithWarning(warning) => {
-                    eprintln!("{path}:{}: WARNING — {}", d.line, warning);
+                    eprintln!("{display}:{}: WARNING — {}", d.line, warning);
                 }
                 FixResult::Unfixable => {
                     let preview: String = d.statement.chars().take(80).collect();
-                    eprintln!("{path}:{}: ERROR (unfixable) — {}", d.line, d.message);
+                    eprintln!("{display}:{}: ERROR (unfixable) — {}", d.line, d.message);
                     eprintln!("  → {}", d.suggestion);
                     eprintln!("  | {preview}");
-                    if !had_unfixable || unfixable_files.last().map(|s| s.as_str()) != Some(path) {
-                        unfixable_files.push(path.clone());
+                    if !had_unfixable || unfixable_files.last().map(|s| s.as_str()) != Some(display)
+                    {
+                        unfixable_files.push(display.to_string());
                     }
                     had_unfixable = true;
                 }
@@ -389,23 +442,26 @@ fn run_fix(args: &Args) {
             comment_note_printed = true;
         }
 
-        if result.sql.is_empty() {
-            eprintln!(
-                "Fixed output is empty — all statements were removed: {}",
-                output_path.display()
-            );
-        } else if unfixable_count > 0 {
-            eprintln!(
-                "Partial fix written to: {} ({unfixable_count} unfixable error(s) remain)",
-                output_path.display()
-            );
-        } else if warning_count > 0 {
-            eprintln!(
-                "Fixed output written to: {} ({warning_count} warning(s) — review recommended)",
-                output_path.display()
-            );
-        } else {
-            eprintln!("Fixed output written to: {}", output_path.display());
+        // Only emit file-location messages when we actually wrote a file.
+        if let Some(ref output_path) = output_path {
+            if result.sql.is_empty() {
+                eprintln!(
+                    "Fixed output is empty — all statements were removed: {}",
+                    output_path.display()
+                );
+            } else if unfixable_count > 0 {
+                eprintln!(
+                    "Partial fix written to: {} ({unfixable_count} unfixable error(s) remain)",
+                    output_path.display()
+                );
+            } else if warning_count > 0 {
+                eprintln!(
+                    "Fixed output written to: {} ({warning_count} warning(s) — review recommended)",
+                    output_path.display()
+                );
+            } else {
+                eprintln!("Fixed output written to: {}", output_path.display());
+            }
         }
     }
 
