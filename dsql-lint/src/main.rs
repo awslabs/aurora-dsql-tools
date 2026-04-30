@@ -7,6 +7,20 @@ use std::process;
 #[derive(Parser)]
 #[command(name = "dsql-lint", version)]
 #[command(about = "Lint SQL files for Aurora DSQL compatibility")]
+#[command(after_help = "\
+EXIT CODES:
+  0  Clean (no issues) or all issues fixed without warnings
+  1  Errors found (lint mode) or unfixable errors remain (fix mode)
+  2  Usage error (invalid arguments)
+  3  Fix mode only: all issues fixed, but some produced warnings
+
+CI USAGE:
+  Exit code 3 means the fix succeeded but produced warnings (e.g., removed
+  foreign keys). In shell scripts with set -e or CI pipelines, handle it:
+
+    dsql-lint --fix input.sql; rc=$?
+    if [ $rc -eq 1 ]; then echo 'unfixable errors'; exit 1; fi
+    # rc 0 or 3: fix succeeded (3 = review warnings)")]
 struct Args {
     /// SQL files to lint (use '-' to read from stdin)
     files: Vec<String>,
