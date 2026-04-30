@@ -1,0 +1,149 @@
+name: Publish dsql-lint npm packages
+
+permissions: {}
+
+on:
+  push:
+    tags:
+      - "dsql-lint/v*"
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            npm-platform: darwin-arm64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            npm-platform: darwin-x64
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            npm-platform: linux-x64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            npm-platform: linux-arm64
+            cross: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            npm-platform: win32-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (Linux ARM64)
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+        working-directory: dsql-lint
+
+      - name: Stage binary (unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mkdir -p npm/dsql-lint-${{ matrix.npm-platform }}/bin
+          cp dsql-lint/target/${{ matrix.target }}/release/dsql-lint \
+             npm/dsql-lint-${{ matrix.npm-platform }}/bin/dsql-lint
+
+      - name: Stage binary (windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          mkdir -p npm/dsql-lint-${{ matrix.npm-platform }}/bin
+          cp dsql-lint/target/${{ matrix.target }}/release/dsql-lint.exe `
+             npm/dsql-lint-${{ matrix.npm-platform }}/bin/dsql-lint.exe
+        shell: pwsh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsql-lint-${{ matrix.npm-platform }}
+          path: npm/dsql-lint-${{ matrix.npm-platform }}/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    environment: npm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#dsql-lint/v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Publishing npm packages version $VERSION"
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Stamp versions and stage platform packages
+        run: |
+          for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64; do
+            # Copy built binary into source package
+            cp -r artifacts/dsql-lint-$platform/bin/ npm/dsql-lint-$platform/bin/
+
+            # Stamp version
+            cd npm/dsql-lint-$platform
+            npm version "$VERSION" --no-git-tag-version --allow-same-version
+            cd ../..
+          done
+
+      - name: Make binaries executable
+        run: |
+          for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
+            chmod +x npm/dsql-lint-$platform/bin/dsql-lint
+          done
+
+      - name: Stamp main package version
+        run: |
+          cd npm/dsql-lint
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+          # Update optionalDependencies to match
+          node -e "
+            const pkg = require('./package.json');
+            for (const dep of Object.keys(pkg.optionalDependencies)) {
+              pkg.optionalDependencies[dep] = '$VERSION';
+            }
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Publish platform packages
+        run: |
+          for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64; do
+            cd npm/dsql-lint-$platform
+            npm publish --provenance --access public
+            cd ../..
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish main package
+        run: |
+          cd npm/dsql-lint
+          npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

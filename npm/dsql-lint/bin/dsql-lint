@@ -1,0 +1,51 @@
+#!/usr/bin/env node
+"use strict";
+
+const path = require("path");
+
+const PLATFORMS = {
+  "darwin-arm64": "@aws/dsql-lint-darwin-arm64",
+  "darwin-x64": "@aws/dsql-lint-darwin-x64",
+  "linux-arm64": "@aws/dsql-lint-linux-arm64",
+  "linux-x64": "@aws/dsql-lint-linux-x64",
+  "win32-x64": "@aws/dsql-lint-win32-x64",
+};
+
+function getBinaryPath() {
+  const platformKey = `${process.platform}-${process.arch}`;
+  const pkg = PLATFORMS[platformKey];
+  if (!pkg) {
+    throw new Error(
+      `Unsupported platform: ${platformKey}. ` +
+      `Supported: ${Object.keys(PLATFORMS).join(", ")}`
+    );
+  }
+
+  const binaryName = process.platform === "win32" ? "dsql-lint.exe" : "dsql-lint";
+
+  try {
+    const pkgDir = path.dirname(require.resolve(`${pkg}/package.json`));
+    return path.join(pkgDir, "bin", binaryName);
+  } catch {
+    throw new Error(
+      `Platform package ${pkg} is not installed. ` +
+      `This usually means your package manager didn't install optional dependencies.\n` +
+      `Try: npm install @aws/dsql-lint --include=optional`
+    );
+  }
+}
+
+const binary = getBinaryPath();
+const result = require("child_process").spawnSync(binary, process.argv.slice(2), {
+  stdio: "inherit",
+});
+
+if (result.error) {
+  if (result.error.code === "ENOENT") {
+    console.error(`dsql-lint binary not found at ${binary}`);
+    process.exit(1);
+  }
+  throw result.error;
+}
+
+process.exit(result.status ?? 1);
