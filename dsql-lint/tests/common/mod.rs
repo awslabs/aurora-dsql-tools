@@ -202,6 +202,9 @@ pub fn cluster_test_for_rule(rule: LintRule) -> Option<(&'static str, &'static s
             "DDL statements",
         )),
         LintRule::ParseError => None,
+        // Required because LintRule is #[non_exhaustive]. New variants fall
+        // through here with no cluster coverage — add an explicit arm above.
+        _ => None,
     }
 }
 

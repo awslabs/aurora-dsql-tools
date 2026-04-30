@@ -132,6 +132,28 @@ fn clap_usage_error_exits_2() {
 }
 
 #[test]
+fn output_without_fix_exits_2() {
+    // Our own argv validation (-o requires --fix) must exit 2, matching clap's
+    // convention and the EXIT CODES table in --help. Previously returned 1,
+    // which misclassifies user misuse as a lint failure in CI scripts that
+    // check `if [ $rc -eq 1 ]`.
+    let output = dsql_lint_bin()
+        .arg("-o")
+        .arg("out.sql")
+        .arg("input.sql")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn no_files_exits_2() {
+    let output = dsql_lint_bin().output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
 fn lint_text_labels_match_fix_result_variant() {
     // Text-mode severity labels must match the JSON summary split:
     //   Unfixable        → ERROR

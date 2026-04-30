@@ -86,14 +86,13 @@ Fixed output written to: migration-fixed.sql
 
 ### JSON output
 
-Add `--format json` to emit machine-readable output on stdout (stderr is silent). Intended for ORM integrations and CI tooling.
+Add `--format json` to emit machine-readable output on stdout. In JSON mode, stderr stays silent once argument validation has succeeded (usage errors like a missing filename still print to stderr and exit with code `2`). Intended for ORM integrations and CI tooling.
+
+Lint mode:
 
 ```bash
 dsql-lint --format json migration.sql
-echo "$SQL" | dsql-lint --fix --format json -
 ```
-
-Shape:
 
 ```json
 {
@@ -112,13 +111,29 @@ Shape:
         }
       ],
       "error": null,
-      "output_file": "migration-fixed.sql",
+      "output_file": null,
       "fixed_sql": null
     }
   ],
-  "summary": { "errors": 0, "warnings": 1, "fixed": 1 }
+  "summary": { "errors": 0, "warnings": 1, "fixed": 0 }
 }
 ```
+
+Fix mode (file input):
+
+```bash
+dsql-lint --fix --format json migration.sql
+```
+
+The only differences vs lint mode: `output_file` is populated with the path to the written fixed SQL, and `summary.fixed` counts the applied fixes.
+
+Fix mode (stdin input):
+
+```bash
+echo "$SQL" | dsql-lint --fix --format json -
+```
+
+`fixed_sql` is populated with the rewritten SQL (instead of writing to disk) and `output_file` stays `null`. Consumers read `files[0].fixed_sql` to get the result.
 
 Schema notes:
 

@@ -165,19 +165,21 @@ fn main() {
 fn run() -> i32 {
     let args = Args::parse();
 
+    // Argument-level validation. EXIT_USAGE (2) matches the convention
+    // documented in --help and clap's own exit code for argument errors.
     if args.files.is_empty() {
         eprintln!("Usage: dsql-lint <file.sql> [file2.sql ...] or dsql-lint - (read from stdin)");
-        return EXIT_ERRORS;
+        return EXIT_USAGE;
     }
 
     if args.output.is_some() && !args.fix {
         eprintln!("Error: -o/--output requires --fix");
-        return EXIT_ERRORS;
+        return EXIT_USAGE;
     }
 
     if args.output.is_some() && args.files.len() > 1 {
         eprintln!("Error: -o/--output can only be used with a single input file");
-        return EXIT_ERRORS;
+        return EXIT_USAGE;
     }
 
     // Reading from an interactive TTY would hang forever on read_to_string with

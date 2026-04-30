@@ -24,15 +24,17 @@ pub enum FixResult {
 
 /// Identifies which lint rule produced a diagnostic.
 ///
-/// Adding a new variant here will cause a compile error in
-/// `tests/common/mod.rs` until cluster test data is provided.
-#[doc(hidden)]
+/// The `snake_case` serialization is a stable wire contract (see the README
+/// rule-vocabulary table); renames are breaking changes. New rules may be
+/// added in minor releases — the enum is `#[non_exhaustive]` so consumers
+/// must include a `_` arm when matching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize),
     serde(rename_all = "snake_case")
 )]
+#[non_exhaustive]
 pub enum LintRule {
     SerialType,
     JsonType,
