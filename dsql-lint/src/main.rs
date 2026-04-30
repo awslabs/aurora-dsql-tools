@@ -470,6 +470,9 @@ fn run_fix(args: &Args) {
         if had_unfixable || had_io_error {
             process::exit(1);
         }
+        if summary_warnings > 0 {
+            process::exit(3);
+        }
         return;
     }
 
@@ -482,6 +485,10 @@ fn run_fix(args: &Args) {
 
     if had_unfixable || had_io_error {
         process::exit(1);
+    }
+
+    if summary_warnings > 0 {
+        process::exit(3);
     }
 }
 
