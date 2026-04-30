@@ -58,6 +58,8 @@ In `--fix` mode (text output) the fixed SQL streams to stdout, making it composa
 cat migration.sql | dsql-lint --fix - > migration-dsql.sql
 ```
 
+`dsql-lint -` exits with code `2` and a helpful message if stdin is an interactive terminal (nothing is piped in), rather than hanging indefinitely waiting for input.
+
 ### Auto-Fix Mode
 
 Use `--fix` to generate DSQL-compatible SQL:
@@ -125,13 +127,15 @@ Schema notes:
 - `error`: `null` when the file was read successfully; string message on I/O error (in which case `diagnostics` is empty).
 - `output_file`: path to the written fixed SQL in `--fix` mode for file inputs; `null` in lint mode or for stdin without `-o`.
 - `fixed_sql`: populated **only** for stdin inputs in `--fix` mode. `null` otherwise. Avoids bloating output for large file-based migrations.
-- All nullable fields serialize as explicit `null`, never absent.
+- On each `files[]` entry, the nullable fields `error`, `output_file`, and `fixed_sql` are always present — missing values are explicit `null`, never omitted keys.
+- `summary.errors` and `summary.warnings` use the same split in lint and fix mode: `errors` counts diagnostics whose `fix_result.status` is `unfixable`, `warnings` counts `fixed_with_warning`. A clean `--fix` would resolve `warnings` diagnostics with advisory output, and `errors` diagnostics would remain unfixable.
 
 Stable wire contract for programmatic consumers:
 
 - `rule` — stable string vocabulary (see *Lint rule vocabulary* below).
 - `fix_result.status` — one of `"fixed"`, `"fixed_with_warning"`, `"unfixable"`.
 - **`fix_result.detail` is informational only.** The prose is subject to copy-edits between releases. Match on `rule` + `fix_result.status` for programmatic logic; surface `detail` to humans only.
+- For `fix_result.status == "unfixable"` the `detail` key is omitted entirely (the rule had no payload to attach). The other two statuses always carry a `detail` string.
 
 ### Exit codes
 

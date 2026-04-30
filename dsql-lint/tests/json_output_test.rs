@@ -87,7 +87,11 @@ fn json_lint_with_errors() {
         "Preview should not contain newlines"
     );
 
-    assert_eq!(json["summary"]["errors"], 1);
+    // SERIAL → FixedWithWarning, so in lint mode it counts toward `warnings`
+    // (harmonized with fix-mode semantics), not `errors`. `errors` tracks
+    // only truly-Unfixable diagnostics.
+    assert_eq!(json["summary"]["warnings"], 1);
+    assert_eq!(json["summary"]["errors"], 0);
 }
 
 #[test]
@@ -285,8 +289,13 @@ fn json_multiple_files_grouped() {
     assert!(files[1]["diagnostics"].as_array().unwrap().is_empty());
     assert_eq!(files[1]["file"].as_str().unwrap(), b.to_str().unwrap());
 
-    // Top-level summary aggregates
-    assert!(json["summary"]["errors"].as_u64().unwrap() > 0);
+    // Top-level summary aggregates. SERIAL → FixedWithWarning in lint mode
+    // counts as a warning, not an error (errors are reserved for Unfixable).
+    assert!(
+        json["summary"]["warnings"].as_u64().unwrap() > 0
+            || json["summary"]["errors"].as_u64().unwrap() > 0,
+        "Expected at least one diagnostic in aggregated summary"
+    );
 }
 
 #[test]
@@ -305,4 +314,131 @@ fn json_single_file_still_has_files_array() {
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("should be valid JSON");
     assert_eq!(json["files"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn json_preview_appends_ellipsis_when_truncated() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("long.sql");
+    // Build a statement whose collapsed form exceeds 80 chars so the preview
+    // truncates. A long column list does the trick.
+    let long_cols: Vec<String> = (0..20)
+        .map(|i| format!("col_with_a_long_name_{i} INT"))
+        .collect();
+    let sql = format!(
+        "CREATE TABLE t (id SERIAL PRIMARY KEY, {});",
+        long_cols.join(", ")
+    );
+    std::fs::write(&input, &sql).unwrap();
+
+    let output = dsql_lint_bin()
+        .arg("--format")
+        .arg("json")
+        .arg(input.to_str().unwrap())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("should be valid JSON");
+    let preview = json["files"][0]["diagnostics"][0]["statement_preview"]
+        .as_str()
+        .unwrap();
+    assert!(
+        preview.ends_with('…'),
+        "Truncated preview should end with ellipsis, got: {preview}"
+    );
+}
+
+#[test]
+fn json_preview_no_ellipsis_when_short() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("short.sql");
+    std::fs::write(&input, "CREATE TABLE t (id SERIAL PRIMARY KEY);").unwrap();
+
+    let output = dsql_lint_bin()
+        .arg("--format")
+        .arg("json")
+        .arg(input.to_str().unwrap())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("should be valid JSON");
+    let preview = json["files"][0]["diagnostics"][0]["statement_preview"]
+        .as_str()
+        .unwrap();
+    assert!(
+        !preview.contains('…'),
+        "Short preview should not contain ellipsis, got: {preview}"
+    );
+}
+
+#[test]
+fn json_lint_summary_splits_errors_and_warnings() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("mixed.sql");
+    // SERIAL → FixedWithWarning, TRUNCATE → Unfixable
+    std::fs::write(
+        &input,
+        "CREATE TABLE t (id SERIAL PRIMARY KEY);\nTRUNCATE TABLE foo;",
+    )
+    .unwrap();
+
+    let output = dsql_lint_bin()
+        .arg("--format")
+        .arg("json")
+        .arg(input.to_str().unwrap())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("should be valid JSON");
+
+    // In lint mode the summary now splits the same way as fix mode:
+    //   errors   = Unfixable count
+    //   warnings = FixedWithWarning count
+    assert_eq!(
+        json["summary"]["errors"], 1,
+        "Expected 1 unfixable (TRUNCATE)"
+    );
+    assert_eq!(
+        json["summary"]["warnings"], 1,
+        "Expected 1 warning (SERIAL)"
+    );
+}
+
+#[test]
+fn json_fix_same_file_error_does_not_drop_queued_files() {
+    // Even though `-o` with multiple files is blocked, the scenario the
+    // reviewer flagged is: one file in the batch has a conflicting derived
+    // output path — it must NOT terminate the loop and swallow later files.
+    // We validate via a single-file case that the same-file error produces a
+    // well-formed JSON doc rather than truncating.
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("collide.sql");
+    std::fs::write(&input, "CREATE TABLE t (id UUID PRIMARY KEY);").unwrap();
+
+    let output = dsql_lint_bin()
+        .arg("--fix")
+        .arg("--format")
+        .arg("json")
+        .arg("-o")
+        .arg(input.to_str().unwrap()) // same as input
+        .arg(input.to_str().unwrap())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("must be valid JSON even on error");
+    let files = json["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1, "File entry must still appear in json_files");
+    assert!(
+        files[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("same as input"),
+        "Error field should carry the same-file message"
+    );
+    assert_eq!(json["schema_version"], 1);
 }

@@ -1,6 +1,6 @@
 use clap::{Parser, ValueEnum};
 use serde::Serialize;
-use std::io::Read;
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -83,6 +83,13 @@ struct JsonSummary {
 
 const STDIN_ARG: &str = "-";
 const STDIN_DISPLAY: &str = "<stdin>";
+const PREVIEW_MAX_CHARS: usize = 80;
+
+// Exit codes. Centralized so the contract documented in --help stays in sync.
+const EXIT_OK: i32 = 0;
+const EXIT_ERRORS: i32 = 1;
+const EXIT_USAGE: i32 = 2;
+const EXIT_WARNINGS: i32 = 3;
 
 fn is_stdin(path: &str) -> bool {
     path == STDIN_ARG
@@ -118,9 +125,16 @@ fn read_source(path: &str) -> std::io::Result<String> {
     }
 }
 
+/// Collapse whitespace and truncate with an ellipsis so human- and
+/// machine-readable previews can't be confused with an exactly-N-char statement.
 fn make_preview(statement: &str) -> String {
     let collapsed: String = statement.split_whitespace().collect::<Vec<_>>().join(" ");
-    collapsed.chars().take(80).collect()
+    if collapsed.chars().count() > PREVIEW_MAX_CHARS {
+        let truncated: String = collapsed.chars().take(PREVIEW_MAX_CHARS).collect();
+        format!("{truncated}…")
+    } else {
+        collapsed
+    }
 }
 
 fn default_output_path(input: &str) -> PathBuf {
@@ -139,35 +153,58 @@ fn default_output_path(input: &str) -> PathBuf {
 }
 
 fn main() {
+    let code = run();
+    // process::exit does not flush stdio buffers. Under a piped stdout (which is
+    // block-buffered) that would truncate the last chunk of JSON/SQL output —
+    // for JSON mode, one lost byte makes the document unparseable. Flush first.
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    process::exit(code);
+}
+
+fn run() -> i32 {
     let args = Args::parse();
 
     if args.files.is_empty() {
         eprintln!("Usage: dsql-lint <file.sql> [file2.sql ...] or dsql-lint - (read from stdin)");
-        process::exit(1);
+        return EXIT_ERRORS;
     }
 
     if args.output.is_some() && !args.fix {
         eprintln!("Error: -o/--output requires --fix");
-        process::exit(1);
+        return EXIT_ERRORS;
     }
 
     if args.output.is_some() && args.files.len() > 1 {
         eprintln!("Error: -o/--output can only be used with a single input file");
-        process::exit(1);
+        return EXIT_ERRORS;
+    }
+
+    // Reading from an interactive TTY would hang forever on read_to_string with
+    // no indication to the user. Detect and reject.
+    if args.files.iter().any(|f| is_stdin(f)) && std::io::stdin().is_terminal() {
+        eprintln!(
+            "Error: '-' reads from stdin, but stdin is a terminal. \
+             Pipe SQL in (e.g. `cat file.sql | dsql-lint -`) or pass a filename."
+        );
+        return EXIT_USAGE;
     }
 
     if args.fix {
-        run_fix(&args);
+        run_fix(&args)
     } else {
-        run_lint(&args);
+        run_lint(&args)
     }
 }
 
-fn run_lint(args: &Args) {
+fn run_lint(args: &Args) -> i32 {
+    use dsql_lint::FixResult;
+
     let json_mode = args.format == OutputFormat::Json;
-    let mut total_errors = 0;
     let mut had_read_error = false;
     let mut json_files: Vec<JsonFileOutput> = Vec::new();
+    let mut summary_errors: usize = 0;
+    let mut summary_warnings: usize = 0;
 
     for path in &args.files {
         let display = display_name(path);
@@ -176,7 +213,7 @@ fn run_lint(args: &Args) {
             Err(e) => {
                 if json_mode {
                     json_files.push(JsonFileOutput {
-                        file: path.clone(),
+                        file: display.to_string(),
                         diagnostics: Vec::new(),
                         error: Some(format!("Error reading '{path}': {e}")),
                         output_file: None,
@@ -191,7 +228,17 @@ fn run_lint(args: &Args) {
         };
 
         let diagnostics = dsql_lint::lint_sql(&sql);
-        total_errors += diagnostics.len();
+
+        // Summary uses the same split as fix mode: errors = Unfixable,
+        // warnings = FixedWithWarning. Gives callers a mode-independent answer
+        // to "how many of these will --fix resolve cleanly?"
+        for d in &diagnostics {
+            match &d.fix_result {
+                FixResult::Unfixable => summary_errors += 1,
+                FixResult::FixedWithWarning(_) => summary_warnings += 1,
+                FixResult::Fixed(_) => {}
+            }
+        }
 
         if json_mode {
             let json_diags: Vec<JsonDiagnostic> = diagnostics
@@ -217,37 +264,36 @@ fn run_lint(args: &Args) {
         }
     }
 
+    // In lint mode every diagnostic is reported as an error to the user
+    // regardless of its fix_result — the summary split is for the JSON
+    // consumer's benefit. Exit code tracks the total.
+    let total_diagnostics = summary_errors + summary_warnings;
+
     if json_mode {
-        let output = JsonOutput {
-            schema_version: JSON_SCHEMA_VERSION,
-            files: json_files,
-            summary: JsonSummary {
-                errors: total_errors,
-                warnings: 0,
+        emit_json(
+            json_files,
+            JsonSummary {
+                errors: summary_errors,
+                warnings: summary_warnings,
                 fixed: 0,
             },
-        };
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&output).expect("json serialization should not fail")
         );
-        if total_errors > 0 || had_read_error {
-            process::exit(1);
-        }
-        return;
     }
 
-    if total_errors > 0 || had_read_error {
-        if total_errors > 0 {
-            eprintln!("\n{total_errors} error(s) found.");
+    if total_diagnostics > 0 || had_read_error {
+        if !json_mode && total_diagnostics > 0 {
+            eprintln!("\n{total_diagnostics} error(s) found.");
         }
-        process::exit(1);
-    } else {
+        return EXIT_ERRORS;
+    }
+
+    if !json_mode {
         eprintln!("All statements compatible with DSQL.");
     }
+    EXIT_OK
 }
 
-fn run_fix(args: &Args) {
+fn run_fix(args: &Args) -> i32 {
     use dsql_lint::FixResult;
 
     let json_mode = args.format == OutputFormat::Json;
@@ -269,7 +315,7 @@ fn run_fix(args: &Args) {
             Err(e) => {
                 if json_mode {
                     json_files.push(JsonFileOutput {
-                        file: path.clone(),
+                        file: display.to_string(),
                         diagnostics: Vec::new(),
                         error: Some(format!("Error reading '{path}': {e}")),
                         output_file: None,
@@ -295,6 +341,11 @@ fn run_fix(args: &Args) {
             (None, false) => Some(default_output_path(path)),
         };
 
+        // Per-file I/O validation. Problems here (same-path collision, write
+        // failure) push an entry with `error` set and fall through to the next
+        // file — we never mid-loop exit, which would silently drop queued
+        // files from the JSON output.
+        let mut skip_due_to_io_error = false;
         if let Some(ref output_path) = output_path {
             if !stdin_input {
                 let resolve = |p: &Path| -> Option<PathBuf> {
@@ -326,12 +377,11 @@ fn run_fix(args: &Args) {
                             output_file: None,
                             fixed_sql: None,
                         });
-                        emit_fix_json(json_files, summary_errors, summary_warnings, summary_fixed);
-                        process::exit(1);
                     } else {
                         eprintln!("{msg}");
-                        process::exit(1);
                     }
+                    had_io_error = true;
+                    continue;
                 }
             }
 
@@ -340,7 +390,6 @@ fn run_fix(args: &Args) {
                 .filter(|p| !p.as_os_str().is_empty())
                 .unwrap_or(Path::new("."));
             let write_result = tempfile::NamedTempFile::new_in(write_dir).and_then(|mut tmp| {
-                use std::io::Write;
                 tmp.write_all(result.sql.as_bytes())?;
                 tmp.persist(output_path)?;
                 Ok(())
@@ -358,8 +407,11 @@ fn run_fix(args: &Args) {
                     eprintln!("Error writing '{}': {e}", output_path.display());
                 }
                 had_io_error = true;
-                continue;
+                skip_due_to_io_error = true;
             }
+        }
+        if skip_due_to_io_error {
+            continue;
         }
 
         // Aggregate counts for JSON summary.
@@ -374,6 +426,14 @@ fn run_fix(args: &Args) {
             }
         }
 
+        let has_unfixable = result
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.fix_result, FixResult::Unfixable));
+        if has_unfixable {
+            had_unfixable = true;
+        }
+
         if json_mode {
             let json_diags: Vec<JsonDiagnostic> = result
                 .diagnostics
@@ -383,16 +443,6 @@ fn run_fix(args: &Args) {
                     diagnostic: d.clone(),
                 })
                 .collect();
-            let has_unfixable = result
-                .diagnostics
-                .iter()
-                .any(|d| matches!(d.fix_result, FixResult::Unfixable));
-            if has_unfixable {
-                had_unfixable = true;
-                if unfixable_files.last().map(|s| s.as_str()) != Some(display) {
-                    unfixable_files.push(display.to_string());
-                }
-            }
             // stdin + no --output: embed fixed SQL in JSON instead of a file path
             let fixed_sql = if stdin_input && output_path.is_none() {
                 Some(result.sql.clone())
@@ -416,6 +466,10 @@ fn run_fix(args: &Args) {
             print!("{}", result.sql);
         }
 
+        if has_unfixable {
+            unfixable_files.push(display.to_string());
+        }
+
         for d in &result.diagnostics {
             match &d.fix_result {
                 FixResult::Fixed(msg) => {
@@ -428,11 +482,6 @@ fn run_fix(args: &Args) {
                     eprintln!("{display}:{}: ERROR (unfixable) — {}", d.line, d.message);
                     eprintln!("  → {}", d.suggestion);
                     eprintln!("  | {}", make_preview(&d.statement));
-                    if !had_unfixable || unfixable_files.last().map(|s| s.as_str()) != Some(display)
-                    {
-                        unfixable_files.push(display.to_string());
-                    }
-                    had_unfixable = true;
                 }
             }
         }
@@ -483,17 +532,15 @@ fn run_fix(args: &Args) {
     }
 
     if json_mode {
-        emit_fix_json(json_files, summary_errors, summary_warnings, summary_fixed);
-        if had_unfixable || had_io_error {
-            process::exit(1);
-        }
-        if summary_warnings > 0 {
-            process::exit(3);
-        }
-        return;
-    }
-
-    if had_unfixable {
+        emit_json(
+            json_files,
+            JsonSummary {
+                errors: summary_errors,
+                warnings: summary_warnings,
+                fixed: summary_fixed,
+            },
+        );
+    } else if had_unfixable {
         eprintln!(
             "\nFix complete: {} file(s) had unfixable errors and require manual review.",
             unfixable_files.len()
@@ -501,23 +548,19 @@ fn run_fix(args: &Args) {
     }
 
     if had_unfixable || had_io_error {
-        process::exit(1);
-    }
-
-    if summary_warnings > 0 {
-        process::exit(3);
+        EXIT_ERRORS
+    } else if summary_warnings > 0 {
+        EXIT_WARNINGS
+    } else {
+        EXIT_OK
     }
 }
 
-fn emit_fix_json(files: Vec<JsonFileOutput>, errors: usize, warnings: usize, fixed: usize) {
+fn emit_json(files: Vec<JsonFileOutput>, summary: JsonSummary) {
     let output = JsonOutput {
         schema_version: JSON_SCHEMA_VERSION,
         files,
-        summary: JsonSummary {
-            errors,
-            warnings,
-            fixed,
-        },
+        summary,
     };
     println!(
         "{}",
