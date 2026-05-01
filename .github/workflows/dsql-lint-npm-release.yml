@@ -61,7 +61,7 @@ jobs:
       - name: Stage binary (windows)
         if: matrix.os == 'windows-latest'
         run: |
-          mkdir -p dsql-lint/npm/dsql-lint-${{ matrix.npm-platform }}/bin
+          New-Item -ItemType Directory -Force -Path dsql-lint/npm/dsql-lint-${{ matrix.npm-platform }}/bin | Out-Null
           cp dsql-lint/target/${{ matrix.target }}/release/dsql-lint.exe `
              dsql-lint/npm/dsql-lint-${{ matrix.npm-platform }}/bin/dsql-lint.exe
         shell: pwsh
