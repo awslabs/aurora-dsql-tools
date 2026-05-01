@@ -105,10 +105,11 @@ jobs:
             # Copy built binary into source package
             cp -r artifacts/dsql-lint-$platform/bin/ dsql-lint/npm/dsql-lint-$platform/bin/
 
-            # Stamp version
-            cd dsql-lint/npm/dsql-lint-$platform
-            npm version "$VERSION" --no-git-tag-version --allow-same-version
-            cd ../..
+            # Stamp version (subshell so cd doesn't mutate the outer loop's cwd)
+            (
+              cd dsql-lint/npm/dsql-lint-$platform
+              npm version "$VERSION" --no-git-tag-version --allow-same-version
+            )
           done
 
       - name: Make binaries executable
@@ -134,9 +135,10 @@ jobs:
       - name: Publish platform packages
         run: |
           for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64; do
-            cd dsql-lint/npm/dsql-lint-$platform
-            npm publish --provenance --access public
-            cd ../..
+            (
+              cd dsql-lint/npm/dsql-lint-$platform
+              npm publish --provenance --access public
+            )
           done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
