@@ -202,6 +202,7 @@ pub fn cluster_test_for_rule(rule: LintRule) -> Option<(&'static str, &'static s
             "DDL statements",
         )),
         LintRule::ParseError => None,
+        _ => None,
     }
 }
 

@@ -84,7 +84,8 @@ fn fix_serial_produces_identity_in_output() {
         .status()
         .unwrap();
 
-    assert!(status.success());
+    // SERIAL conversion is FixedWithWarning → exit 3
+    assert_eq!(status.code(), Some(3));
     let output = dir.path().join("input-fixed.sql");
     let content = std::fs::read_to_string(&output).unwrap();
     assert!(
@@ -177,7 +178,8 @@ fn fix_fk_removal_shows_warning_count() {
         .output()
         .unwrap();
 
-    assert!(output.status.success());
+    // FK removal is FixedWithWarning → exit 3
+    assert_eq!(output.status.code(), Some(3));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("warning(s)"),
@@ -233,7 +235,8 @@ fn fix_empty_output_shows_distinct_message() {
         .output()
         .unwrap();
 
-    assert!(output.status.success());
+    // ALTER TABLE FK removal is FixedWithWarning → exit 3
+    assert_eq!(output.status.code(), Some(3));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("Fixed output is empty"),
@@ -257,7 +260,8 @@ fn fix_comment_note_only_when_comments_present() {
         .output()
         .unwrap();
 
-    assert!(output.status.success());
+    // SERIAL is FixedWithWarning → exit 3
+    assert_eq!(output.status.code(), Some(3));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("SQL comments in modified statements were not preserved"),

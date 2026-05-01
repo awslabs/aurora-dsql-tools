@@ -11,6 +11,11 @@ use crate::rules;
 
 /// Indicates whether a rule was able to automatically fix the issue it detected.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize),
+    serde(tag = "status", content = "detail", rename_all = "snake_case")
+)]
 pub enum FixResult {
     Fixed(String),
     FixedWithWarning(String),
@@ -19,10 +24,20 @@ pub enum FixResult {
 
 /// Identifies which lint rule produced a diagnostic.
 ///
-/// Adding a new variant here will cause a compile error in
-/// `tests/common/mod.rs` until cluster test data is provided.
-#[doc(hidden)]
+/// When serialized (via the `serde` feature), each variant becomes its
+/// `snake_case` form — e.g. `SerialType` → `"serial_type"`. These strings
+/// are the on-wire identifier documented in the README rule-vocabulary
+/// table, so variant renames change the JSON output.
+///
+/// The enum is `#[non_exhaustive]`: new rules can be added in minor
+/// releases, and downstream consumers must include a `_` arm when matching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize),
+    serde(rename_all = "snake_case")
+)]
+#[non_exhaustive]
 pub enum LintRule {
     SerialType,
     JsonType,
@@ -59,9 +74,15 @@ pub enum LintRule {
 /// Returned by [`lint_sql`] and consumed by both the CLI (for human-readable output)
 /// and the library crate (for programmatic integration, e.g. in MCP servers).
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Diagnostic {
     pub rule: LintRule,
     pub line: usize,
+    /// Raw SQL of the offending statement. Excluded from `Serialize` via
+    /// `#[serde(skip)]` because it can be long and multi-line; callers that
+    /// want it in JSON should wrap `Diagnostic` in their own type (the CLI
+    /// uses a `statement_preview` field for this).
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub statement: String,
     pub message: String,
     pub suggestion: String,
