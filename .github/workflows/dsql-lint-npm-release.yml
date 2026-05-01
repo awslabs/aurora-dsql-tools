@@ -54,23 +54,23 @@ jobs:
       - name: Stage binary (unix)
         if: matrix.os != 'windows-latest'
         run: |
-          mkdir -p npm/dsql-lint-${{ matrix.npm-platform }}/bin
+          mkdir -p dsql-lint/npm/dsql-lint-${{ matrix.npm-platform }}/bin
           cp dsql-lint/target/${{ matrix.target }}/release/dsql-lint \
-             npm/dsql-lint-${{ matrix.npm-platform }}/bin/dsql-lint
+             dsql-lint/npm/dsql-lint-${{ matrix.npm-platform }}/bin/dsql-lint
 
       - name: Stage binary (windows)
         if: matrix.os == 'windows-latest'
         run: |
-          mkdir -p npm/dsql-lint-${{ matrix.npm-platform }}/bin
+          mkdir -p dsql-lint/npm/dsql-lint-${{ matrix.npm-platform }}/bin
           cp dsql-lint/target/${{ matrix.target }}/release/dsql-lint.exe `
-             npm/dsql-lint-${{ matrix.npm-platform }}/bin/dsql-lint.exe
+             dsql-lint/npm/dsql-lint-${{ matrix.npm-platform }}/bin/dsql-lint.exe
         shell: pwsh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: dsql-lint-${{ matrix.npm-platform }}
-          path: npm/dsql-lint-${{ matrix.npm-platform }}/
+          path: dsql-lint/npm/dsql-lint-${{ matrix.npm-platform }}/
 
   publish:
     needs: build
@@ -103,10 +103,10 @@ jobs:
         run: |
           for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64; do
             # Copy built binary into source package
-            cp -r artifacts/dsql-lint-$platform/bin/ npm/dsql-lint-$platform/bin/
+            cp -r artifacts/dsql-lint-$platform/bin/ dsql-lint/npm/dsql-lint-$platform/bin/
 
             # Stamp version
-            cd npm/dsql-lint-$platform
+            cd dsql-lint/npm/dsql-lint-$platform
             npm version "$VERSION" --no-git-tag-version --allow-same-version
             cd ../..
           done
@@ -114,12 +114,12 @@ jobs:
       - name: Make binaries executable
         run: |
           for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
-            chmod +x npm/dsql-lint-$platform/bin/dsql-lint
+            chmod +x dsql-lint/npm/dsql-lint-$platform/bin/dsql-lint
           done
 
       - name: Stamp main package version
         run: |
-          cd npm/dsql-lint
+          cd dsql-lint/npm/dsql-lint
           npm version "$VERSION" --no-git-tag-version --allow-same-version
 
           # Update optionalDependencies to match
@@ -134,7 +134,7 @@ jobs:
       - name: Publish platform packages
         run: |
           for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64; do
-            cd npm/dsql-lint-$platform
+            cd dsql-lint/npm/dsql-lint-$platform
             npm publish --provenance --access public
             cd ../..
           done
@@ -143,7 +143,7 @@ jobs:
 
       - name: Publish main package
         run: |
-          cd npm/dsql-lint
+          cd dsql-lint/npm/dsql-lint
           npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
