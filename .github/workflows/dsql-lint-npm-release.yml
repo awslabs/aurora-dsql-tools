@@ -102,8 +102,11 @@ jobs:
       - name: Stamp versions and stage platform packages
         run: |
           for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64; do
-            # Copy built binary into source package
-            cp -r artifacts/dsql-lint-$platform/bin/ dsql-lint/npm/dsql-lint-$platform/bin/
+            # Copy the built binary (and, for Windows, the .exe) into the
+            # source package's bin/. Using `cp -T` with an explicit trailing
+            # path avoids GNU cp's "nest when target exists" behaviour that
+            # would otherwise drop the payload at bin/bin/.
+            cp artifacts/dsql-lint-$platform/bin/* dsql-lint/npm/dsql-lint-$platform/bin/
 
             # Stamp version (subshell so cd doesn't mutate the outer loop's cwd)
             (
