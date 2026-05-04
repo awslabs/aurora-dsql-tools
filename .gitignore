@@ -6,3 +6,5 @@ out/
 *.vsix
 # Test workspace files
 **/test-vscode-sqltools.code-workspace
+# Python build artifacts (maturin)
+dsql-lint/pypi/dist/

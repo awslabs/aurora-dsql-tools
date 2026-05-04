@@ -1,4 +1,9 @@
-name: Publish dsql-lint to crates.io
+name: Release dsql-lint
+
+# Consolidated release workflow: builds platform binaries once and fans out
+# to crates.io, npm (wrapper + 5 platform packages), and PyPI (5 platform
+# wheels) so one tag push produces an aligned release across all three
+# registries.
 
 permissions: {}
 
@@ -7,17 +12,284 @@ on:
     tags:
       - "dsql-lint/v*"
 
-defaults:
-  run:
-    working-directory: dsql-lint
-
 jobs:
-  publish:
+  verify-version:
+    # Guard against tag/Cargo.toml drift before anything builds. Catches the
+    # "tagged 0.1.4 but forgot to bump Cargo.toml" class of mistakes early,
+    # when the fix is just retagging rather than yanking from three registries.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: rustup update stable && rustup default stable
+      - name: Assert Cargo.toml version matches tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#dsql-lint/v}"
+          # Use cargo's own view of the version rather than grepping TOML —
+          # robust to future [workspace.package] or field reordering.
+          CARGO_VERSION=$(cargo pkgid --manifest-path dsql-lint/Cargo.toml | sed 's/.*#//')
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "Version mismatch: tag is $TAG_VERSION but Cargo.toml is $CARGO_VERSION"
+            exit 1
+          fi
+          echo "Version aligned: $TAG_VERSION"
+
+  build-binaries:
+    needs: verify-version
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            platform: darwin-arm64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            platform: darwin-x64
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            platform: linux-x64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            platform: linux-arm64
+            cross: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            platform: win32-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (Linux ARM64)
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+        working-directory: dsql-lint
+
+      - name: Stage binary (unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mkdir -p dsql-lint/npm/dsql-lint-${{ matrix.platform }}/bin
+          cp dsql-lint/target/${{ matrix.target }}/release/dsql-lint \
+             dsql-lint/npm/dsql-lint-${{ matrix.platform }}/bin/dsql-lint
+
+      - name: Stage binary (windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          mkdir -p dsql-lint/npm/dsql-lint-${{ matrix.platform }}/bin
+          cp dsql-lint/target/${{ matrix.target }}/release/dsql-lint.exe `
+             dsql-lint/npm/dsql-lint-${{ matrix.platform }}/bin/dsql-lint.exe
+        shell: pwsh
+
+      # Smoke test: invoke the wrapper against the freshly-built binary on its
+      # native runner. Catches layout drift between the wrapper's
+      # require.resolve path and the staged package structure. Skipped for
+      # linux-arm64 because the ARM binary can't exec on an x64 runner.
+      - name: Smoke-test npm wrapper resolves and execs the native binary
+        if: matrix.platform != 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg="@aws/dsql-lint-${{ matrix.platform }}"
+          mkdir -p "dsql-lint/npm/dsql-lint/node_modules/@aws"
+          ln -s "$PWD/dsql-lint/npm/dsql-lint-${{ matrix.platform }}" \
+                "dsql-lint/npm/dsql-lint/node_modules/$pkg"
+          if [ "${{ matrix.os }}" != "windows-latest" ]; then
+            chmod +x "dsql-lint/npm/dsql-lint-${{ matrix.platform }}/bin/dsql-lint"
+          fi
+          node dsql-lint/npm/dsql-lint/bin/dsql-lint --version
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsql-lint-${{ matrix.platform }}
+          path: dsql-lint/npm/dsql-lint-${{ matrix.platform }}/
+
+  build-wheels:
+    needs: verify-version
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            platform: darwin-arm64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            platform: darwin-x64
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            platform: linux-x64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            platform: linux-arm64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            platform: win32-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # maturin-action handles Rust toolchain setup, cross-compilation via
+      # manylinux containers (for linux targets), and auditwheel repair. Using
+      # it avoids re-implementing the cross-compile matrix by hand.
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          working-directory: dsql-lint/pypi
+          sccache: "true"
+          # manylinux2014 gives broad glibc compatibility for the linux wheels.
+          # Darwin/windows rows ignore this key.
+          manylinux: auto
+
+      - name: Smoke-test wheel (non-arm64-linux only)
+        if: matrix.platform != 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/smoke
+          source /tmp/smoke/bin/activate || source /tmp/smoke/Scripts/activate
+          pip install --find-links=dsql-lint/pypi/dist --no-index dsql-lint
+          dsql-lint --version
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.platform }}
+          path: dsql-lint/pypi/dist/*.whl
+
+  publish-npm:
+    # Gated on publish-pypi so a PyPI failure doesn't leave us with an
+    # asymmetric release. PyPI is yank-only (no true delete), so it has the
+    # hardest recovery story of the three registries — publish it first.
+    needs: [build-binaries, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    environment: npm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#dsql-lint/v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Publishing npm packages version $VERSION"
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          pattern: dsql-lint-*
+
+      - name: Stamp versions and stage platform packages
+        run: |
+          for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64; do
+            # Copy only the binary (and, for Windows, the .exe) into the
+            # destination bin/. `cp -r src/ dst/` with an existing dst/ would
+            # produce dst/bin/dsql-lint (one level too deep) — same footgun as
+            # fixed in #47.
+            cp artifacts/dsql-lint-$platform/bin/* dsql-lint/npm/dsql-lint-$platform/bin/
+            (
+              cd dsql-lint/npm/dsql-lint-$platform
+              npm version "$VERSION" --no-git-tag-version --allow-same-version
+            )
+          done
+
+      - name: Make binaries executable
+        run: |
+          for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
+            chmod +x dsql-lint/npm/dsql-lint-$platform/bin/dsql-lint
+          done
+
+      - name: Stamp main package version
+        run: |
+          (
+            cd dsql-lint/npm/dsql-lint
+            npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+            node -e "
+              const pkg = require('./package.json');
+              for (const dep of Object.keys(pkg.optionalDependencies)) {
+                pkg.optionalDependencies[dep] = '$VERSION';
+              }
+              require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+            "
+          )
+
+      - name: Publish platform packages
+        run: |
+          for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64; do
+            (cd dsql-lint/npm/dsql-lint-$platform && npm publish --provenance --access public)
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish main package
+        run: |
+          (cd dsql-lint/npm/dsql-lint && npm publish --provenance --access public)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-pypi:
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    # PyPI trusted publisher (OIDC). Requires one-time setup on pypi.org:
+    # project "dsql-lint" → trusted publisher → this repo + this workflow +
+    # environment "pypi". No long-lived API token needed.
+    environment: pypi
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download all wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          pattern: wheel-*
+          merge-multiple: true
+
+      - name: Publish wheels to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-crates:
+    # Gated on publish-pypi for the same reason as publish-npm: crates.io
+    # supports yank but PyPI's recovery is the weakest, so publish PyPI first.
+    needs: [verify-version, publish-pypi]
     runs-on: ubuntu-latest
     environment: rust
     permissions:
       id-token: write
       contents: read
+    defaults:
+      run:
+        working-directory: dsql-lint
     steps:
       - uses: actions/checkout@v4
 
@@ -41,13 +313,10 @@ jobs:
           echo "::add-mask::$CRATES_IO_KEY"
           echo "CRATES_IO_KEY=$CRATES_IO_KEY" >> "$GITHUB_ENV"
 
-      - name: Set version from tag
-        run: |
-          VERSION="${GITHUB_REF_NAME#dsql-lint/v}"
-          echo "Publishing version $VERSION"
-          sed -i "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
+      - name: Assert work tree is clean before publish
+        run: git diff --exit-code
 
       - name: Publish to crates.io
-        run: cargo publish --allow-dirty
+        run: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ env.CRATES_IO_KEY }}

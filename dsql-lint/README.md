@@ -16,6 +16,14 @@ Via npm (prebuilt native binary, no Rust toolchain required):
 npm install -g @aws/dsql-lint
 ```
 
+Via PyPI (prebuilt native binary, no Rust toolchain required):
+
+```bash
+pip install dsql-lint
+# or, without installing:
+uvx dsql-lint migration.sql
+```
+
 Or via Cargo:
 
 ```bash
