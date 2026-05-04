@@ -1,0 +1,28 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "dsql-lint"
+description = "Lint SQL files for Aurora DSQL compatibility"
+license = { text = "MIT-0" }
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [{ name = "Amazon Web Services" }]
+classifiers = [
+  "Programming Language :: Rust",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Topic :: Database",
+]
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/awslabs/aurora-dsql-tools"
+Homepage = "https://github.com/awslabs/aurora-dsql-tools/tree/main/dsql-lint"
+
+[tool.maturin]
+bindings = "bin"
+manifest-path = "../Cargo.toml"
+strip = true
