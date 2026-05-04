@@ -38,6 +38,11 @@ jobs:
     needs: verify-version
     strategy:
       matrix:
+        # `cross: true` marks rows where the target arch differs from the
+        # runner's arch (GitHub's `macos-latest` is arm64, so darwin-x64 is a
+        # cross-compile; ubuntu-latest is x64, so linux-arm64 is a cross-
+        # compile). Used to skip the post-build smoke-test on rows where the
+        # artifact can't execute on the runner.
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
@@ -45,6 +50,7 @@ jobs:
           - target: x86_64-apple-darwin
             os: macos-latest
             platform: darwin-x64
+            cross: true
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             platform: linux-x64
@@ -68,7 +74,7 @@ jobs:
           rustup target add ${{ matrix.target }}
 
       - name: Install cross-compilation tools (Linux ARM64)
-        if: matrix.cross
+        if: matrix.platform == 'linux-arm64'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
@@ -96,9 +102,9 @@ jobs:
       # Smoke test: invoke the wrapper against the freshly-built binary on its
       # native runner. Catches layout drift between the wrapper's
       # require.resolve path and the staged package structure. Skipped for
-      # linux-arm64 because the ARM binary can't exec on an x64 runner.
+      # cross-compile rows because the artifact can't exec on the runner arch.
       - name: Smoke-test npm wrapper resolves and execs the native binary
-        if: matrix.platform != 'linux-arm64'
+        if: ${{ !matrix.cross }}
         shell: bash
         run: |
           set -euo pipefail
@@ -121,6 +127,7 @@ jobs:
     needs: verify-version
     strategy:
       matrix:
+        # See build-binaries for the `cross: true` semantics.
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
@@ -128,12 +135,14 @@ jobs:
           - target: x86_64-apple-darwin
             os: macos-latest
             platform: darwin-x64
+            cross: true
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             platform: linux-x64
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             platform: linux-arm64
+            cross: true
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             platform: win32-x64
@@ -161,8 +170,8 @@ jobs:
           # Darwin/windows rows ignore this key.
           manylinux: auto
 
-      - name: Smoke-test wheel (non-arm64-linux only)
-        if: matrix.platform != 'linux-arm64'
+      - name: Smoke-test wheel (skip cross-compile rows)
+        if: ${{ !matrix.cross }}
         shell: bash
         run: |
           set -euo pipefail
