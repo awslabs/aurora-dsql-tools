@@ -154,7 +154,8 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --manifest-path dsql-lint/pypi/pyproject.toml
+          args: --release --out dist
+          working-directory: dsql-lint/pypi
           sccache: "true"
           # manylinux2014 gives broad glibc compatibility for the linux wheels.
           # Darwin/windows rows ignore this key.
@@ -167,14 +168,14 @@ jobs:
           set -euo pipefail
           python -m venv /tmp/smoke
           source /tmp/smoke/bin/activate || source /tmp/smoke/Scripts/activate
-          pip install --find-links=dist --no-index dsql-lint
+          pip install --find-links=dsql-lint/pypi/dist --no-index dsql-lint
           dsql-lint --version
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.platform }}
-          path: dist/*.whl
+          path: dsql-lint/pypi/dist/*.whl
 
   publish-npm:
     # Gated on publish-pypi so a PyPI failure doesn't leave us with an

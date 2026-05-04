@@ -7,12 +7,12 @@ on:
   push:
     branches: [main]
     paths:
-      - 'npm/**'
+      - 'dsql-lint/npm/**'
       - '.github/workflows/dsql-lint-npm-*.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'npm/**'
+      - 'dsql-lint/npm/**'
       - '.github/workflows/dsql-lint-npm-*.yml'
   workflow_dispatch:
 
@@ -32,7 +32,7 @@ jobs:
           node-version: 20
 
       - name: Run wrapper unit tests
-        run: node --test npm/dsql-lint/test/wrapper.test.js
+        run: node --test dsql-lint/npm/dsql-lint/test/wrapper.test.js
 
   lint-workflows:
     name: Lint GitHub Actions workflows
@@ -43,4 +43,4 @@ jobs:
       - name: Run actionlint
         uses: raven-actions/actionlint@v2
         with:
-          files: .github/workflows/dsql-lint-npm-*.yml
+          files: .github/workflows/dsql-lint-*.yml

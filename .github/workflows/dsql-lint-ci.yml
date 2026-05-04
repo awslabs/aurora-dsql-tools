@@ -74,7 +74,8 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: x86_64-unknown-linux-gnu
-          args: --release --out dist --manifest-path dsql-lint/pypi/pyproject.toml
+          args: --release --out dist
+          working-directory: dsql-lint/pypi
           manylinux: auto
           sccache: "true"
 
@@ -82,7 +83,7 @@ jobs:
         run: |
           python -m venv /tmp/smoke
           source /tmp/smoke/bin/activate
-          pip install --find-links=dist --no-index dsql-lint
+          pip install --find-links=dsql-lint/pypi/dist --no-index dsql-lint
           dsql-lint --version
 
   create-cluster:
