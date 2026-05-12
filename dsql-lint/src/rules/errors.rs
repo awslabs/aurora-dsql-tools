@@ -91,26 +91,18 @@ fn check_column(
         }
     }
 
-    // JSON / JSONB
-    let type_name = match &col.data_type {
-        DataType::JSON => Some("JSON"),
-        DataType::JSONB => Some("JSONB"),
-        _ => None,
-    };
-    if let Some(type_str) = type_name {
-        col.data_type = DataType::Text;
+    // JSONB → json
+    if matches!(&col.data_type, DataType::JSONB) {
+        col.data_type = DataType::JSON;
         diagnostics.push(error(
             LintRule::JsonType,
-            find_line(raw_sql, &type_str.to_lowercase()),
+            find_line(raw_sql, "jsonb"),
             format!(
-                "Column `{}` uses {type_str}, which is not supported in DSQL.",
+                "Column `{}` uses JSONB, which is not supported as a storage type in DSQL.",
                 col.name
             ),
-            "Use TEXT to store JSON data as a string.",
-            FixResult::Fixed(format!(
-                "Replaced {} with TEXT on column `{}`",
-                type_str, col.name
-            )),
+            "Use JSON instead. Cast to ::jsonb at query time for JSONB operators.",
+            FixResult::Fixed(format!("Replaced JSONB with JSON on column `{}`", col.name)),
         ));
     }
 

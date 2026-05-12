@@ -123,7 +123,7 @@ use dsql_lint::LintRule;
 pub fn cluster_test_for_rule(rule: LintRule) -> Option<(&'static str, &'static str)> {
     match rule {
         LintRule::SerialType => Some(("CREATE TABLE _r (id SERIAL PRIMARY KEY);", "SERIAL")),
-        LintRule::JsonType => Some(("CREATE TABLE _r (id INT, data JSON);", "JSON")),
+        LintRule::JsonType => Some(("CREATE TABLE _r (id INT, data JSONB);", "JSONB")),
         LintRule::ArrayType => Some(("CREATE TABLE _r (id INT, tags TEXT[]);", "array")),
         LintRule::ForeignKey => Some((
             "CREATE TABLE _r (id INT, cid INT REFERENCES _clust_base(id));",
