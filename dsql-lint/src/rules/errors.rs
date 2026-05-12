@@ -91,7 +91,7 @@ fn check_column(
         }
     }
 
-    // JSONB → json (DSQL supports json natively but not JSONB as a storage type)
+    // JSONB → json
     if matches!(&col.data_type, DataType::JSONB) {
         col.data_type = DataType::JSON;
         diagnostics.push(error(
@@ -102,10 +102,7 @@ fn check_column(
                 col.name
             ),
             "Use JSON instead. Cast to ::jsonb at query time for JSONB operators.",
-            FixResult::Fixed(format!(
-                "Replaced JSONB with JSON on column `{}`",
-                col.name
-            )),
+            FixResult::Fixed(format!("Replaced JSONB with JSON on column `{}`", col.name)),
         ));
     }
 
