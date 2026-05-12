@@ -70,8 +70,7 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "CREATE TABLE t (id SERIAL2 PRIMARY KEY);",
         "SERIAL2",
     ),
-    // JSON / JSONB
-    ("json", "CREATE TABLE t (id INT, data JSON);", "JSON"),
+    // JSONB (JSON is now supported natively)
     ("json", "CREATE TABLE t (id INT, data JSONB);", "JSONB"),
     // Foreign keys — column-level and table-level
     (
@@ -158,13 +157,13 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "CREATE INDEX ASYNC idx ON t(col) WHERE col > 0;",
         "Partial",
     ),
-    // ALTER TABLE — same checks as CREATE TABLE
+    // ALTER TABLE — JSON is now valid, only JSONB flagged
     (
         "alter-serial",
         "ALTER TABLE t ADD COLUMN id SERIAL;",
         "SERIAL",
     ),
-    ("alter-json", "ALTER TABLE t ADD COLUMN data JSON;", "JSON"),
+    ("alter-json", "ALTER TABLE t ADD COLUMN data JSONB;", "JSONB"),
     (
         "alter-array",
         "ALTER TABLE t ADD COLUMN tags TEXT[];",
@@ -486,6 +485,11 @@ const FALSE_POSITIVE_CASES: &[(&str, &str)] = &[
     // TEXT column named 'json_data' should not trigger JSON rule
     (
         "CREATE TABLE t (id UUID PRIMARY KEY, json_data TEXT);",
+        "JSON",
+    ),
+    // JSON column type is now valid in DSQL — should not trigger
+    (
+        "CREATE TABLE t (id UUID PRIMARY KEY, data JSON);",
         "JSON",
     ),
     // Table named 'temporary_cache' should not trigger TEMP rule
@@ -864,7 +868,7 @@ fn fixture_sample_migration() {
     let expected = &[
         "SERIAL",
         "FOREIGN KEY",
-        "JSON",
+        "JSONB",
         "TRUNCATE",
         "TEMPORARY",
         "array",
