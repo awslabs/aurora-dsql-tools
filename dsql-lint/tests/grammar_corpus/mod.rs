@@ -127,4 +127,69 @@ CREATE TABLE t (id BIGINT PRIMARY KEY);
         assert_eq!(header.fixes, None);
         assert_eq!(&input[body_offset..], "CREATE TABLE t (id BIGINT PRIMARY KEY);\n");
     }
+
+    #[test]
+    fn parse_header_reject_with_fix() {
+        let input = "\
+-- production: CreateStmt
+-- expectation: reject
+-- rule: serial_type
+-- fix: fixed/serial_type__basic.sql
+CREATE TABLE t (id SERIAL);
+";
+        let (h, _) = parse_header(input).unwrap();
+        assert_eq!(h.expectation, Expectation::Reject);
+        assert_eq!(h.rule.as_deref(), Some("serial_type"));
+        assert_eq!(h.fix.as_deref(), Some("fixed/serial_type__basic.sql"));
+    }
+
+    #[test]
+    fn parse_header_fixed_with_back_reference() {
+        let input = "\
+-- production: CreateStmt
+-- expectation: accept
+-- fixes: reject/serial_type__basic.sql
+CREATE TABLE t (id BIGINT);
+";
+        let (h, _) = parse_header(input).unwrap();
+        assert_eq!(h.fixes.as_deref(), Some("reject/serial_type__basic.sql"));
+    }
+
+    #[test]
+    fn parse_header_missing_production_errors() {
+        let input = "-- expectation: accept\nSELECT 1;\n";
+        let err = parse_header(input).unwrap_err();
+        assert!(err.message.contains("production"), "got {err}");
+    }
+
+    #[test]
+    fn parse_header_unknown_key_errors() {
+        let input = "\
+-- production: X
+-- expectation: accept
+-- frobnicate: yes
+SELECT 1;
+";
+        let err = parse_header(input).unwrap_err();
+        assert!(err.message.contains("frobnicate"), "got {err}");
+    }
+
+    #[test]
+    fn parse_header_bad_expectation_errors() {
+        let input = "\
+-- production: X
+-- expectation: maybe
+SELECT 1;
+";
+        let err = parse_header(input).unwrap_err();
+        assert!(err.message.contains("expectation"), "got {err}");
+    }
+
+    #[test]
+    fn parse_header_skips_leading_blank_lines() {
+        let input = "\n-- production: X\n-- expectation: accept\nSELECT 1;\n";
+        let (h, body_offset) = parse_header(input).unwrap();
+        assert_eq!(h.production, "X");
+        assert_eq!(&input[body_offset..], "SELECT 1;\n");
+    }
 }
