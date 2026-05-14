@@ -5,7 +5,7 @@
 
 mod grammar_corpus;
 
-use dsql_lint::lint_sql;
+use dsql_lint::{fix_sql, lint_sql};
 
 /// Walks the corpus and asserts dsql-lint matches each fixture's expectation.
 /// Collects all failures into one report so a single grammar change that
@@ -62,6 +62,66 @@ fn corpus_contract_test() {
                     }
                 }
             }
+        }
+    }
+
+    let bless = std::env::var_os("BLESS").is_some();
+
+    for fx in &fixtures {
+        if fx.kind != grammar_corpus::FixtureKind::Reject {
+            continue;
+        }
+        let Some(fix_target) = fx.header.fix.as_deref() else {
+            continue;
+        };
+        let golden_path = grammar_corpus::corpus_root().join(fix_target);
+        if !golden_path.exists() {
+            failures.push(format!(
+                "{}: fix: header points to '{fix_target}' but that file does not exist.",
+                fx.rel_path,
+            ));
+            continue;
+        }
+        let actual = fix_sql(&fx.body).sql;
+
+        if bless {
+            let header = format!(
+                "-- production: {}\n-- expectation: accept\n-- fixes: {}\n",
+                fx.header.production, fx.rel_path,
+            );
+            let blessed = format!("{header}{actual}");
+            std::fs::write(&golden_path, &blessed).expect("write golden");
+            eprintln!("blessed {}", golden_path.display());
+            continue;
+        }
+
+        // Compare against golden body (skip the header).
+        let golden_text = std::fs::read_to_string(&golden_path).expect("read golden");
+        let (_, golden_body_offset) = grammar_corpus::parse_header(&golden_text)
+            .expect("malformed golden header");
+        let golden_body = &golden_text[golden_body_offset..];
+
+        if golden_body != actual {
+            failures.push(format!(
+                "{}: fix output does not match golden {fix_target}.\n\
+                 Expected:\n{golden_body}\n\
+                 Actual:\n{actual}\n\
+                 Run `BLESS=1 cargo test -p dsql-lint --test grammar_oracle` to update.",
+                fx.rel_path
+            ));
+        }
+
+        // Verify the back-reference points at this fixture.
+        let golden_fixture = fixtures
+            .iter()
+            .find(|f| f.rel_path == *fix_target)
+            .expect("loader should have picked up the golden");
+        let expected_back_ref = &fx.rel_path;
+        if golden_fixture.header.fixes.as_deref() != Some(expected_back_ref.as_str()) {
+            failures.push(format!(
+                "{}: fixes: back-reference is {:?}, expected {:?}",
+                golden_fixture.rel_path, golden_fixture.header.fixes, expected_back_ref
+            ));
         }
     }
 
