@@ -186,9 +186,32 @@ pub fn corpus_root() -> PathBuf {
         .join("grammar")
 }
 
+/// Convert `snake_case` (the on-wire form of `LintRule` via serde) to
+/// `PascalCase` (the variant identifier as printed by `{:?}`).
+pub fn snake_to_pascal(s: &str) -> String {
+    s.split('_')
+        .map(|seg| {
+            let mut c = seg.chars();
+            match c.next() {
+                Some(first) => first.to_uppercase().chain(c).collect::<String>(),
+                None => String::new(),
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snake_to_pascal_basic() {
+        assert_eq!(snake_to_pascal("serial_type"), "SerialType");
+        assert_eq!(snake_to_pascal("foreign_key"), "ForeignKey");
+        assert_eq!(snake_to_pascal("identity_cache_missing"), "IdentityCacheMissing");
+        assert_eq!(snake_to_pascal(""), "");
+        assert_eq!(snake_to_pascal("x"), "X");
+    }
 
     #[test]
     fn parse_header_accept_minimal() {

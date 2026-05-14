@@ -38,7 +38,29 @@ fn corpus_contract_test() {
                 }
             }
             grammar_corpus::FixtureKind::Reject => {
-                // Filled in by Task 2.3
+                let diags = lint_sql(&fx.body);
+                if diags.is_empty() {
+                    failures.push(format!(
+                        "{}: expected at least one diagnostic, got none. \
+                         Either add a rule that catches this, or move the \
+                         fixture to accept/ if it's now valid.",
+                        fx.rel_path,
+                    ));
+                } else if let Some(expected_rule) = &fx.header.rule {
+                    let observed: Vec<String> = diags
+                        .iter()
+                        .map(|d| format!("{:?}", d.rule))
+                        .collect();
+                    let expected_pretty = grammar_corpus::snake_to_pascal(expected_rule);
+                    if !observed.iter().any(|r| r == &expected_pretty) {
+                        failures.push(format!(
+                            "{}: header says rule '{expected_rule}' (LintRule::{expected_pretty}) \
+                             should fire, but observed rules were [{}].",
+                            fx.rel_path,
+                            observed.join(", ")
+                        ));
+                    }
+                }
             }
         }
     }
