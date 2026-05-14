@@ -108,6 +108,84 @@ pub fn parse_header(input: &str) -> Result<(FixtureHeader, usize), ParseError> {
     ))
 }
 
+use std::path::{Path, PathBuf};
+
+#[derive(Debug)]
+pub struct Fixture {
+    /// Path relative to `tests/grammar/`, e.g. "accept/serial_type__basic.sql".
+    pub rel_path: String,
+    pub abs_path: PathBuf,
+    pub kind: FixtureKind,
+    pub header: FixtureHeader,
+    pub body: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum FixtureKind {
+    Accept,
+    Reject,
+    Fixed,
+}
+
+/// Walk `<crate>/tests/grammar/{accept,reject,fixed}/` and load every `*.sql`
+/// fixture. Panics on the first malformed fixture so test failures point at
+/// the offending file directly.
+pub fn load_corpus() -> Vec<Fixture> {
+    let root = corpus_root();
+    let mut out = Vec::new();
+    for (sub, kind) in [
+        ("accept", FixtureKind::Accept),
+        ("reject", FixtureKind::Reject),
+        ("fixed", FixtureKind::Fixed),
+    ] {
+        let dir = root.join(sub);
+        if !dir.exists() {
+            continue;
+        }
+        for entry in std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
+        {
+            let entry = entry.expect("dir entry");
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("sql") {
+                continue;
+            }
+            let contents = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            let (header, body_offset) = parse_header(&contents).unwrap_or_else(|e| {
+                panic!("malformed header in {}: {e}", path.display())
+            });
+            // Header expectation must agree with directory.
+            let expected = match kind {
+                FixtureKind::Accept | FixtureKind::Fixed => Expectation::Accept,
+                FixtureKind::Reject => Expectation::Reject,
+            };
+            assert_eq!(
+                header.expectation, expected,
+                "{}: header expectation does not match directory {sub}/",
+                path.display()
+            );
+            let body = contents[body_offset..].to_string();
+            let rel_path = format!("{sub}/{}", path.file_name().unwrap().to_string_lossy());
+            out.push(Fixture {
+                rel_path,
+                abs_path: path,
+                kind,
+                header,
+                body,
+            });
+        }
+    }
+    out
+}
+
+pub fn corpus_root() -> PathBuf {
+    // CARGO_MANIFEST_DIR points at dsql-lint/.
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("grammar")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,5 +269,12 @@ SELECT 1;
         let (h, body_offset) = parse_header(input).unwrap();
         assert_eq!(h.production, "X");
         assert_eq!(&input[body_offset..], "SELECT 1;\n");
+    }
+
+    #[test]
+    fn load_corpus_empty_is_ok() {
+        // Don't depend on actual fixtures yet; just make sure the function
+        // doesn't panic when the directory is empty or partial.
+        let _ = load_corpus(); // no assertion — just must not panic
     }
 }
