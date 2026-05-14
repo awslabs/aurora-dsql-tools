@@ -94,7 +94,11 @@ jobs:
       - name: Stage binary (windows)
         if: matrix.os == 'windows-latest'
         run: |
-          mkdir -p dsql-lint/npm/dsql-lint-${{ matrix.platform }}/bin
+          # `mkdir -p` in PowerShell is aliased to `New-Item -Path` (no
+          # "parents" semantics) and errors on existing dirs. `.gitkeep` means
+          # the target bin/ already exists in-tree, so this must be idempotent.
+          # Same fix as aurora-dsql-tools#45.
+          New-Item -ItemType Directory -Force -Path dsql-lint/npm/dsql-lint-${{ matrix.platform }}/bin | Out-Null
           cp dsql-lint/target/${{ matrix.target }}/release/dsql-lint.exe `
              dsql-lint/npm/dsql-lint-${{ matrix.platform }}/bin/dsql-lint.exe
         shell: pwsh
