@@ -215,4 +215,29 @@ mod tests {
         assert!(r.accepts("a b b b b"));
         assert!(!r.accepts("b"));
     }
+
+    #[test]
+    fn recognizer_handles_mutual_recursion() {
+        let g = parse_grammar(
+            "\
+            A = 'a' [ B ] ;\n\
+            B = 'b' [ A ] ;\n\
+        ",
+        )
+        .unwrap();
+        let r = Recognizer::build(g, "A");
+        assert!(r.accepts("a"));
+        assert!(r.accepts("a b"));
+        assert!(r.accepts("a b a"));
+        assert!(r.accepts("a b a b"));
+    }
+
+    #[test]
+    fn recognizer_handles_right_recursion() {
+        let g = parse_grammar("List = 'item' [ ',' List ] ;").unwrap();
+        let r = Recognizer::build(g, "List");
+        assert!(r.accepts("item"));
+        assert!(r.accepts("item , item"));
+        assert!(r.accepts("item , item , item"));
+    }
 }
