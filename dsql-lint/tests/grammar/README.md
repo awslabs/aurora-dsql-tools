@@ -11,7 +11,6 @@ golden byte-for-byte (regenerate with `BLESS=1 cargo test -p dsql-lint
 - `accept/` — grammar accepts; dsql-lint must NOT emit a diagnostic
 - `reject/` — grammar rejects; dsql-lint must emit at least one diagnostic
 - `fixed/` — golden output of `dsql-lint --fix` over a paired `reject/` fixture
-- `_coverage_gap/` (under `reject/`) — fixtures that document known gaps; skipped by the loader
 
 ## Header schema
 
