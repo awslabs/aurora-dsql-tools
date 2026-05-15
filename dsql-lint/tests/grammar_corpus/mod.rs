@@ -190,6 +190,17 @@ pub fn corpus_root() -> PathBuf {
         .join("grammar")
 }
 
+/// Extract production names from an EBNF grammar text.
+///
+/// Productions look like `Foo = ... ;` — match identifiers at line start
+/// followed by `=`. Tolerates whitespace before the `=`.
+pub fn extract_production_names(ebnf: &str) -> Vec<String> {
+    let re = regex::Regex::new(r"(?m)^([A-Za-z][A-Za-z0-9_]*)\s*=").unwrap();
+    re.captures_iter(ebnf)
+        .map(|c| c[1].to_string())
+        .collect()
+}
+
 /// Convert `snake_case` (the on-wire form of `LintRule` via serde) to
 /// `PascalCase` (the variant identifier as printed by `{:?}`).
 pub fn snake_to_pascal(s: &str) -> String {
@@ -296,6 +307,19 @@ SELECT 1;
         let (h, body_offset) = parse_header(input).unwrap();
         assert_eq!(h.production, "X");
         assert_eq!(&input[body_offset..], "SELECT 1;\n");
+    }
+
+    #[test]
+    fn extract_production_names_basic() {
+        let ebnf = "\
+Foo = 'a' ;
+Bar = Foo | 'b' ;
+-- comment that should be skipped
+";
+        let prods = super::extract_production_names(ebnf);
+        assert!(prods.contains(&"Foo".to_string()));
+        assert!(prods.contains(&"Bar".to_string()));
+        assert!(!prods.contains(&"comment".to_string()));
     }
 
     #[test]
