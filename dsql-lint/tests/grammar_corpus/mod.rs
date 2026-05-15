@@ -142,8 +142,8 @@ pub fn load_corpus() -> Vec<Fixture> {
         if !dir.exists() {
             continue;
         }
-        for entry in std::fs::read_dir(&dir)
-            .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
+        for entry in
+            std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
         {
             let entry = entry.expect("dir entry");
             let path = entry.path();
@@ -156,16 +156,16 @@ pub fn load_corpus() -> Vec<Fixture> {
             }
             let contents = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            let (header, body_offset) = parse_header(&contents).unwrap_or_else(|e| {
-                panic!("malformed header in {}: {e}", path.display())
-            });
+            let (header, body_offset) = parse_header(&contents)
+                .unwrap_or_else(|e| panic!("malformed header in {}: {e}", path.display()));
             // Header expectation must agree with directory.
             let expected = match kind {
                 FixtureKind::Accept | FixtureKind::Fixed => Expectation::Accept,
                 FixtureKind::Reject => Expectation::Reject,
             };
             assert_eq!(
-                header.expectation, expected,
+                header.expectation,
+                expected,
                 "{}: header expectation does not match directory {sub}/",
                 path.display()
             );
@@ -196,9 +196,7 @@ pub fn corpus_root() -> PathBuf {
 /// followed by `=`. Tolerates whitespace before the `=`.
 pub fn extract_production_names(ebnf: &str) -> Vec<String> {
     let re = regex::Regex::new(r"(?m)^([A-Za-z][A-Za-z0-9_]*)\s*=").unwrap();
-    re.captures_iter(ebnf)
-        .map(|c| c[1].to_string())
-        .collect()
+    re.captures_iter(ebnf).map(|c| c[1].to_string()).collect()
 }
 
 /// Convert `snake_case` (the on-wire form of `LintRule` via serde) to
@@ -223,7 +221,10 @@ mod tests {
     fn snake_to_pascal_basic() {
         assert_eq!(snake_to_pascal("serial_type"), "SerialType");
         assert_eq!(snake_to_pascal("foreign_key"), "ForeignKey");
-        assert_eq!(snake_to_pascal("identity_cache_missing"), "IdentityCacheMissing");
+        assert_eq!(
+            snake_to_pascal("identity_cache_missing"),
+            "IdentityCacheMissing"
+        );
         assert_eq!(snake_to_pascal(""), "");
         assert_eq!(snake_to_pascal("x"), "X");
     }
@@ -241,7 +242,10 @@ CREATE TABLE t (id BIGINT PRIMARY KEY);
         assert_eq!(header.rule, None);
         assert_eq!(header.fix, None);
         assert_eq!(header.fixes, None);
-        assert_eq!(&input[body_offset..], "CREATE TABLE t (id BIGINT PRIMARY KEY);\n");
+        assert_eq!(
+            &input[body_offset..],
+            "CREATE TABLE t (id BIGINT PRIMARY KEY);\n"
+        );
     }
 
     #[test]

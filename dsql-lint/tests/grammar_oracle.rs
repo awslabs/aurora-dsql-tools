@@ -47,10 +47,8 @@ fn corpus_contract_test() {
                         fx.rel_path,
                     ));
                 } else if let Some(expected_rule) = &fx.header.rule {
-                    let observed: Vec<String> = diags
-                        .iter()
-                        .map(|d| format!("{:?}", d.rule))
-                        .collect();
+                    let observed: Vec<String> =
+                        diags.iter().map(|d| format!("{:?}", d.rule)).collect();
                     let expected_pretty = grammar_corpus::snake_to_pascal(expected_rule);
                     if !observed.iter().any(|r| r == &expected_pretty) {
                         failures.push(format!(
@@ -97,8 +95,8 @@ fn corpus_contract_test() {
 
         // Compare against golden body (skip the header).
         let golden_text = std::fs::read_to_string(&golden_path).expect("read golden");
-        let (_, golden_body_offset) = grammar_corpus::parse_header(&golden_text)
-            .expect("malformed golden header");
+        let (_, golden_body_offset) =
+            grammar_corpus::parse_header(&golden_text).expect("malformed golden header");
         let golden_body = &golden_text[golden_body_offset..];
 
         if golden_body != actual {
