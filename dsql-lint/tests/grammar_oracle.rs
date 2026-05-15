@@ -201,21 +201,29 @@ fn corpus_coverage_test() {
         }
     }
 
-    // Fail when fixtures reference productions no longer in the EBNF
-    // (catches fixture drift after upstream renames). Uncovered productions
-    // above are informational, but a dangling reference is a real defect:
-    // the fixture's `production:` field is lying.
+    // Fail when fixtures reference productions absent from the EBNF
+    // (catches fixture drift after upstream renames). Uncovered
+    // productions above are informational, but a dangling reference is
+    // a real defect: the fixture's `production:` field is lying.
+    //
+    // KNOWN_GAPS lists keyword surfaces that DSQL rejects but the EBNF
+    // has no first-class production for (TRUNCATE, CREATE EXTENSION).
+    // Truthful labelling of those fixtures is preferred over picking an
+    // arbitrary parseable production, so we allow-list the names here
+    // and document them in tests/grammar/README.md.
+    const KNOWN_GAPS: &[&str] = &["TruncateStmt", "CreateExtensionStmt"];
     let valid: std::collections::BTreeSet<&str> = productions.iter().map(String::as_str).collect();
     let dangling: Vec<&str> = covered
         .iter()
         .copied()
-        .filter(|p| !valid.contains(p))
+        .filter(|p| !valid.contains(p) && !KNOWN_GAPS.contains(p))
         .collect();
     assert!(
         dangling.is_empty(),
         "{} fixture(s) reference productions absent from dsql_grammar.ebnf:\n  {}\n\
          Either rename the fixture's `production:` header to match the current EBNF, \
-         or restore the production in the grammar.",
+         restore the production in the grammar, or add the name to KNOWN_GAPS \
+         (with a note in tests/grammar/README.md explaining why).",
         dangling.len(),
         dangling.join("\n  "),
     );

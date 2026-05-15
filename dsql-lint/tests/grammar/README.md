@@ -28,6 +28,12 @@ Two rules are excluded from the corpus and covered by dedicated tests:
 - `ParseError` — fires on grammatically invalid input; would always fire on `reject/`.
 - `MultiDdlTransaction` — multi-statement; corpus is single-statement.
 
+Two `production:` names are allow-listed in `corpus_coverage_test`'s
+`KNOWN_GAPS` because DSQL rejects the keyword surface but the EBNF has
+no first-class production for the statement:
+- `TruncateStmt` — `TRUNCATE` is only a keyword in the EBNF (`reject/truncate__basic.sql`).
+- `CreateExtensionStmt` — `CREATE EXTENSION` likewise (`reject/unsupported_statement__create_extension.sql`).
+
 | Rule                       | accept/                          | reject/                           | fixed/   |
 |----------------------------|----------------------------------|-----------------------------------|----------|
 | serial_type                | smoke__valid_create_table.sql    | smoke__serial_type.sql            | ✅       |
