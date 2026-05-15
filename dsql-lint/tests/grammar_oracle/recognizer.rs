@@ -21,6 +21,7 @@
 //! `B` is defined (chumsky enforces "defined exactly once" internally).
 
 use crate::grammar_oracle::ebnf::{Grammar, Production};
+use chumsky::pratt::{infix, left, prefix};
 use chumsky::prelude::*;
 use chumsky::recursive::{Indirect, Recursive};
 use std::collections::HashMap;
@@ -61,8 +62,26 @@ impl Recognizer {
 
         // Phase 2: define each production by translating its AST, looking up
         // sibling references in the `parsers` map.
+        //
+        // Left-recursive productions would infinite-loop in a naive recursive
+        // descent definition, so we carve them out: for `a_expr` and `b_expr`
+        // we install a pratt parser over a fixed operator subset (see
+        // `build_pratt_for_expr`). Any other left-recursive production in the
+        // grammar is a sign that the carve-out list is stale; we panic so it
+        // surfaces immediately rather than getting silently mishandled.
         for (name, prod) in &self.grammar.productions {
-            let body = build_node(prod, &parsers);
+            let body = if is_left_recursive(name, prod) {
+                if name == "a_expr" || name == "b_expr" {
+                    build_pratt_for_expr(&parsers)
+                } else {
+                    panic!(
+                        "left-recursive production {name:?} is not in the pratt carve-out; \
+                         either add it to the carve-out or rewrite the grammar"
+                    );
+                }
+            } else {
+                build_node(prod, &parsers)
+            };
             parsers.get_mut(name).expect("declared above").define(body);
         }
 
@@ -120,6 +139,87 @@ fn build_node<'src>(
             .collect::<()>()
             .boxed(),
     }
+}
+
+/// Detect whether a production is left-recursive: any top-level alternative
+/// whose first atom is a non-terminal referencing the production itself.
+///
+/// We only inspect the *direct* first symbol of each alternative. Indirect
+/// left recursion (`A = B …; B = A …`) isn't covered; the grammar in
+/// `dsql_grammar.ebnf` only uses direct left recursion (a_expr, b_expr).
+fn is_left_recursive(name: &str, prod: &Production) -> bool {
+    fn alt_starts_with(name: &str, alt: &Production) -> bool {
+        match alt {
+            Production::NonTerminal(n) => n == name,
+            Production::Sequence(items) => items
+                .first()
+                .map(|first| alt_starts_with(name, first))
+                .unwrap_or(false),
+            // Choices as a top-level child are flattened by the EBNF parser,
+            // but be defensive.
+            Production::Choice(alts) => alts.iter().any(|a| alt_starts_with(name, a)),
+            _ => false,
+        }
+    }
+    match prod {
+        Production::Choice(alts) => alts.iter().any(|a| alt_starts_with(name, a)),
+        other => alt_starts_with(name, other),
+    }
+}
+
+/// Build a pratt parser for `a_expr`/`b_expr` over a fixed operator subset.
+///
+/// Hand-modeling all 60+ alternatives of `a_expr` (BETWEEN, LIKE/ILIKE
+/// ladders, IS DISTINCT FROM, IN, …) would balloon the recognizer for
+/// little gain — the test corpus only exercises a narrow slice of
+/// expression syntax (simple comparisons in WHERE/CHECK, integer/string
+/// constants, function calls). We keep the carve-out to that slice; any
+/// corpus statement that needs more is expected to land in EXPECTED_DRIFT
+/// (Phase 4).
+///
+/// Atom: `c_expr` (looked up via `parsers`).
+/// Binary: + - * / < > = <= >= <> AND OR
+/// Unary prefix: + - NOT
+fn build_pratt_for_expr<'src>(
+    parsers: &HashMap<String, ProdParser<'src>>,
+) -> Boxed<'src, 'src, &'src str, (), extra::Default> {
+    let atom = parsers
+        .get("c_expr")
+        .expect("c_expr must exist for a_expr/b_expr pratt atom")
+        .clone();
+
+    // Word-boundary matchers for keyword operators (AND/OR/NOT) so that e.g.
+    // `OR` doesn't match a prefix of `ORDER`.
+    let kw = |target: &'static str| {
+        text::ident()
+            .filter(move |s: &&str| s.eq_ignore_ascii_case(target))
+            .ignored()
+            .padded()
+    };
+    // Symbolic operator parsers. Order matters: longer match first.
+    let sym = |s: &'static str| just(s).ignored().padded();
+
+    // Pratt builds expressions left-to-right, so two-character operators
+    // (`<=`, `>=`, `<>`) must be tried before their single-character prefixes.
+    atom.pratt((
+        infix(left(1), kw("OR"), |_, _, _, _| ()),
+        infix(left(2), kw("AND"), |_, _, _, _| ()),
+        prefix(3, kw("NOT"), |_, _, _| ()),
+        infix(left(4), sym("<="), |_, _, _, _| ()),
+        infix(left(4), sym(">="), |_, _, _, _| ()),
+        infix(left(4), sym("<>"), |_, _, _, _| ()),
+        infix(left(4), sym("<"), |_, _, _, _| ()),
+        infix(left(4), sym(">"), |_, _, _, _| ()),
+        infix(left(4), sym("="), |_, _, _, _| ()),
+        infix(left(5), sym("+"), |_, _, _, _| ()),
+        infix(left(5), sym("-"), |_, _, _, _| ()),
+        infix(left(6), sym("*"), |_, _, _, _| ()),
+        infix(left(6), sym("/"), |_, _, _, _| ()),
+        prefix(7, sym("+"), |_, _, _| ()),
+        prefix(7, sym("-"), |_, _, _| ()),
+    ))
+    .ignored()
+    .boxed()
 }
 
 /// Build a parser for a terminal literal.
@@ -241,5 +341,33 @@ mod tests {
         assert!(r.accepts("item"));
         assert!(r.accepts("item , item"));
         assert!(r.accepts("item , item , item"));
+    }
+
+    /// The pratt carve-out fires by name (`a_expr` / `b_expr`), so this
+    /// synthetic grammar uses those names. Picking the name-based path
+    /// rather than detecting by shape keeps the carve-out's contract narrow
+    /// and explicit: `a_expr` and `b_expr` are the only productions that
+    /// get pratt handling.
+    ///
+    /// Note: the hardcoded operator table includes prefix `+`/`-` (which
+    /// `a_expr` has but the synthetic grammar below does not). That means
+    /// `+ x` would be accepted here as a known artifact of name-based
+    /// dispatch over a fixed operator set; we don't assert against it.
+    #[test]
+    fn recognizer_handles_left_recursive_addition() {
+        let g = parse_grammar(
+            "\
+            a_expr = c_expr | a_expr '+' a_expr | a_expr '*' a_expr ;\n\
+            c_expr = 'x' | 'y' ;\n\
+        ",
+        )
+        .unwrap();
+        let r = Recognizer::build(g, "a_expr");
+        assert!(r.accepts("x"));
+        assert!(r.accepts("x + y"));
+        assert!(r.accepts("x + y * x"));
+        assert!(r.accepts("x * y + x"));
+        assert!(!r.accepts("x +"));
+        assert!(!r.accepts("x &"));
     }
 }
