@@ -91,10 +91,30 @@ fn build_node<'src>(
             .unwrap_or_else(|| panic!("non-terminal references undefined production: {name}"))
             .clone()
             .boxed(),
-        Production::Sequence(_)
-        | Production::Choice(_)
-        | Production::Optional(_)
-        | Production::Repetition(_) => todo!("variant lands in Task 2.3+"),
+        Production::Sequence(items) => {
+            // Fold each child into a chain that ignores the previous result.
+            let mut iter = items.iter();
+            let first = match iter.next() {
+                Some(p) => build_node(p, parsers),
+                // Empty sequence matches the empty input.
+                None => return empty().boxed(),
+            };
+            iter.fold(first, |acc, p| acc.then(build_node(p, parsers)).ignored().boxed())
+        }
+        Production::Choice(alts) => {
+            let mut iter = alts.iter();
+            let first = match iter.next() {
+                Some(p) => build_node(p, parsers),
+                // Empty choice matches nothing; use a never-matching parser.
+                // `empty()` would match the empty string, which is wrong here,
+                // but a grammar with an empty Choice shouldn't occur in practice.
+                None => return empty().boxed(),
+            };
+            iter.fold(first, |acc, p| acc.or(build_node(p, parsers)).boxed())
+        }
+        Production::Optional(_) | Production::Repetition(_) => {
+            todo!("variant lands in Task 2.4+")
+        }
     }
 }
 
@@ -154,5 +174,24 @@ mod tests {
         let r = Recognizer::build(g, "Greeting");
         assert!(r.accepts("hi"));
         assert!(!r.accepts("hello"));
+    }
+
+    #[test]
+    fn recognizer_accepts_sequence() {
+        let g = parse_grammar("Hello = 'hello' 'world' ;").unwrap();
+        let r = Recognizer::build(g, "Hello");
+        assert!(r.accepts("hello world"));
+        assert!(r.accepts("HELLO WORLD")); // case-insensitive keyword
+        assert!(!r.accepts("hello"));
+        assert!(!r.accepts("world hello"));
+    }
+
+    #[test]
+    fn recognizer_accepts_choice() {
+        let g = parse_grammar("Bool = 'true' | 'false' ;").unwrap();
+        let r = Recognizer::build(g, "Bool");
+        assert!(r.accepts("true"));
+        assert!(r.accepts("false"));
+        assert!(!r.accepts("maybe"));
     }
 }
