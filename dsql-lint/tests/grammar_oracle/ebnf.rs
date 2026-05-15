@@ -165,6 +165,30 @@ fn read_atom<I: Iterator<Item = char>>(
     let line_snapshot = *line;
     match chars.peek() {
         Some(&'\'') => Ok(Production::Terminal(read_terminal(chars, line_snapshot)?)),
+        Some(&'[') => {
+            chars.next();
+            skip_ws_and_comments(chars, line);
+            let inner = read_alternation(chars, line)?;
+            skip_ws_and_comments(chars, line);
+            expect_char(chars, ']', *line)?;
+            Ok(Production::Optional(Box::new(inner)))
+        }
+        Some(&'{') => {
+            chars.next();
+            skip_ws_and_comments(chars, line);
+            let inner = read_alternation(chars, line)?;
+            skip_ws_and_comments(chars, line);
+            expect_char(chars, '}', *line)?;
+            Ok(Production::Repetition(Box::new(inner)))
+        }
+        Some(&'(') => {
+            chars.next();
+            skip_ws_and_comments(chars, line);
+            let inner = read_alternation(chars, line)?;
+            skip_ws_and_comments(chars, line);
+            expect_char(chars, ')', *line)?;
+            Ok(inner)
+        }
         Some(&c) if c.is_ascii_alphabetic() || c == '_' => {
             let name = read_identifier(chars).expect("peek confirmed identifier");
             Ok(Production::NonTerminal(name))
@@ -258,6 +282,40 @@ mod tests {
                 Production::Terminal("c".into()),
                 Production::Terminal("d".into()),
             ]),
+        ]);
+        assert_eq!(g.productions.get("X"), Some(&expected));
+    }
+
+    #[test]
+    fn parse_optional() {
+        let input = "X = [ 'a' ] ;";
+        let g = parse_grammar(input).expect("parse");
+        assert_eq!(
+            g.productions.get("X"),
+            Some(&Production::Optional(Box::new(Production::Terminal("a".into()))))
+        );
+    }
+
+    #[test]
+    fn parse_repetition() {
+        let input = "X = { 'a' } ;";
+        let g = parse_grammar(input).expect("parse");
+        assert_eq!(
+            g.productions.get("X"),
+            Some(&Production::Repetition(Box::new(Production::Terminal("a".into()))))
+        );
+    }
+
+    #[test]
+    fn parse_grouping() {
+        let input = "X = ( 'a' | 'b' ) 'c' ;";
+        let g = parse_grammar(input).expect("parse");
+        let expected = Production::Sequence(vec![
+            Production::Choice(vec![
+                Production::Terminal("a".into()),
+                Production::Terminal("b".into()),
+            ]),
+            Production::Terminal("c".into()),
         ]);
         assert_eq!(g.productions.get("X"), Some(&expected));
     }
