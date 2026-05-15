@@ -315,6 +315,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_full_dsql_grammar_ebnf() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace parent")
+            .join("dsql_grammar.ebnf");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let g = parse_grammar(&text).expect("grammar should parse");
+        assert!(
+            g.productions.len() > 100,
+            "expected >100 productions, got {}",
+            g.productions.len()
+        );
+        assert!(g.productions.contains_key("CreateStmt"));
+    }
+
+    #[test]
     fn parse_grouping() {
         let input = "X = ( 'a' | 'b' ) 'c' ;";
         let g = parse_grammar(input).expect("parse");
