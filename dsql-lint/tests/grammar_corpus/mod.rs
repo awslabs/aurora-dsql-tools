@@ -52,7 +52,19 @@ pub fn parse_header(input: &str) -> Result<(FixtureHeader, usize), ParseError> {
             break;
         }
         let after_dashes = stripped.trim_start_matches('-').trim_start();
-        // Tolerate full-line comments without `key:` (e.g. licence banners).
+        // Tolerate full-line comments without `key:` (e.g. licence banners),
+        // but treat a known-key prefix without a colon as a typo so we don't
+        // silently drop directives like `-- production CreateStmt`.
+        if !after_dashes.contains(':') {
+            const KNOWN_KEYS: [&str; 5] = ["production", "expectation", "rule", "fix", "fixes"];
+            let first_token = after_dashes.split_whitespace().next().unwrap_or("");
+            if KNOWN_KEYS.contains(&first_token) {
+                return Err(ParseError {
+                    line: line_idx + 1,
+                    message: format!("directive '{first_token}' is missing ':' separator"),
+                });
+            }
+        }
         if let Some((key, value)) = after_dashes.split_once(':') {
             let key = key.trim();
             let value = value.trim().to_string();
@@ -306,6 +318,34 @@ SELECT 1;
 ";
         let err = parse_header(input).unwrap_err();
         assert!(err.message.contains("expectation"), "got {err}");
+    }
+
+    #[test]
+    fn parse_header_known_key_without_colon_errors() {
+        let input = "\
+-- production CreateStmt
+-- expectation: accept
+SELECT 1;
+";
+        let err = parse_header(input).unwrap_err();
+        assert!(
+            err.message.contains("production") && err.message.contains("missing ':'"),
+            "got {err}"
+        );
+    }
+
+    #[test]
+    fn parse_header_prose_without_colon_is_tolerated() {
+        // Licence banners and prose are still allowed.
+        let input = "\
+-- Copyright Amazon
+-- Some prose without a colon
+-- production: X
+-- expectation: accept
+SELECT 1;
+";
+        let (h, _) = parse_header(input).unwrap();
+        assert_eq!(h.production, "X");
     }
 
     #[test]
