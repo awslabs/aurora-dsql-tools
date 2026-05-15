@@ -144,12 +144,17 @@ pub fn load_corpus() -> Vec<Fixture> {
         for entry in
             std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
         {
-            let entry = entry.expect("dir entry");
+            let entry = entry.unwrap_or_else(|e| panic!("dir entry under {}: {e}", dir.display()));
             let path = entry.path();
-            // Skip subdirectories (e.g. `_coverage_gap/`) and non-SQL files.
-            // Subdirectories are excluded implicitly because their paths have
-            // no `.sql` extension; the convention is that any subdirectory
-            // (especially one prefixed with `_`) is invisible to the loader.
+            let file_type = entry
+                .file_type()
+                .unwrap_or_else(|e| panic!("file_type {}: {e}", path.display()));
+            // Skip subdirectories explicitly so the loader is non-recursive
+            // by construction, and skip non-`.sql` files (READMEs, editor
+            // swap files, hidden files).
+            if file_type.is_dir() {
+                continue;
+            }
             if path.extension().and_then(|e| e.to_str()) != Some("sql") {
                 continue;
             }
