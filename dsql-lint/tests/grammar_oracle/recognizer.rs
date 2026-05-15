@@ -99,7 +99,9 @@ fn build_node<'src>(
                 // Empty sequence matches the empty input.
                 None => return empty().boxed(),
             };
-            iter.fold(first, |acc, p| acc.then(build_node(p, parsers)).ignored().boxed())
+            iter.fold(first, |acc, p| {
+                acc.then(build_node(p, parsers)).ignored().boxed()
+            })
         }
         Production::Choice(alts) => {
             let mut iter = alts.iter();
