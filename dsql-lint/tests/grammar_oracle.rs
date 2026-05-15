@@ -108,11 +108,18 @@ fn corpus_contract_test() {
             ));
         }
 
-        // Verify the back-reference points at this fixture.
-        let golden_fixture = fixtures
-            .iter()
-            .find(|f| f.rel_path == *fix_target)
-            .expect("loader should have picked up the golden");
+        // Verify the back-reference points at this fixture. If the loader
+        // did not pick up the golden (wrong directory, wrong extension,
+        // or case mismatch), record a failure and continue so the rest of
+        // the corpus still runs.
+        let Some(golden_fixture) = fixtures.iter().find(|f| f.rel_path == *fix_target) else {
+            failures.push(format!(
+                "{}: fix: '{fix_target}' exists on disk but the loader did not pick it up \
+                 (wrong directory, wrong extension, or case mismatch).",
+                fx.rel_path,
+            ));
+            continue;
+        };
         let expected_back_ref = &fx.rel_path;
         if golden_fixture.header.fixes.as_deref() != Some(expected_back_ref.as_str()) {
             failures.push(format!(
