@@ -1,8 +1,9 @@
 //! Grammar oracle: test-time recognizer for `dsql_grammar.ebnf`.
 //!
-//! Loads the upstream EBNF, builds a chumsky recognizer, and asserts that
-//! dsql-lint and the recognizer agree on the test corpus. Drift is tracked
-//! in `KNOWN_DRIFT.md` with the goal of driving the list to zero.
+//! Loads the upstream EBNF, builds a chumsky recognizer, and asserts
+//! dsql-lint and the recognizer agree on every test case. Disagreements
+//! tracked in an `EXPECTED_DRIFT` const (see Phase 4); the list shrinks
+//! over time as rules are added.
 
 #[path = "grammar_oracle/mod.rs"]
 mod grammar_oracle;
