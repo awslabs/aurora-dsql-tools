@@ -13,12 +13,9 @@
 //! self-referential lifetime problem you would otherwise hit.
 //!
 //! Cycles in the grammar (mutual or self-recursion between productions)
-//! are handled with `chumsky::recursive::Recursive::declare()` +
-//! `define()`. We declare a `Recursive` placeholder for every production
-//! up front, then walk the grammar a second time to define each. When
-//! the body of production `A` references production `B`, it clones `B`'s
-//! placeholder; the clone is a `Weak`-backed handle that resolves once
-//! `B` is defined (chumsky enforces "defined exactly once" internally).
+//! are handled with `chumsky::recursive::Recursive::declare()`/`define()`:
+//! a placeholder is declared for every production up front, then defined
+//! in a second pass.
 
 use crate::grammar_oracle::ebnf::{Grammar, Production};
 use chumsky::pratt::{infix, left, prefix};
@@ -54,13 +51,13 @@ impl Recognizer {
     fn build_root_parser<'src>(
         &'src self,
     ) -> impl Parser<'src, &'src str, (), extra::Default> + 'src {
-        // Phase 1: declare a Recursive placeholder for every production.
+        // Pass 1: declare a Recursive placeholder for every production.
         let mut parsers: HashMap<String, ProdParser<'src>> = HashMap::new();
         for name in self.grammar.productions.keys() {
             parsers.insert(name.clone(), Recursive::declare());
         }
 
-        // Phase 2: define each production by translating its AST, looking up
+        // Pass 2: define each production by translating its AST, looking up
         // sibling references in the `parsers` map.
         //
         // Left-recursive productions would infinite-loop in a naive recursive
@@ -139,14 +136,15 @@ fn build_node<'src>(
             })
         }
         Production::Choice(alts) => {
+            // The EBNF parser collapses single-alt choices into the inner
+            // production and rejects zero-alt productions, so a Choice here
+            // always has >= 2 alternatives.
             let mut iter = alts.iter();
-            let first = match iter.next() {
-                Some(p) => build_node(p, parsers),
-                // Empty choice matches nothing; use a never-matching parser.
-                // `empty()` would match the empty string, which is wrong here,
-                // but a grammar with an empty Choice shouldn't occur in practice.
-                None => return empty().boxed(),
-            };
+            let first = build_node(
+                iter.next()
+                    .expect("Choice has >= 2 alternatives by construction"),
+                parsers,
+            );
             iter.fold(first, |acc, p| acc.or(build_node(p, parsers)).boxed())
         }
         Production::Optional(inner) => build_node(inner, parsers).or_not().ignored().boxed(),
@@ -269,7 +267,7 @@ fn strip_left_recursive_prefix(name: &str, alt: &Production) -> Option<Productio
 /// expression syntax (simple comparisons in WHERE/CHECK, integer/string
 /// constants, function calls). We keep the carve-out to that slice; any
 /// corpus statement that needs more is expected to land in EXPECTED_DRIFT
-/// (Phase 4).
+/// (see `tests/grammar_oracle/drift.rs`).
 ///
 /// Atom: `c_expr` (looked up via `parsers`).
 /// Binary: + - * / < > = <= >= <> AND OR
@@ -536,16 +534,6 @@ mod tests {
         assert!(r.accepts("item , item , item"));
     }
 
-    /// The pratt carve-out fires by name (`a_expr` / `b_expr`), so this
-    /// synthetic grammar uses those names. Picking the name-based path
-    /// rather than detecting by shape keeps the carve-out's contract narrow
-    /// and explicit: `a_expr` and `b_expr` are the only productions that
-    /// get pratt handling.
-    ///
-    /// Note: the hardcoded operator table includes prefix `+`/`-` (which
-    /// `a_expr` has but the synthetic grammar below does not). That means
-    /// `+ x` would be accepted here as a known artifact of name-based
-    /// dispatch over a fixed operator set; we don't assert against it.
     #[test]
     fn recognizer_handles_identifier() {
         let g = parse_grammar("X = identifier ;").unwrap();
@@ -577,17 +565,13 @@ mod tests {
 
     /// Smoke test the recognizer against the real EBNF, exercising the
     /// `CreateStmt` path end-to-end. This forces the build to succeed for
-    /// every transitively-referenced production (a few hundred of them) —
-    /// any leftover undefined non-terminal or other build-time issue surfaces
-    /// here rather than waiting for the Phase 4 corpus run.
+    /// every transitively-referenced production (a few hundred of them);
+    /// any undefined non-terminal or build-time issue surfaces here.
     ///
-    /// Note on `SERIAL`: the plan suggested `CREATE TABLE t (id SERIAL)`
-    /// would be rejected since `SERIAL` "isn't in the grammar". In practice
-    /// the EBNF's `GenericType → type_function_name → identifier` path
-    /// accepts arbitrary identifiers as type names, so the recognizer
-    /// (correctly, per the EBNF) accepts `SERIAL`. Whether dsql-lint flags
-    /// `SERIAL` as an unsupported type is a separate (semantic) check — the
-    /// drift oracle's job is just to follow the EBNF.
+    /// `CREATE TABLE t (id SERIAL)` parses cleanly because the EBNF's
+    /// `GenericType → type_function_name → identifier` path accepts any
+    /// identifier as a type name. dsql-lint catches `SERIAL` semantically;
+    /// the recognizer just follows the EBNF.
     #[test]
     fn recognizer_accepts_known_valid_create_table() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

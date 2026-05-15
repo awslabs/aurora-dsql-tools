@@ -1,8 +1,8 @@
 //! EBNF text → typed `Grammar` AST.
 //!
-//! Hand-written parser; the EBNF format is small and regular. We keep this
-//! independent of the recognizer (Phase 2+) so changes to the recognizer
-//! don't churn the AST and vice versa.
+//! Hand-written parser; the EBNF format is small and regular. Independent
+//! of the recognizer module so the AST and the recognizer can change
+//! without churning each other.
 
 use std::collections::BTreeMap;
 
@@ -45,7 +45,7 @@ pub fn parse_grammar(input: &str) -> Result<Grammar, ParseError> {
     let mut chars = input.chars().peekable();
 
     loop {
-        skip_ws_and_comments(&mut chars, &mut line);
+        skip_whitespace(&mut chars, &mut line);
         if chars.peek().is_none() {
             break;
         }
@@ -53,11 +53,11 @@ pub fn parse_grammar(input: &str) -> Result<Grammar, ParseError> {
             line,
             message: "expected production name".into(),
         })?;
-        skip_ws_and_comments(&mut chars, &mut line);
+        skip_whitespace(&mut chars, &mut line);
         expect_char(&mut chars, '=', line)?;
-        skip_ws_and_comments(&mut chars, &mut line);
+        skip_whitespace(&mut chars, &mut line);
         let body = read_alternation(&mut chars, &mut line)?;
-        skip_ws_and_comments(&mut chars, &mut line);
+        skip_whitespace(&mut chars, &mut line);
         expect_char(&mut chars, ';', line)?;
         productions.insert(name, body);
     }
@@ -65,10 +65,7 @@ pub fn parse_grammar(input: &str) -> Result<Grammar, ParseError> {
     Ok(Grammar { productions })
 }
 
-fn skip_ws_and_comments<I: Iterator<Item = char>>(
-    chars: &mut std::iter::Peekable<I>,
-    line: &mut usize,
-) {
+fn skip_whitespace<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I>, line: &mut usize) {
     while let Some(&c) = chars.peek() {
         if c == '\n' {
             *line += 1;
@@ -124,10 +121,10 @@ fn read_alternation<I: Iterator<Item = char>>(
 ) -> Result<Production, ParseError> {
     let mut alternatives = vec![read_sequence(chars, line)?];
     loop {
-        skip_ws_and_comments(chars, line);
+        skip_whitespace(chars, line);
         if chars.peek() == Some(&'|') {
             chars.next();
-            skip_ws_and_comments(chars, line);
+            skip_whitespace(chars, line);
             alternatives.push(read_sequence(chars, line)?);
         } else {
             break;
@@ -154,7 +151,7 @@ fn read_sequence<I: Iterator<Item = char>>(
     }
     let mut atoms = vec![read_atom(chars, line)?];
     loop {
-        skip_ws_and_comments(chars, line);
+        skip_whitespace(chars, line);
         match chars.peek() {
             Some(&c) if is_terminator(c) => break,
             None => break,
@@ -177,25 +174,25 @@ fn read_atom<I: Iterator<Item = char>>(
         Some(&'\'') => Ok(Production::Terminal(read_terminal(chars, line_snapshot)?)),
         Some(&'[') => {
             chars.next();
-            skip_ws_and_comments(chars, line);
+            skip_whitespace(chars, line);
             let inner = read_alternation(chars, line)?;
-            skip_ws_and_comments(chars, line);
+            skip_whitespace(chars, line);
             expect_char(chars, ']', *line)?;
             Ok(Production::Optional(Box::new(inner)))
         }
         Some(&'{') => {
             chars.next();
-            skip_ws_and_comments(chars, line);
+            skip_whitespace(chars, line);
             let inner = read_alternation(chars, line)?;
-            skip_ws_and_comments(chars, line);
+            skip_whitespace(chars, line);
             expect_char(chars, '}', *line)?;
             Ok(Production::Repetition(Box::new(inner)))
         }
         Some(&'(') => {
             chars.next();
-            skip_ws_and_comments(chars, line);
+            skip_whitespace(chars, line);
             let inner = read_alternation(chars, line)?;
-            skip_ws_and_comments(chars, line);
+            skip_whitespace(chars, line);
             expect_char(chars, ')', *line)?;
             Ok(inner)
         }
