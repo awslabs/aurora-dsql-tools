@@ -138,15 +138,23 @@ fn read_alternation<I: Iterator<Item = char>>(
     })
 }
 
+fn is_terminator(c: char) -> bool {
+    matches!(c, ';' | '|' | ']' | '}' | ')')
+}
+
 fn read_sequence<I: Iterator<Item = char>>(
     chars: &mut std::iter::Peekable<I>,
     line: &mut usize,
 ) -> Result<Production, ParseError> {
+    // Empty body (e.g. `OptTemp =  ;`) → empty sequence.
+    if matches!(chars.peek(), Some(&c) if is_terminator(c)) || chars.peek().is_none() {
+        return Ok(Production::Sequence(vec![]));
+    }
     let mut atoms = vec![read_atom(chars, line)?];
     loop {
         skip_ws_and_comments(chars, line);
         match chars.peek() {
-            Some(&c) if c == ';' || c == '|' || c == ']' || c == '}' || c == ')' => break,
+            Some(&c) if is_terminator(c) => break,
             None => break,
             _ => atoms.push(read_atom(chars, line)?),
         }
