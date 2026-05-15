@@ -1,4 +1,4 @@
--- production: ColumnDef
+-- production: columnDef
 -- expectation: reject
 -- rule: foreign_key
 -- fix: fixed/foreign_key__column_level.sql

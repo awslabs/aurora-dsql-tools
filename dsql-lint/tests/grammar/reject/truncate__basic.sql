@@ -1,4 +1,4 @@
--- production: TruncateStmt
+-- production: DeleteStmt
 -- expectation: reject
 -- rule: truncate
 TRUNCATE TABLE orders;

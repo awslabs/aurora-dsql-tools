@@ -1,4 +1,4 @@
--- production: ColumnDef
+-- production: columnDef
 -- expectation: accept
 -- fixes: reject/identity_type__integer.sql
 CREATE TABLE t (

@@ -1,4 +1,4 @@
--- production: CreateSequenceStmt
+-- production: CreateSeqStmt
 -- expectation: reject
 -- rule: sequence_type
 -- fix: fixed/sequence_type__integer.sql
