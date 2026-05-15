@@ -74,10 +74,13 @@ impl Recognizer {
                 if name == "a_expr" || name == "b_expr" {
                     build_pratt_for_expr(&parsers)
                 } else {
-                    panic!(
-                        "left-recursive production {name:?} is not in the pratt carve-out; \
-                         either add it to the carve-out or rewrite the grammar"
-                    );
+                    // Generic left-recursion rewrite: turn
+                    //   A = base1 | base2 | A suffix1 | A suffix2
+                    // into
+                    //   A = (base1 | base2) (suffix1 | suffix2)*
+                    // This handles list-shaped productions like
+                    // `transaction_mode_list` without a hand-rolled carve-out.
+                    build_left_rec_as_repetition(name, prod, &parsers)
                 }
             } else {
                 build_node(prod, &parsers)
@@ -177,6 +180,84 @@ fn is_left_recursive(name: &str, prod: &Production) -> bool {
     match prod {
         Production::Choice(alts) => alts.iter().any(|a| alt_starts_with(name, a)),
         other => alt_starts_with(name, other),
+    }
+}
+
+/// Rewrite a directly-left-recursive production
+///   `A = base1 | base2 | A suffix1 | A suffix2`
+/// into
+///   `(base1 | base2) (suffix1 | suffix2)*`
+/// and build a parser for it. Bases and suffixes are extracted from the
+/// alternatives at the top level only — indirect left recursion is not
+/// handled (we panic upstream if the carve-out is misapplied).
+///
+/// This is meant for list-shaped productions in the grammar (e.g.
+/// `transaction_mode_list`); `a_expr`/`b_expr` use a separate pratt
+/// path because their precedence/associativity matters.
+fn build_left_rec_as_repetition<'src>(
+    name: &str,
+    prod: &Production,
+    parsers: &HashMap<String, ProdParser<'src>>,
+) -> Boxed<'src, 'src, &'src str, (), extra::Default> {
+    let alts: Vec<&Production> = match prod {
+        Production::Choice(a) => a.iter().collect(),
+        single => vec![single],
+    };
+
+    let mut bases: Vec<Production> = Vec::new();
+    let mut suffixes: Vec<Production> = Vec::new();
+
+    for alt in alts {
+        if let Some(suffix) = strip_left_recursive_prefix(name, alt) {
+            suffixes.push(suffix);
+        } else {
+            bases.push(alt.clone());
+        }
+    }
+
+    if bases.is_empty() {
+        panic!(
+            "left-recursive production {name:?} has no non-recursive base case; \
+             cannot rewrite as repetition"
+        );
+    }
+
+    let base = if bases.len() == 1 {
+        bases.into_iter().next().unwrap()
+    } else {
+        Production::Choice(bases)
+    };
+    let suffix = if suffixes.len() == 1 {
+        suffixes.into_iter().next().unwrap()
+    } else {
+        Production::Choice(suffixes)
+    };
+
+    let base_parser = build_node(&base, parsers);
+    let suffix_parser = build_node(&suffix, parsers);
+    base_parser
+        .then(suffix_parser.repeated().collect::<()>())
+        .ignored()
+        .boxed()
+}
+
+/// If `alt` is `A …` (i.e. starts with `NonTerminal(name)`), return the
+/// remainder (`…`) as a `Production`. Otherwise return `None`.
+fn strip_left_recursive_prefix(name: &str, alt: &Production) -> Option<Production> {
+    match alt {
+        Production::NonTerminal(n) if n == name => Some(Production::Sequence(vec![])),
+        Production::Sequence(items) => match items.first() {
+            Some(Production::NonTerminal(n)) if n == name => {
+                let rest: Vec<Production> = items.iter().skip(1).cloned().collect();
+                Some(if rest.len() == 1 {
+                    rest.into_iter().next().unwrap()
+                } else {
+                    Production::Sequence(rest)
+                })
+            }
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -345,7 +426,19 @@ fn parser_for_undefined<'src>(
         // The remaining lexer rules are rare enough in our test corpus that
         // we deliberately install reject-everything parsers rather than
         // approximate them poorly. See the doc-comment above for rationale.
-        "operator" | "binary_string" | "hex_string" => Some(
+        //
+        // The grammar also references a handful of "non-terminals" it
+        // never defines (`SignedIconst`, `parameter`, `utility_option_elem`,
+        // `var_list`); they sit on paths the recognizer must still build,
+        // so we install reject-everything for them too. Any corpus
+        // statement that exercises one ends up in EXPECTED_DRIFT.
+        "operator"
+        | "binary_string"
+        | "hex_string"
+        | "SignedIconst"
+        | "parameter"
+        | "utility_option_elem"
+        | "var_list" => Some(
             // A parser that never matches: matches a char only if `false`.
             any().filter(|_: &char| false).ignored().boxed(),
         ),
@@ -480,6 +573,35 @@ mod tests {
         assert!(r.accepts("'hello'"));
         assert!(r.accepts("''"));
         assert!(!r.accepts("hello"));
+    }
+
+    /// Smoke test the recognizer against the real EBNF, exercising the
+    /// `CreateStmt` path end-to-end. This forces the build to succeed for
+    /// every transitively-referenced production (a few hundred of them) —
+    /// any leftover undefined non-terminal or other build-time issue surfaces
+    /// here rather than waiting for the Phase 4 corpus run.
+    ///
+    /// Note on `SERIAL`: the plan suggested `CREATE TABLE t (id SERIAL)`
+    /// would be rejected since `SERIAL` "isn't in the grammar". In practice
+    /// the EBNF's `GenericType → type_function_name → identifier` path
+    /// accepts arbitrary identifiers as type names, so the recognizer
+    /// (correctly, per the EBNF) accepts `SERIAL`. Whether dsql-lint flags
+    /// `SERIAL` as an unsupported type is a separate (semantic) check — the
+    /// drift oracle's job is just to follow the EBNF.
+    #[test]
+    fn recognizer_accepts_known_valid_create_table() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("dsql_grammar.ebnf");
+        let g = parse_grammar(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let r = Recognizer::build(g, "CreateStmt");
+        assert!(r.accepts("CREATE TABLE t (id BIGINT)"));
+        // OptTemp is empty (`OptTemp = ;`), so `TEMP` between CREATE and TABLE
+        // doesn't fit the grammar.
+        assert!(!r.accepts("CREATE TEMP TABLE t (id BIGINT)"));
+        // Garbage input rejected.
+        assert!(!r.accepts("CREATE TABLE"));
     }
 
     #[test]
