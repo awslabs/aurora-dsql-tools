@@ -114,7 +114,6 @@ use std::path::{Path, PathBuf};
 pub struct Fixture {
     /// Path relative to `tests/grammar/`, e.g. "accept/serial_type__basic.sql".
     pub rel_path: String,
-    pub abs_path: PathBuf,
     pub kind: FixtureKind,
     pub header: FixtureHeader,
     pub body: String,
@@ -173,7 +172,6 @@ pub fn load_corpus() -> Vec<Fixture> {
             let rel_path = format!("{sub}/{}", path.file_name().unwrap().to_string_lossy());
             out.push(Fixture {
                 rel_path,
-                abs_path: path,
                 kind,
                 header,
                 body,
