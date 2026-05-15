@@ -105,11 +105,24 @@ fn build_node<'src>(
 ) -> Boxed<'src, 'src, &'src str, (), extra::Default> {
     match prod {
         Production::Terminal(literal) => terminal_parser(literal).boxed(),
-        Production::NonTerminal(name) => parsers
-            .get(name)
-            .unwrap_or_else(|| panic!("non-terminal references undefined production: {name}"))
-            .clone()
-            .boxed(),
+        Production::NonTerminal(name) => {
+            // Some "non-terminals" in the EBNF are really lexer rules
+            // (`identifier`, `integer_constant`, `string_literal`, …) that
+            // the upstream grammar references but never defines. We map
+            // those to hand-written chumsky parsers; everything else is
+            // looked up in the productions map.
+            if let Some(p) = parser_for_undefined(name) {
+                p
+            } else {
+                parsers
+                    .get(name)
+                    .unwrap_or_else(|| {
+                        panic!("non-terminal references undefined production: {name}")
+                    })
+                    .clone()
+                    .boxed()
+            }
+        }
         Production::Sequence(items) => {
             // Fold each child into a chain that ignores the previous result.
             let mut iter = items.iter();
@@ -253,6 +266,93 @@ fn terminal_parser<'src>(literal: &str) -> Boxed<'src, 'src, &'src str, (), extr
     }
 }
 
+/// Map an EBNF "non-terminal" name that the grammar never defines to a
+/// hand-written chumsky parser. These are the lexer rules
+/// (`identifier`, `integer_constant`, …) that the upstream grammar
+/// references implicitly.
+///
+/// Returns `None` if the name is a normal non-terminal (lookup in the
+/// productions map should proceed as usual).
+///
+/// Reject-everything strategy for the rare lexer rules (`operator`,
+/// `binary_string`, `hex_string`): we still install a parser, but it's
+/// `empty().filter(|()| false)` — i.e. always-fail. The point is to
+/// avoid `panic!`-ing during recognizer construction (the production
+/// references the name) while also avoiding silently treating these as
+/// always-accept; if a corpus statement actually exercises one of them,
+/// the recognizer rejects and the case lands in EXPECTED_DRIFT.
+fn parser_for_undefined<'src>(
+    name: &str,
+) -> Option<Boxed<'src, 'src, &'src str, (), extra::Default>> {
+    match name {
+        // Identifier: ASCII letter/underscore start, then letter/digit/underscore.
+        // Reserved-keyword check is a semantic concern the EBNF doesn't enforce,
+        // so we accept any matching word.
+        "identifier" => Some(text::ident().ignored().padded().boxed()),
+        // Unsigned non-negative integer. The grammar wraps `'+' integer_constant`
+        // / `'-' integer_constant` separately for sign, so this stays unsigned.
+        "integer_constant" => Some(
+            any()
+                .filter(|c: &char| c.is_ascii_digit())
+                .repeated()
+                .at_least(1)
+                .collect::<()>()
+                .padded()
+                .boxed(),
+        ),
+        // Unsigned float: digits '.' digits, optionally followed by an exponent;
+        // OR digits with exponent and no decimal point.
+        "float_constant" => {
+            let digits = || {
+                any()
+                    .filter(|c: &char| c.is_ascii_digit())
+                    .repeated()
+                    .at_least(1)
+                    .collect::<()>()
+            };
+            let exponent = || {
+                one_of("eE")
+                    .ignored()
+                    .then(one_of("+-").ignored().or_not())
+                    .then(digits())
+                    .ignored()
+            };
+            // `d+ '.' d+ exp?`  or  `d+ exp`
+            let with_point = digits()
+                .then(just('.').ignored())
+                .then(digits())
+                .then(exponent().or_not())
+                .ignored();
+            let without_point = digits().then(exponent()).ignored();
+            Some(with_point.or(without_point).padded().boxed())
+        }
+        // String literal: '...' with '' as an embedded quote.
+        "string_literal" => {
+            let body = any().filter(|c: &char| *c != '\'').ignored();
+            // An escaped quote is two consecutive single-quotes.
+            let escaped = just("''").ignored();
+            let inner = escaped.or(body).repeated().collect::<()>();
+            Some(
+                just('\'')
+                    .ignored()
+                    .then(inner)
+                    .then(just('\'').ignored())
+                    .ignored()
+                    .padded()
+                    .boxed(),
+            )
+        }
+        // The remaining lexer rules are rare enough in our test corpus that
+        // we deliberately install reject-everything parsers rather than
+        // approximate them poorly. See the doc-comment above for rationale.
+        "operator" | "binary_string" | "hex_string" => Some(
+            // A parser that never matches: matches a char only if `false`.
+            any().filter(|_: &char| false).ignored().boxed(),
+        ),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,6 +453,35 @@ mod tests {
     /// `a_expr` has but the synthetic grammar below does not). That means
     /// `+ x` would be accepted here as a known artifact of name-based
     /// dispatch over a fixed operator set; we don't assert against it.
+    #[test]
+    fn recognizer_handles_identifier() {
+        let g = parse_grammar("X = identifier ;").unwrap();
+        let r = Recognizer::build(g, "X");
+        assert!(r.accepts("foo"));
+        assert!(r.accepts("orders_2024"));
+        assert!(!r.accepts("123abc"));
+    }
+
+    #[test]
+    fn recognizer_handles_integer_constant() {
+        let g = parse_grammar("X = integer_constant ;").unwrap();
+        let r = Recognizer::build(g, "X");
+        assert!(r.accepts("0"));
+        assert!(r.accepts("42"));
+        assert!(r.accepts("65536"));
+        assert!(!r.accepts("foo"));
+        assert!(!r.accepts(""));
+    }
+
+    #[test]
+    fn recognizer_handles_string_literal() {
+        let g = parse_grammar("X = string_literal ;").unwrap();
+        let r = Recognizer::build(g, "X");
+        assert!(r.accepts("'hello'"));
+        assert!(r.accepts("''"));
+        assert!(!r.accepts("hello"));
+    }
+
     #[test]
     fn recognizer_handles_left_recursive_addition() {
         let g = parse_grammar(
