@@ -112,9 +112,11 @@ fn build_node<'src>(
             };
             iter.fold(first, |acc, p| acc.or(build_node(p, parsers)).boxed())
         }
-        Production::Optional(_) | Production::Repetition(_) => {
-            todo!("variant lands in Task 2.4+")
-        }
+        Production::Optional(inner) => build_node(inner, parsers).or_not().ignored().boxed(),
+        Production::Repetition(inner) => build_node(inner, parsers)
+            .repeated()
+            .collect::<()>()
+            .boxed(),
     }
 }
 
@@ -193,5 +195,24 @@ mod tests {
         assert!(r.accepts("true"));
         assert!(r.accepts("false"));
         assert!(!r.accepts("maybe"));
+    }
+
+    #[test]
+    fn recognizer_accepts_optional() {
+        let g = parse_grammar("X = 'a' [ 'b' ] ;").unwrap();
+        let r = Recognizer::build(g, "X");
+        assert!(r.accepts("a"));
+        assert!(r.accepts("a b"));
+        assert!(!r.accepts("b"));
+    }
+
+    #[test]
+    fn recognizer_accepts_repetition() {
+        let g = parse_grammar("X = 'a' { 'b' } ;").unwrap();
+        let r = Recognizer::build(g, "X");
+        assert!(r.accepts("a"));
+        assert!(r.accepts("a b"));
+        assert!(r.accepts("a b b b b"));
+        assert!(!r.accepts("b"));
     }
 }
