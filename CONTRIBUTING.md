@@ -57,3 +57,28 @@ If you discover a potential security issue in this project we ask that you notif
 ## Licensing
 
 See the [LICENSE](LICENSE) file for our project's licensing. We will ask you to confirm the licensing of your contribution.
+
+
+## Grammar oracle (dsql-lint)
+
+`dsql_grammar.ebnf` at the repo root is the upstream definition of what
+DSQL accepts. A test-time recognizer parses it and asserts dsql-lint and
+the grammar agree on every case in `dsql-lint/tests/integration_test.rs`.
+Cluster tests remain authoritative for correctness — the oracle is a
+second signal that surfaces drift to maintainers.
+
+When `dsql_lint_agrees_with_grammar` fails, the message names the
+disagreement kind:
+
+- **`GrammarRejectsLintQuiet`** — grammar rejects, dsql-lint silent.
+  dsql-lint is missing a rule (the common case). Add one in
+  `dsql-lint/src/rules/errors.rs`.
+- **`LintFlagsGrammarAccepts`** — dsql-lint flags it, grammar accepts.
+  Either the grammar relaxed (remove or loosen the rule) or dsql-lint
+  is over-flagging.
+
+If a fix is non-trivial, add the SQL string to `EXPECTED_DRIFT` in
+`dsql-lint/tests/grammar_oracle/drift.rs` with a one-line `//` comment
+explaining why. The list fails CI on stale entries, so it shrinks
+naturally as fixes land — every removal corresponds to either a new
+rule, a recognizer fix, or a grammar update.
