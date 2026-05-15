@@ -81,9 +81,7 @@ fn skip_ws_and_comments<I: Iterator<Item = char>>(
     }
 }
 
-fn read_identifier<I: Iterator<Item = char>>(
-    chars: &mut std::iter::Peekable<I>,
-) -> Option<String> {
+fn read_identifier<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I>) -> Option<String> {
     let mut s = String::new();
     while let Some(&c) = chars.peek() {
         if c.is_ascii_alphanumeric() || c == '_' {
@@ -93,7 +91,11 @@ fn read_identifier<I: Iterator<Item = char>>(
             break;
         }
     }
-    if s.is_empty() { None } else { Some(s) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 fn read_terminal<I: Iterator<Item = char>>(
@@ -300,7 +302,9 @@ mod tests {
         let g = parse_grammar(input).expect("parse");
         assert_eq!(
             g.productions.get("X"),
-            Some(&Production::Optional(Box::new(Production::Terminal("a".into()))))
+            Some(&Production::Optional(Box::new(Production::Terminal(
+                "a".into()
+            ))))
         );
     }
 
@@ -310,7 +314,9 @@ mod tests {
         let g = parse_grammar(input).expect("parse");
         assert_eq!(
             g.productions.get("X"),
-            Some(&Production::Repetition(Box::new(Production::Terminal("a".into()))))
+            Some(&Production::Repetition(Box::new(Production::Terminal(
+                "a".into()
+            ))))
         );
     }
 
