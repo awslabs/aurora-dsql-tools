@@ -147,6 +147,10 @@ pub fn load_corpus() -> Vec<Fixture> {
         {
             let entry = entry.expect("dir entry");
             let path = entry.path();
+            // Skip subdirectories (e.g. `_coverage_gap/`) and non-SQL files.
+            // Subdirectories are excluded implicitly because their paths have
+            // no `.sql` extension; the convention is that any subdirectory
+            // (especially one prefixed with `_`) is invisible to the loader.
             if path.extension().and_then(|e| e.to_str()) != Some("sql") {
                 continue;
             }
