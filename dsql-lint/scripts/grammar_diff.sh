@@ -15,8 +15,9 @@ if [[ ! -f "$ebnf" ]]; then
     exit 1
 fi
 
+# Suppress only grep's exit-1-on-no-matches; let real failures from
+# git diff, grep (exit >= 2), sed, or sort propagate via pipefail.
 git diff "$base"... -- "$ebnf" \
-    | grep -E '^[+-][A-Za-z][A-Za-z0-9_]*[[:space:]]*=' \
+    | { grep -E '^[+-][A-Za-z][A-Za-z0-9_]*[[:space:]]*=' || [[ $? == 1 ]]; } \
     | sed -E 's/^([+-])[[:space:]]*([A-Za-z][A-Za-z0-9_]*).*/\1 \2/' \
-    | sort -u \
-    || true   # grep returns 1 on no matches; that's not an error
+    | sort -u
