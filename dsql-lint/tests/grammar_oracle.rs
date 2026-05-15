@@ -178,18 +178,22 @@ fn corpus_coverage_test() {
         }
     }
 
-    // Also surface fixtures that reference productions no longer in the
-    // EBNF (catches fixture drift after upstream renames).
+    // Fail when fixtures reference productions no longer in the EBNF
+    // (catches fixture drift after upstream renames). Uncovered productions
+    // above are informational, but a dangling reference is a real defect:
+    // the fixture's `production:` field is lying.
     let valid: std::collections::BTreeSet<&str> = productions.iter().map(String::as_str).collect();
     let dangling: Vec<&str> = covered
         .iter()
         .copied()
         .filter(|p| !valid.contains(p))
         .collect();
-    if !dangling.is_empty() {
-        eprintln!("WARNING: fixtures reference unknown productions:");
-        for p in &dangling {
-            eprintln!("  {p}");
-        }
-    }
+    assert!(
+        dangling.is_empty(),
+        "{} fixture(s) reference productions absent from dsql_grammar.ebnf:\n  {}\n\
+         Either rename the fixture's `production:` header to match the current EBNF, \
+         or restore the production in the grammar.",
+        dangling.len(),
+        dangling.join("\n  "),
+    );
 }
