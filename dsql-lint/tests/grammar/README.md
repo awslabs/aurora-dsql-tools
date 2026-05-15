@@ -1,7 +1,10 @@
 # Grammar corpus
 
 Each fixture pairs a small SQL probe with what dsql-lint should do with it.
-See `docs/plans/2026-05-14-grammar-integration-design.md` for the design.
+The corpus is the contract CI checks: dsql-lint must lint `accept/` clean,
+must fire on `reject/`, and `--fix` output must match the paired `fixed/`
+golden byte-for-byte (regenerate with `BLESS=1 cargo test -p dsql-lint
+--test grammar_oracle`).
 
 ## Layout
 
@@ -55,6 +58,4 @@ Two rules are excluded from the corpus and covered by dedicated tests:
 | unsupported_alter_table_op | accept_alter_table_op.sql        | unsupported_alter_table_op__rls.sql | ❌     |
 | unsupported_statement      | accept_unsupported_statement.sql | unsupported_statement__create_extension.sql | ❌ |
 
-✅ = paired `fixed/` golden expected. Confirm by reading `dsql-lint/src/rules/errors.rs` and looking for `FixResult::Fixed(_)` or `FixResult::FixedWithWarning(_)` for that rule. ❌ = `FixResult::Unfixable`, no `fixed/` fixture needed.
-
-The ✅/❌ column above is *aspirational*; the actual `fixed/` files are populated in Task 3.4 by `BLESS=1 cargo test`. If a rule turns out to have a different fixability than this table predicts, update the table.
+✅ = paired `fixed/` golden exists (rule has a `--fix`). ❌ = `FixResult::Unfixable`, no `fixed/` fixture. Source of truth: `FixResult::Fixed(_)` / `FixResult::FixedWithWarning(_)` in `dsql-lint/src/rules/errors.rs`.
