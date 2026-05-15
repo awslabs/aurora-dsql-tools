@@ -133,3 +133,59 @@ fn corpus_contract_test() {
         );
     }
 }
+
+#[test]
+fn corpus_coverage_test() {
+    let ebnf_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("dsql-lint crate has a parent dir")
+        .join("dsql_grammar.ebnf");
+    let ebnf = std::fs::read_to_string(&ebnf_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", ebnf_path.display()));
+    let productions = grammar_corpus::extract_production_names(&ebnf);
+
+    let fixtures = grammar_corpus::load_corpus();
+    let covered: std::collections::BTreeSet<&str> = fixtures
+        .iter()
+        .map(|f| f.header.production.as_str())
+        // Headers can list multiple comma-separated productions (e.g.
+        // "CreateStmt, INHERITS clause"). Split on comma so each is counted.
+        .flat_map(|p| p.split(',').map(|s| s.trim()))
+        .collect();
+
+    let mut uncovered: Vec<&String> = productions
+        .iter()
+        .filter(|p| !covered.contains(p.as_str()))
+        .collect();
+    uncovered.sort();
+
+    eprintln!(
+        "grammar coverage: {}/{} productions referenced by ≥1 fixture",
+        productions.len() - uncovered.len(),
+        productions.len()
+    );
+    if !uncovered.is_empty() {
+        eprintln!("uncovered productions (informational):");
+        for p in uncovered.iter().take(50) {
+            eprintln!("  {p}");
+        }
+        if uncovered.len() > 50 {
+            eprintln!("  ... and {} more", uncovered.len() - 50);
+        }
+    }
+
+    // Also surface fixtures that reference productions no longer in the
+    // EBNF (catches fixture drift after upstream renames).
+    let valid: std::collections::BTreeSet<&str> = productions.iter().map(String::as_str).collect();
+    let dangling: Vec<&str> = covered
+        .iter()
+        .copied()
+        .filter(|p| !valid.contains(p))
+        .collect();
+    if !dangling.is_empty() {
+        eprintln!("WARNING: fixtures reference unknown productions:");
+        for p in &dangling {
+            eprintln!("  {p}");
+        }
+    }
+}
