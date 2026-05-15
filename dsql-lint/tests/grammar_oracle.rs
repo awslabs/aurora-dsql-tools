@@ -87,6 +87,10 @@ fn corpus_contract_test() {
                 fx.header.production, fx.rel_path,
             );
             let blessed = format!("{header}{actual}");
+            // BLESS=1 is a dev-only ritual; write failures (disk full,
+            // RO mount, permissions) are environmental, not corpus
+            // defects, so panic loudly. The branch `continue`s without
+            // pushing to `failures`, so there is no accumulator to lose.
             std::fs::write(&golden_path, &blessed).expect("write golden");
             eprintln!("blessed {}", golden_path.display());
             continue;
