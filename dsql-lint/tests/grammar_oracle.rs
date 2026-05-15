@@ -92,10 +92,29 @@ fn corpus_contract_test() {
             continue;
         }
 
-        // Compare against golden body (skip the header).
-        let golden_text = std::fs::read_to_string(&golden_path).expect("read golden");
-        let golden_parsed =
-            grammar_corpus::parse_header(&golden_text).expect("malformed golden header");
+        // Compare against golden body (skip the header). Both reads
+        // record failures rather than panicking so a single bad golden
+        // does not discard the rest of the accumulated failures.
+        let golden_text = match std::fs::read_to_string(&golden_path) {
+            Ok(s) => s,
+            Err(e) => {
+                failures.push(format!(
+                    "{}: failed to read golden {fix_target}: {e}",
+                    fx.rel_path,
+                ));
+                continue;
+            }
+        };
+        let golden_parsed = match grammar_corpus::parse_header(&golden_text) {
+            Ok(p) => p,
+            Err(e) => {
+                failures.push(format!(
+                    "{}: golden {fix_target} has malformed header: {e}",
+                    fx.rel_path,
+                ));
+                continue;
+            }
+        };
         let golden_body = &golden_text[golden_parsed.body_offset..];
 
         if golden_body != actual {
