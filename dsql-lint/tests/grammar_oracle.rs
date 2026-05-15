@@ -94,9 +94,9 @@ fn corpus_contract_test() {
 
         // Compare against golden body (skip the header).
         let golden_text = std::fs::read_to_string(&golden_path).expect("read golden");
-        let (_, _, golden_body_offset) =
+        let golden_parsed =
             grammar_corpus::parse_header(&golden_text).expect("malformed golden header");
-        let golden_body = &golden_text[golden_body_offset..];
+        let golden_body = &golden_text[golden_parsed.body_offset..];
 
         if golden_body != actual {
             failures.push(format!(

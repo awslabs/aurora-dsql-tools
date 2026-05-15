@@ -29,11 +29,22 @@ impl std::fmt::Display for ParseError {
     }
 }
 
-/// Parse the leading SQL-comment header. Returns the header, the
-/// declared `expectation:` (validated against the directory by the
-/// loader), and the byte offset where the SQL body begins (i.e. the
-/// first non-comment, non-blank line).
-pub fn parse_header(input: &str) -> Result<(FixtureHeader, Expectation, usize), ParseError> {
+/// Result of parsing the leading SQL-comment header.
+///
+/// `expectation` is returned alongside the header rather than as a
+/// field on `FixtureHeader` so the directory remains the single source
+/// of truth (the loader validates this value against the directory and
+/// then discards it; nothing on `Fixture` carries it).
+#[derive(Debug)]
+pub struct ParsedHeader {
+    pub header: FixtureHeader,
+    pub expectation: Expectation,
+    pub body_offset: usize,
+}
+
+/// Parse the leading SQL-comment header. The byte offset points at the
+/// first non-comment, non-blank line (the start of the SQL body).
+pub fn parse_header(input: &str) -> Result<ParsedHeader, ParseError> {
     let mut production: Option<String> = None;
     let mut expectation: Option<Expectation> = None;
     let mut rule: Option<String> = None;
@@ -109,16 +120,16 @@ pub fn parse_header(input: &str) -> Result<(FixtureHeader, Expectation, usize), 
         message: "missing required key 'expectation'".into(),
     })?;
 
-    Ok((
-        FixtureHeader {
+    Ok(ParsedHeader {
+        header: FixtureHeader {
             production,
             rule,
             fix,
             fixes,
         },
         expectation,
-        byte_offset,
-    ))
+        body_offset: byte_offset,
+    })
 }
 
 use std::path::{Path, PathBuf};
@@ -182,21 +193,21 @@ pub fn load_corpus() -> Vec<Fixture> {
             }
             let contents = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            let (header, expectation, body_offset) = parse_header(&contents)
+            let parsed = parse_header(&contents)
                 .unwrap_or_else(|e| panic!("malformed header in {}: {e}", path.display()));
             // Header expectation must agree with directory.
             assert_eq!(
-                expectation,
+                parsed.expectation,
                 kind.expectation(),
                 "{}: header expectation does not match directory {sub}/",
                 path.display()
             );
-            let body = contents[body_offset..].to_string();
+            let body = contents[parsed.body_offset..].to_string();
             let rel_path = format!("{sub}/{}", path.file_name().unwrap().to_string_lossy());
             out.push(Fixture {
                 rel_path,
                 kind,
-                header,
+                header: parsed.header,
                 body,
             });
         }
@@ -257,14 +268,14 @@ mod tests {
 -- expectation: accept
 CREATE TABLE t (id BIGINT PRIMARY KEY);
 ";
-        let (header, expectation, body_offset) = parse_header(input).expect("parse should succeed");
-        assert_eq!(header.production, "CreateStmt");
-        assert_eq!(expectation, Expectation::Accept);
-        assert_eq!(header.rule, None);
-        assert_eq!(header.fix, None);
-        assert_eq!(header.fixes, None);
+        let parsed = parse_header(input).expect("parse should succeed");
+        assert_eq!(parsed.header.production, "CreateStmt");
+        assert_eq!(parsed.expectation, Expectation::Accept);
+        assert_eq!(parsed.header.rule, None);
+        assert_eq!(parsed.header.fix, None);
+        assert_eq!(parsed.header.fixes, None);
         assert_eq!(
-            &input[body_offset..],
+            &input[parsed.body_offset..],
             "CREATE TABLE t (id BIGINT PRIMARY KEY);\n"
         );
     }
@@ -278,10 +289,13 @@ CREATE TABLE t (id BIGINT PRIMARY KEY);
 -- fix: fixed/serial_type__basic.sql
 CREATE TABLE t (id SERIAL);
 ";
-        let (h, exp, _) = parse_header(input).unwrap();
-        assert_eq!(exp, Expectation::Reject);
-        assert_eq!(h.rule.as_deref(), Some("serial_type"));
-        assert_eq!(h.fix.as_deref(), Some("fixed/serial_type__basic.sql"));
+        let parsed = parse_header(input).unwrap();
+        assert_eq!(parsed.expectation, Expectation::Reject);
+        assert_eq!(parsed.header.rule.as_deref(), Some("serial_type"));
+        assert_eq!(
+            parsed.header.fix.as_deref(),
+            Some("fixed/serial_type__basic.sql")
+        );
     }
 
     #[test]
@@ -292,8 +306,11 @@ CREATE TABLE t (id SERIAL);
 -- fixes: reject/serial_type__basic.sql
 CREATE TABLE t (id BIGINT);
 ";
-        let (h, _, _) = parse_header(input).unwrap();
-        assert_eq!(h.fixes.as_deref(), Some("reject/serial_type__basic.sql"));
+        let parsed = parse_header(input).unwrap();
+        assert_eq!(
+            parsed.header.fixes.as_deref(),
+            Some("reject/serial_type__basic.sql")
+        );
     }
 
     #[test]
@@ -327,17 +344,18 @@ SELECT 1;
     }
 
     #[test]
-    fn parse_header_known_key_without_colon_errors() {
-        let input = "\
--- production CreateStmt
--- expectation: accept
-SELECT 1;
-";
-        let err = parse_header(input).unwrap_err();
-        assert!(
-            err.message.contains("production") && err.message.contains("missing ':'"),
-            "got {err}"
-        );
+    fn parse_header_every_known_key_without_colon_errors() {
+        // Each entry in the typo guard's KNOWN_KEYS must be exercised so a
+        // future refactor that drops or misspells one of them is caught.
+        for key in ["production", "expectation", "rule", "fix", "fixes"] {
+            let input =
+                format!("-- production: X\n-- expectation: accept\n-- {key} value\nSELECT 1;\n");
+            let err = parse_header(&input).unwrap_err();
+            assert!(
+                err.message.contains(key) && err.message.contains("missing ':'"),
+                "key {key}: got {err}"
+            );
+        }
     }
 
     #[test]
@@ -350,16 +368,16 @@ SELECT 1;
 -- expectation: accept
 SELECT 1;
 ";
-        let (h, _, _) = parse_header(input).unwrap();
-        assert_eq!(h.production, "X");
+        let parsed = parse_header(input).unwrap();
+        assert_eq!(parsed.header.production, "X");
     }
 
     #[test]
     fn parse_header_skips_leading_blank_lines() {
         let input = "\n-- production: X\n-- expectation: accept\nSELECT 1;\n";
-        let (h, _, body_offset) = parse_header(input).unwrap();
-        assert_eq!(h.production, "X");
-        assert_eq!(&input[body_offset..], "SELECT 1;\n");
+        let parsed = parse_header(input).unwrap();
+        assert_eq!(parsed.header.production, "X");
+        assert_eq!(&input[parsed.body_offset..], "SELECT 1;\n");
     }
 
     #[test]
