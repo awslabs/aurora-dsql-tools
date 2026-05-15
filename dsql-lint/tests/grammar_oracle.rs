@@ -14,7 +14,7 @@ use std::collections::HashSet;
 #[test]
 fn dsql_lint_agrees_with_grammar() {
     let disagreements = drift::collect();
-    let expected: HashSet<&str> = drift::EXPECTED_DRIFT.iter().copied().collect();
+    let expected: HashSet<&str> = drift::EXPECTED_DRIFT.iter().map(|(s, _)| *s).collect();
 
     let unexpected: Vec<&drift::Disagreement> = disagreements
         .iter()
@@ -29,10 +29,10 @@ fn dsql_lint_agrees_with_grammar() {
         }
         msg.push_str(
             "\nFix by one of:\n  \
-             - Add a rule to dsql-lint (most common)\n  \
-             - Fix the recognizer if it's wrong\n  \
-             - Add the SQL string to EXPECTED_DRIFT in tests/grammar_oracle/drift.rs \
-               with a comment explaining why\n",
+             - Add a rule to dsql-lint (DriftReason::MissingDsqlLintRule)\n  \
+             - Extend the recognizer (DriftReason::RecognizerHole)\n  \
+             - Add the SQL to EXPECTED_DRIFT in tests/grammar_oracle/drift.rs \
+               with a (sql, DriftReason::*) entry and a comment explaining why\n",
         );
         panic!("{msg}");
     }
@@ -40,7 +40,7 @@ fn dsql_lint_agrees_with_grammar() {
     let actual: HashSet<&str> = disagreements.iter().map(|d| d.sql.as_str()).collect();
     let stale: Vec<&str> = drift::EXPECTED_DRIFT
         .iter()
-        .copied()
+        .map(|(s, _)| *s)
         .filter(|s| !actual.contains(s))
         .collect();
     if !stale.is_empty() {

@@ -1,6 +1,7 @@
 //! Drift detection: assert dsql-lint and the recognizer agree on every
 //! known case. New disagreements fail CI; expected disagreements are
-//! listed in `EXPECTED_DRIFT` (sql strings only). Stale entries also fail.
+//! listed in `EXPECTED_DRIFT` as `(sql, DriftReason)` pairs. Stale
+//! entries also fail.
 //!
 //! `REJECT_SQLS` and `ACCEPT_SQLS` duplicate SQL strings from
 //! `tests/integration_test.rs` and `tests/common/mod.rs`. The duplication
@@ -394,77 +395,186 @@ fn strip_trailing_semi(s: &str) -> &str {
     s.trim().trim_end_matches(';').trim_end()
 }
 
+/// Why a known disagreement is tolerated. Tagging makes the burndown list
+/// actionable: a maintainer looking for "what rule should we add next?"
+/// just filters by [`DriftReason::MissingDsqlLintRule`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // not all variants are populated today; they're part of the documented surface
+pub enum DriftReason {
+    /// Grammar permits-by-design; dsql-lint's check is semantic. The grammar
+    /// can't express the restriction without a parser/sema split it doesn't
+    /// have. Won't shrink — these stay tolerated unless DSQL itself relaxes.
+    SemanticOnly,
+    /// Grammar correctly rejects; dsql-lint is silent. Adding a rule to
+    /// dsql-lint removes the entry. **This is the actionable burndown list.**
+    MissingDsqlLintRule,
+    /// Recognizer is incomplete (production not modelled, blocklisted
+    /// statement, lexer stub). The grammar would give the right answer if
+    /// our recognizer faithfully matched it. Recognizer work, not rule work.
+    RecognizerHole,
+}
+
 /// Cases where dsql-lint and the grammar disagree, tolerated for now.
-/// Each entry is a SQL string from `REJECT_SQLS`/`ACCEPT_SQLS`. Comments
-/// group entries by `DisagreementKind` and any obvious sub-pattern; they
-/// document why the drift is tolerated, not how to fix it.
+/// Each entry is `(sql, reason)`. The test fails on stale entries, so the
+/// list naturally shrinks.
 ///
-/// Populated from the initial Phase 4 oracle run. Drift goes away when
-/// either dsql-lint grows a rule or the recognizer is extended; in both
-/// cases the corresponding line here must be removed (the test fails on
-/// stale entries).
-pub const EXPECTED_DRIFT: &[&str] = &[
-    // -- LintFlagsGrammarAccepts --
+/// To find the next dsql-lint rule to write, filter entries whose reason
+/// is [`DriftReason::MissingDsqlLintRule`].
+pub const EXPECTED_DRIFT: &[(&str, DriftReason)] = &[
+    // -- SemanticOnly --
     // The EBNF lets `GenericType -> type_function_name -> identifier` match
     // any identifier as a type name, so SERIAL/JSONB/etc. parse cleanly.
-    // dsql-lint catches them as a separate (semantic) check.
-    "CREATE TABLE t (id SERIAL PRIMARY KEY);",
-    "CREATE TABLE t (id SERIAL4 PRIMARY KEY);",
-    "CREATE TABLE t (id BIGSERIAL PRIMARY KEY);",
-    "CREATE TABLE t (id SERIAL8 PRIMARY KEY);",
-    "CREATE TABLE t (id SMALLSERIAL PRIMARY KEY);",
-    "CREATE TABLE t (id SERIAL2 PRIMARY KEY);",
-    "CREATE TABLE t (id INT, data JSONB);",
-    // Array type column (`TYPE[]`) is allowed by the EBNF's Typename grammar
-    // but dsql-lint flags arrays as unsupported.
-    "CREATE TABLE t (id INT, tags TEXT[]);",
-    "CREATE TABLE t (id INT, scores INT[]);",
-    // The EBNF's IndexStmt has `where_clause` so partial indexes parse;
-    // dsql-lint flags them.
-    "CREATE INDEX ASYNC idx ON t(col) WHERE col > 0;",
-    // ALTER INDEX RENAME parses through RenameStmt; dsql-lint flags it.
-    "ALTER INDEX idx_name RENAME TO idx_new;",
-    // EBNF's alter_table_cmds covers both ops; dsql-lint flags them.
-    "ALTER TABLE t ALTER COLUMN name DROP DEFAULT;",
-    "ALTER TABLE t ADD CONSTRAINT c CHECK (id > 0);",
-    // -- GrammarRejectsLintQuiet --
+    // dsql-lint flags them at the semantic layer.
+    (
+        "CREATE TABLE t (id SERIAL PRIMARY KEY);",
+        DriftReason::SemanticOnly,
+    ),
+    (
+        "CREATE TABLE t (id SERIAL4 PRIMARY KEY);",
+        DriftReason::SemanticOnly,
+    ),
+    (
+        "CREATE TABLE t (id BIGSERIAL PRIMARY KEY);",
+        DriftReason::SemanticOnly,
+    ),
+    (
+        "CREATE TABLE t (id SERIAL8 PRIMARY KEY);",
+        DriftReason::SemanticOnly,
+    ),
+    (
+        "CREATE TABLE t (id SMALLSERIAL PRIMARY KEY);",
+        DriftReason::SemanticOnly,
+    ),
+    (
+        "CREATE TABLE t (id SERIAL2 PRIMARY KEY);",
+        DriftReason::SemanticOnly,
+    ),
+    (
+        "CREATE TABLE t (id INT, data JSONB);",
+        DriftReason::SemanticOnly,
+    ),
+    // Array type column (`TYPE[]`) is allowed by the EBNF's Typename grammar.
+    (
+        "CREATE TABLE t (id INT, tags TEXT[]);",
+        DriftReason::SemanticOnly,
+    ),
+    (
+        "CREATE TABLE t (id INT, scores INT[]);",
+        DriftReason::SemanticOnly,
+    ),
+    // The EBNF's IndexStmt has `where_clause` so partial indexes parse.
+    (
+        "CREATE INDEX ASYNC idx ON t(col) WHERE col > 0;",
+        DriftReason::SemanticOnly,
+    ),
+    // RenameStmt is broad; dsql-lint flags this specific shape.
+    (
+        "ALTER INDEX idx_name RENAME TO idx_new;",
+        DriftReason::SemanticOnly,
+    ),
+    // alter_table_cmds covers these; dsql-lint flags by op semantics.
+    (
+        "ALTER TABLE t ALTER COLUMN name DROP DEFAULT;",
+        DriftReason::SemanticOnly,
+    ),
+    (
+        "ALTER TABLE t ADD CONSTRAINT c CHECK (id > 0);",
+        DriftReason::SemanticOnly,
+    ),
+    // -- RecognizerHole --
     // SELECT/INSERT/UPDATE/DELETE/EXPLAIN are on the recognizer blocklist
     // (chumsky backtracks pathologically on the EBNF's SelectStmt).
-    "DELETE FROM events WHERE id = 1;",
-    "INSERT INTO _clean_base (id, name) VALUES (1, 'test');",
-    "SELECT * FROM _clean_base WHERE id = 1;",
-    "UPDATE _clean_base SET name = 'updated' WHERE id = 1;",
-    "DELETE FROM _clean_base WHERE id = 1;",
-    "INSERT INTO _clean_base (id, name) VALUES (2, 'TRUNCATE TABLE foo; CREATE TRIGGER bar');",
+    (
+        "DELETE FROM events WHERE id = 1;",
+        DriftReason::RecognizerHole,
+    ),
+    (
+        "INSERT INTO _clean_base (id, name) VALUES (1, 'test');",
+        DriftReason::RecognizerHole,
+    ),
+    (
+        "SELECT * FROM _clean_base WHERE id = 1;",
+        DriftReason::RecognizerHole,
+    ),
+    (
+        "UPDATE _clean_base SET name = 'updated' WHERE id = 1;",
+        DriftReason::RecognizerHole,
+    ),
+    (
+        "DELETE FROM _clean_base WHERE id = 1;",
+        DriftReason::RecognizerHole,
+    ),
+    (
+        "INSERT INTO _clean_base (id, name) VALUES (2, 'TRUNCATE TABLE foo; CREATE TRIGGER bar');",
+        DriftReason::RecognizerHole,
+    ),
     // Phase 3 stubs reject `parameter`, `SignedIconst`, `var_list`, etc.;
-    // a number of identity/sequence/CACHE inputs route through those.
-    "CREATE TABLE t (id BIGINT GENERATED BY DEFAULT AS IDENTITY (CACHE 1));",
-    "CREATE SEQUENCE s AS BIGINT CACHE 65536;",
-    "CREATE SEQUENCE s CACHE 65537;",
-    "CREATE TABLE _type_test (col BIGINT GENERATED BY DEFAULT AS IDENTITY (CACHE 1));",
-    "CREATE TABLE _type_test (col BIGINT GENERATED BY DEFAULT AS IDENTITY (CACHE 65536));",
+    // identity/sequence/CACHE inputs route through them.
+    (
+        "CREATE TABLE t (id BIGINT GENERATED BY DEFAULT AS IDENTITY (CACHE 1));",
+        DriftReason::RecognizerHole,
+    ),
+    (
+        "CREATE SEQUENCE s AS BIGINT CACHE 65536;",
+        DriftReason::RecognizerHole,
+    ),
+    (
+        "CREATE SEQUENCE s CACHE 65537;",
+        DriftReason::RecognizerHole,
+    ),
+    (
+        "CREATE TABLE _type_test (col BIGINT GENERATED BY DEFAULT AS IDENTITY (CACHE 1));",
+        DriftReason::RecognizerHole,
+    ),
+    (
+        "CREATE TABLE _type_test (col BIGINT GENERATED BY DEFAULT AS IDENTITY (CACHE 65536));",
+        DriftReason::RecognizerHole,
+    ),
     // Plain `BEGIN` and `BEGIN ISOLATION LEVEL …` aren't in the EBNF's
     // TransactionStmt (which only lists ABORT/START/COMMIT/ROLLBACK).
-    "BEGIN ISOLATION LEVEL REPEATABLE READ;",
-    "BEGIN;",
-    // ALTER TABLE ADD COLUMN with no DEFAULT/NOT NULL: the EBNF's
-    // ColumnDef doesn't accept the bare type without trailing constraints
-    // here, or we don't recurse into the right alt — surfaced as drift.
-    "ALTER TABLE _clean_base ADD COLUMN description TEXT;",
-    "ALTER TABLE t ADD COLUMN x TEXT;",
-    // ALTER TABLE OWNER TO is not in the alter_table_cmds the recognizer
-    // expands; it parses elsewhere in the upstream grammar.
-    "ALTER TABLE t OWNER TO new_owner;",
-    // COPY isn't covered by any Stmt our dispatch table maps; the recognizer
-    // dispatch falls through to "no match" → reject.
-    "COPY t FROM STDIN;",
-    "COPY t TO STDOUT;",
-    // Multi-word type names: `DOUBLE PRECISION`, `CHARACTER VARYING`,
-    // `TIME WITH TIME ZONE`, `TIMESTAMP WITH TIME ZONE`. The EBNF
-    // expresses these as a fixed sequence we don't currently match
-    // through the Typename → identifier path.
-    "CREATE TABLE _type_test (col DOUBLE PRECISION);",
-    "CREATE TABLE _type_test (col CHARACTER VARYING(100));",
-    "CREATE TABLE _type_test (col TIME WITH TIME ZONE);",
-    "CREATE TABLE _type_test (col TIMESTAMP WITH TIME ZONE);",
+    (
+        "BEGIN ISOLATION LEVEL REPEATABLE READ;",
+        DriftReason::RecognizerHole,
+    ),
+    ("BEGIN;", DriftReason::RecognizerHole),
+    // ALTER TABLE ADD COLUMN bare type — the EBNF's ColumnDef path doesn't
+    // accept this through our current recursion.
+    (
+        "ALTER TABLE _clean_base ADD COLUMN description TEXT;",
+        DriftReason::RecognizerHole,
+    ),
+    (
+        "ALTER TABLE t ADD COLUMN x TEXT;",
+        DriftReason::RecognizerHole,
+    ),
+    // ALTER TABLE OWNER TO is not in the alter_table_cmds we expand.
+    (
+        "ALTER TABLE t OWNER TO new_owner;",
+        DriftReason::RecognizerHole,
+    ),
+    // COPY isn't covered by any Stmt our dispatch table maps.
+    ("COPY t FROM STDIN;", DriftReason::RecognizerHole),
+    ("COPY t TO STDOUT;", DriftReason::RecognizerHole),
+    // Multi-word type names: the EBNF expresses these as fixed sequences
+    // we don't currently match through the Typename → identifier path.
+    (
+        "CREATE TABLE _type_test (col DOUBLE PRECISION);",
+        DriftReason::RecognizerHole,
+    ),
+    (
+        "CREATE TABLE _type_test (col CHARACTER VARYING(100));",
+        DriftReason::RecognizerHole,
+    ),
+    (
+        "CREATE TABLE _type_test (col TIME WITH TIME ZONE);",
+        DriftReason::RecognizerHole,
+    ),
+    (
+        "CREATE TABLE _type_test (col TIMESTAMP WITH TIME ZONE);",
+        DriftReason::RecognizerHole,
+    ),
+    // -- MissingDsqlLintRule --
+    // (initially empty — no entries in this category yet. Triage future
+    //  drift here when the grammar correctly rejects something dsql-lint
+    //  should also flag.)
 ];

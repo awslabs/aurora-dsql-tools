@@ -71,14 +71,34 @@ When `dsql_lint_agrees_with_grammar` fails, the message names the
 disagreement kind:
 
 - **`GrammarRejectsLintQuiet`** — grammar rejects, dsql-lint silent.
-  dsql-lint is missing a rule (the common case). Add one in
-  `dsql-lint/src/rules/errors.rs`.
+  Often: dsql-lint is missing a rule (add one in
+  `dsql-lint/src/rules/errors.rs`).
 - **`LintFlagsGrammarAccepts`** — dsql-lint flags it, grammar accepts.
   Either the grammar relaxed (remove or loosen the rule) or dsql-lint
   is over-flagging.
 
-If a fix is non-trivial, add the SQL string to `EXPECTED_DRIFT` in
-`dsql-lint/tests/grammar_oracle/drift.rs` with a one-line `//` comment
-explaining why. The list fails CI on stale entries, so it shrinks
-naturally as fixes land — every removal corresponds to either a new
-rule, a recognizer fix, or a grammar update.
+### The burndown list
+
+Tolerated disagreements live in `EXPECTED_DRIFT` in
+`dsql-lint/tests/grammar_oracle/drift.rs`. Each entry is `(sql, reason)`:
+
+- **`DriftReason::MissingDsqlLintRule`** — grammar correctly rejects;
+  dsql-lint should grow a rule. **This is the actionable list.** When
+  picking work, filter `EXPECTED_DRIFT` by this variant and pick the
+  next entry.
+- **`DriftReason::RecognizerHole`** — our test-time recognizer doesn't
+  model this construct yet. Recognizer work, not rule work. Today this
+  includes `SELECT`/`INSERT`/`UPDATE`/`DELETE`/`EXPLAIN` (chumsky
+  backtracks pathologically on `SelectStmt`), the `parameter` /
+  `SignedIconst` / `var_list` lexer stubs, multi-word type names, and
+  a handful of statement shapes our dispatch table doesn't route.
+  Don't chase a "missing dsql-lint rule" interpretation for these
+  entries — fix the recognizer instead.
+- **`DriftReason::SemanticOnly`** — grammar permits-by-design; the
+  restriction is semantic and dsql-lint catches it separately. Permanent;
+  these stay tolerated unless DSQL itself relaxes.
+
+The list fails CI on stale entries, so it shrinks naturally as fixes
+land — every removal corresponds to a new rule, a recognizer fix, or a
+grammar update. Adding a new entry requires a comment block explaining
+why it's tolerated.
