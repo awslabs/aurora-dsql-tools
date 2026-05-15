@@ -6,7 +6,6 @@
 #[derive(Debug, PartialEq, Eq)]
 pub struct FixtureHeader {
     pub production: String,
-    pub expectation: Expectation,
     pub rule: Option<String>,
     pub fix: Option<String>,
     pub fixes: Option<String>,
@@ -30,9 +29,11 @@ impl std::fmt::Display for ParseError {
     }
 }
 
-/// Parse the leading SQL-comment header. Returns the header and the byte
-/// offset where the SQL body begins (i.e. the first non-comment, non-blank line).
-pub fn parse_header(input: &str) -> Result<(FixtureHeader, usize), ParseError> {
+/// Parse the leading SQL-comment header. Returns the header, the
+/// declared `expectation:` (validated against the directory by the
+/// loader), and the byte offset where the SQL body begins (i.e. the
+/// first non-comment, non-blank line).
+pub fn parse_header(input: &str) -> Result<(FixtureHeader, Expectation, usize), ParseError> {
     let mut production: Option<String> = None;
     let mut expectation: Option<Expectation> = None;
     let mut rule: Option<String> = None;
@@ -111,11 +112,11 @@ pub fn parse_header(input: &str) -> Result<(FixtureHeader, usize), ParseError> {
     Ok((
         FixtureHeader {
             production,
-            expectation,
             rule,
             fix,
             fixes,
         },
+        expectation,
         byte_offset,
     ))
 }
@@ -136,6 +137,15 @@ pub enum FixtureKind {
     Accept,
     Reject,
     Fixed,
+}
+
+impl FixtureKind {
+    pub fn expectation(self) -> Expectation {
+        match self {
+            FixtureKind::Accept | FixtureKind::Fixed => Expectation::Accept,
+            FixtureKind::Reject => Expectation::Reject,
+        }
+    }
 }
 
 /// Walk `<crate>/tests/grammar/{accept,reject,fixed}/` and load every `*.sql`
@@ -172,16 +182,12 @@ pub fn load_corpus() -> Vec<Fixture> {
             }
             let contents = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            let (header, body_offset) = parse_header(&contents)
+            let (header, expectation, body_offset) = parse_header(&contents)
                 .unwrap_or_else(|e| panic!("malformed header in {}: {e}", path.display()));
             // Header expectation must agree with directory.
-            let expected = match kind {
-                FixtureKind::Accept | FixtureKind::Fixed => Expectation::Accept,
-                FixtureKind::Reject => Expectation::Reject,
-            };
             assert_eq!(
-                header.expectation,
-                expected,
+                expectation,
+                kind.expectation(),
                 "{}: header expectation does not match directory {sub}/",
                 path.display()
             );
@@ -251,9 +257,9 @@ mod tests {
 -- expectation: accept
 CREATE TABLE t (id BIGINT PRIMARY KEY);
 ";
-        let (header, body_offset) = parse_header(input).expect("parse should succeed");
+        let (header, expectation, body_offset) = parse_header(input).expect("parse should succeed");
         assert_eq!(header.production, "CreateStmt");
-        assert_eq!(header.expectation, Expectation::Accept);
+        assert_eq!(expectation, Expectation::Accept);
         assert_eq!(header.rule, None);
         assert_eq!(header.fix, None);
         assert_eq!(header.fixes, None);
@@ -272,8 +278,8 @@ CREATE TABLE t (id BIGINT PRIMARY KEY);
 -- fix: fixed/serial_type__basic.sql
 CREATE TABLE t (id SERIAL);
 ";
-        let (h, _) = parse_header(input).unwrap();
-        assert_eq!(h.expectation, Expectation::Reject);
+        let (h, exp, _) = parse_header(input).unwrap();
+        assert_eq!(exp, Expectation::Reject);
         assert_eq!(h.rule.as_deref(), Some("serial_type"));
         assert_eq!(h.fix.as_deref(), Some("fixed/serial_type__basic.sql"));
     }
@@ -286,7 +292,7 @@ CREATE TABLE t (id SERIAL);
 -- fixes: reject/serial_type__basic.sql
 CREATE TABLE t (id BIGINT);
 ";
-        let (h, _) = parse_header(input).unwrap();
+        let (h, _, _) = parse_header(input).unwrap();
         assert_eq!(h.fixes.as_deref(), Some("reject/serial_type__basic.sql"));
     }
 
@@ -344,14 +350,14 @@ SELECT 1;
 -- expectation: accept
 SELECT 1;
 ";
-        let (h, _) = parse_header(input).unwrap();
+        let (h, _, _) = parse_header(input).unwrap();
         assert_eq!(h.production, "X");
     }
 
     #[test]
     fn parse_header_skips_leading_blank_lines() {
         let input = "\n-- production: X\n-- expectation: accept\nSELECT 1;\n";
-        let (h, body_offset) = parse_header(input).unwrap();
+        let (h, _, body_offset) = parse_header(input).unwrap();
         assert_eq!(h.production, "X");
         assert_eq!(&input[body_offset..], "SELECT 1;\n");
     }
