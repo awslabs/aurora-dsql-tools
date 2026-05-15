@@ -57,3 +57,32 @@ If you discover a potential security issue in this project we ask that you notif
 ## Licensing
 
 See the [LICENSE](LICENSE) file for our project's licensing. We will ask you to confirm the licensing of your contribution.
+
+
+## Grammar changes
+
+`dsql_grammar.ebnf` is the source of truth for what DSQL accepts. dsql-lint
+encodes a subset of the same knowledge in hand-written rules. CI keeps them
+aligned via the corpus under [`dsql-lint/tests/grammar/`](dsql-lint/tests/grammar/).
+
+When you push a change to `dsql_grammar.ebnf`:
+
+1. Run `dsql-lint/scripts/grammar_diff.sh` to list productions that changed.
+   Paste the output into your PR description.
+2. For each production whose semantics changed, update the corresponding
+   fixture(s) under `accept/`, `reject/`, and/or `fixed/`.
+3. If your change relaxes the grammar (something now allowed): move the
+   relevant fixture from `reject/` to `accept/`. CI will then fail because
+   the rule still flags it — remove or loosen the rule in the same PR.
+4. If your change tightens the grammar (something newly disallowed): add
+   a `reject/` fixture and a corresponding rule. If the rule has a `--fix`,
+   add a paired `fixed/` golden:
+
+   ```bash
+   BLESS=1 cargo test -p dsql-lint --test grammar_oracle corpus_contract_test
+   ```
+
+   then inspect the regenerated `fixed/*.sql` files and commit.
+
+The corpus contract test (`corpus_contract_test`) gates merges; the coverage
+test (`corpus_coverage_test`) is informational.
