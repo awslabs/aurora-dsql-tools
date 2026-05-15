@@ -56,10 +56,10 @@ pub fn parse_grammar(input: &str) -> Result<Grammar, ParseError> {
         skip_ws_and_comments(&mut chars, &mut line);
         expect_char(&mut chars, '=', line)?;
         skip_ws_and_comments(&mut chars, &mut line);
-        let body = read_terminal(&mut chars, line)?;
+        let body = read_alternation(&mut chars, &mut line)?;
         skip_ws_and_comments(&mut chars, &mut line);
         expect_char(&mut chars, ';', line)?;
-        productions.insert(name, Production::Terminal(body));
+        productions.insert(name, body);
     }
 
     Ok(Grammar { productions })
@@ -116,6 +116,70 @@ fn read_terminal<I: Iterator<Item = char>>(
     })
 }
 
+fn read_alternation<I: Iterator<Item = char>>(
+    chars: &mut std::iter::Peekable<I>,
+    line: &mut usize,
+) -> Result<Production, ParseError> {
+    let mut alternatives = vec![read_sequence(chars, line)?];
+    loop {
+        skip_ws_and_comments(chars, line);
+        if chars.peek() == Some(&'|') {
+            chars.next();
+            skip_ws_and_comments(chars, line);
+            alternatives.push(read_sequence(chars, line)?);
+        } else {
+            break;
+        }
+    }
+    Ok(if alternatives.len() == 1 {
+        alternatives.into_iter().next().unwrap()
+    } else {
+        Production::Choice(alternatives)
+    })
+}
+
+fn read_sequence<I: Iterator<Item = char>>(
+    chars: &mut std::iter::Peekable<I>,
+    line: &mut usize,
+) -> Result<Production, ParseError> {
+    let mut atoms = vec![read_atom(chars, line)?];
+    loop {
+        skip_ws_and_comments(chars, line);
+        match chars.peek() {
+            Some(&c) if c == ';' || c == '|' || c == ']' || c == '}' || c == ')' => break,
+            None => break,
+            _ => atoms.push(read_atom(chars, line)?),
+        }
+    }
+    Ok(if atoms.len() == 1 {
+        atoms.into_iter().next().unwrap()
+    } else {
+        Production::Sequence(atoms)
+    })
+}
+
+fn read_atom<I: Iterator<Item = char>>(
+    chars: &mut std::iter::Peekable<I>,
+    line: &mut usize,
+) -> Result<Production, ParseError> {
+    let line_snapshot = *line;
+    match chars.peek() {
+        Some(&'\'') => Ok(Production::Terminal(read_terminal(chars, line_snapshot)?)),
+        Some(&c) if c.is_ascii_alphabetic() || c == '_' => {
+            let name = read_identifier(chars).expect("peek confirmed identifier");
+            Ok(Production::NonTerminal(name))
+        }
+        Some(&c) => Err(ParseError {
+            line: line_snapshot,
+            message: format!("unexpected character '{c}' in production body"),
+        }),
+        None => Err(ParseError {
+            line: line_snapshot,
+            message: "unexpected EOF in production body".into(),
+        }),
+    }
+}
+
 fn expect_char<I: Iterator<Item = char>>(
     chars: &mut std::iter::Peekable<I>,
     expected: char,
@@ -147,5 +211,54 @@ mod tests {
             g.productions.get("Greeting"),
             Some(&Production::Terminal("hello".into()))
         );
+    }
+
+    #[test]
+    fn parse_non_terminal_reference() {
+        let input = "A = B ;";
+        let g = parse_grammar(input).expect("parse");
+        assert_eq!(
+            g.productions.get("A"),
+            Some(&Production::NonTerminal("B".into()))
+        );
+    }
+
+    #[test]
+    fn parse_sequence() {
+        let input = "Greeting = 'hello' Name ;";
+        let g = parse_grammar(input).expect("parse");
+        let expected = Production::Sequence(vec![
+            Production::Terminal("hello".into()),
+            Production::NonTerminal("Name".into()),
+        ]);
+        assert_eq!(g.productions.get("Greeting"), Some(&expected));
+    }
+
+    #[test]
+    fn parse_choice() {
+        let input = "Bool = 'true' | 'false' ;";
+        let g = parse_grammar(input).expect("parse");
+        let expected = Production::Choice(vec![
+            Production::Terminal("true".into()),
+            Production::Terminal("false".into()),
+        ]);
+        assert_eq!(g.productions.get("Bool"), Some(&expected));
+    }
+
+    #[test]
+    fn parse_choice_with_sequences() {
+        let input = "X = 'a' 'b' | 'c' 'd' ;";
+        let g = parse_grammar(input).expect("parse");
+        let expected = Production::Choice(vec![
+            Production::Sequence(vec![
+                Production::Terminal("a".into()),
+                Production::Terminal("b".into()),
+            ]),
+            Production::Sequence(vec![
+                Production::Terminal("c".into()),
+                Production::Terminal("d".into()),
+            ]),
+        ]);
+        assert_eq!(g.productions.get("X"), Some(&expected));
     }
 }
