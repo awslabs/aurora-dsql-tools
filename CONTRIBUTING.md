@@ -57,3 +57,95 @@ If you discover a potential security issue in this project we ask that you notif
 ## Licensing
 
 See the [LICENSE](LICENSE) file for our project's licensing. We will ask you to confirm the licensing of your contribution.
+
+
+## Grammar oracle (dsql-lint)
+
+`dsql_grammar.json` at the repo root is the source of truth for what
+DSQL's parser accepts. It is a vendored JSON description of the DSQL
+grammar; refresh it by replacing the file with an updated copy and
+re-running the oracle tests.
+
+The oracle (`dsql-lint/tests/grammar_oracle/grammar.rs`) loads that
+JSON and answers `accepts(sql) -> bool` via input-driven derivation:
+tokenize the SQL, then for each `*Stmt` rule check whether some
+derivation consumes all the tokens. Memoizes on `(rule, cursor)` so
+complexity stays polynomial. Handles left recursion via the standard
+`A = β α*` rewrite, and grammar `repetition` fields for list shapes.
+
+When the grammar JSON changes — e.g., DSQL relaxes a restriction or
+adds support for a statement form — the oracle's verdicts change
+automatically. No translation step.
+
+Cluster tests remain authoritative for correctness; the oracle is a
+second signal that surfaces drift to maintainers.
+
+When `dsql_lint_agrees_with_grammar` fails, the message names the
+disagreement kind:
+
+- **`GrammarRejectsLintQuiet`** — grammar rejects, dsql-lint silent.
+  Often: dsql-lint is missing a rule (add one in
+  `dsql-lint/src/rules/errors.rs`).
+- **`LintFlagsGrammarAccepts`** — dsql-lint flags it, grammar accepts.
+  Either the grammar relaxed (remove or loosen the rule) or dsql-lint
+  is over-flagging.
+
+### The burndown list
+
+Tolerated disagreements from the curated dsql-lint corpus live in
+`EXPECTED_DRIFT` in `dsql-lint/tests/grammar_oracle/drift.rs`. Each
+entry is `(sql, reason)`:
+
+- **`DriftReason::MissingDsqlLintRule`** — grammar correctly rejects;
+  dsql-lint should grow a rule. **This is the actionable list.** When
+  picking work, filter `EXPECTED_DRIFT` by this variant and pick the
+  next entry.
+- **`DriftReason::RecognizerHole`** — the input-driven oracle doesn't
+  follow this grammar shape correctly. Today these include the
+  `SignedIconst` stub (used by `IDENTITY (CACHE …)` and `SEQUENCE …
+  CACHE …`), bare `BEGIN;`, `COPY t FROM STDIN`, and SELECT/UPDATE/
+  DELETE shapes that need fuller derivation support. Recognizer work,
+  not rule work — don't chase a "missing dsql-lint rule" interpretation
+  for these entries.
+- **`DriftReason::SemanticOnly`** — grammar permits-by-design; the
+  restriction is semantic and dsql-lint catches it separately. The
+  grammar's `Typename → identifier` path matches any identifier as a
+  type name, so SERIAL/JSONB/array-type rejection lives in dsql-lint,
+  not the grammar.
+
+The list fails CI on stale entries, so it shrinks naturally as fixes
+land — every removal corresponds to a new rule, an oracle fix, or a
+grammar update. Adding a new entry requires a comment explaining why
+it's tolerated.
+
+### Postgres regression-test corpus
+
+The curated dsql-lint corpus (`tests/integration_test.rs`,
+`tests/common/mod.rs`) is what dsql-lint already checks — a corpus
+selected that way can't surface what dsql-lint *doesn't* check. To
+find real coverage gaps the oracle also walks a vendored subset of
+the upstream PostgreSQL regression-test SQL under
+`dsql-lint/tests/grammar_oracle/pg_corpus/`.
+
+Drift on this larger corpus is **report-only** today: the agreement
+test prints a count + breakdown (LintFlagsGrammarAccepts vs
+GrammarRejectsLintQuiet) but does not fail CI. The
+GrammarRejectsLintQuiet entries are the rule-gap candidates. To see
+the full burndown surface:
+
+```bash
+cargo test -p dsql-lint --test grammar_oracle pg_corpus_drift_report -- --nocapture
+```
+
+Refresh the vendored corpus by re-running the upstream sync:
+
+```bash
+./dsql-lint/scripts/refresh_pg_corpus.sh
+# or pin a different upstream ref:
+PG_REF=REL_17_STABLE ./dsql-lint/scripts/refresh_pg_corpus.sh
+```
+
+Statements that `lint_sql` flags as `ParseError` are skipped:
+dsql-lint can't lint what it can't parse, so they aren't drift
+signal — the PG corpus contains intentionally-broken SQL marked
+`-- fail` plus exotic constructs `sqlparser-dsql` doesn't model.
