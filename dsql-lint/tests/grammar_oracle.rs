@@ -1,9 +1,14 @@
-//! Grammar oracle: test-time recognizer for `dsql_grammar.ebnf`.
+//! Grammar oracle: test-time check that dsql-lint and the upstream
+//! grammar agree on each statement in our test corpora.
 //!
-//! Loads the upstream EBNF, builds a chumsky recognizer, and asserts
-//! dsql-lint and the recognizer agree on every test case. Disagreements
-//! tracked in an `EXPECTED_DRIFT` const in `grammar_oracle/drift.rs`;
-//! the list shrinks over time as rules are added.
+//! Loads `dsql_grammar.json` (Snowglobe-shaped grammar; see
+//! `grammar_oracle/snowglobe.rs`) and asserts dsql-lint's verdicts
+//! match the grammar's on every case. Disagreements from the curated
+//! dsql-lint corpus are gated per-statement by `EXPECTED_DRIFT` in
+//! `grammar_oracle/drift.rs`; that list shrinks as rules are added.
+//! Disagreements from the larger Postgres regression corpus are
+//! reported but don't fail CI — they're the burndown surface for
+//! future rule-gap triage.
 
 #[path = "grammar_oracle/mod.rs"]
 mod grammar_oracle;

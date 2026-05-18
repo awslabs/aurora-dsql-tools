@@ -61,10 +61,23 @@ See the [LICENSE](LICENSE) file for our project's licensing. We will ask you to 
 
 ## Grammar oracle (dsql-lint)
 
-`dsql_grammar.ebnf` at the repo root is the upstream definition of what
-DSQL accepts. A test-time recognizer parses it and asserts dsql-lint and
-the grammar agree on every case in `dsql-lint/tests/integration_test.rs`.
-Cluster tests remain authoritative for correctness — the oracle is a
+`dsql_grammar.json` at the repo root is the source of truth for what
+DSQL's parser accepts. It's a Snowglobe-emitted JSON description of
+the DSQL grammar (refresh by running `derive_dsql --grammar-json-output`
+in the AxdbSnowglobe workspace and copying the result here).
+
+The oracle (`dsql-lint/tests/grammar_oracle/snowglobe.rs`) loads that
+JSON and answers `accepts(sql) -> bool` via input-driven derivation:
+tokenize the SQL, then for each `*Stmt` rule check whether some
+derivation consumes all the tokens. Memoizes on `(rule, cursor)` so
+complexity stays polynomial. Handles left recursion via the standard
+`A = β α*` rewrite, and grammar `repetition` fields for list shapes.
+
+When the grammar JSON changes — e.g., DSQL relaxes a restriction or
+adds support for a statement form — the oracle's verdicts change
+automatically. No translation step.
+
+Cluster tests remain authoritative for correctness; the oracle is a
 second signal that surfaces drift to maintainers.
 
 When `dsql_lint_agrees_with_grammar` fails, the message names the
@@ -79,42 +92,46 @@ disagreement kind:
 
 ### The burndown list
 
-Tolerated disagreements live in `EXPECTED_DRIFT` in
-`dsql-lint/tests/grammar_oracle/drift.rs`. Each entry is `(sql, reason)`:
+Tolerated disagreements from the curated dsql-lint corpus live in
+`EXPECTED_DRIFT` in `dsql-lint/tests/grammar_oracle/drift.rs`. Each
+entry is `(sql, reason)`:
 
 - **`DriftReason::MissingDsqlLintRule`** — grammar correctly rejects;
   dsql-lint should grow a rule. **This is the actionable list.** When
   picking work, filter `EXPECTED_DRIFT` by this variant and pick the
   next entry.
-- **`DriftReason::RecognizerHole`** — our test-time recognizer doesn't
-  model this construct yet. Recognizer work, not rule work. Today this
-  includes `SELECT`/`INSERT`/`UPDATE`/`DELETE`/`EXPLAIN` (chumsky
-  backtracks pathologically on `SelectStmt`), the `parameter` /
-  `SignedIconst` / `var_list` lexer stubs, multi-word type names, and
-  a handful of statement shapes our dispatch table doesn't route.
-  Don't chase a "missing dsql-lint rule" interpretation for these
-  entries — fix the recognizer instead.
+- **`DriftReason::RecognizerHole`** — the input-driven oracle doesn't
+  follow this grammar shape correctly. Today these include the
+  `SignedIconst` stub (used by `IDENTITY (CACHE …)` and `SEQUENCE …
+  CACHE …`), bare `BEGIN;`, `COPY t FROM STDIN`, and SELECT/UPDATE/
+  DELETE shapes that need fuller derivation support. Recognizer work,
+  not rule work — don't chase a "missing dsql-lint rule" interpretation
+  for these entries.
 - **`DriftReason::SemanticOnly`** — grammar permits-by-design; the
-  restriction is semantic and dsql-lint catches it separately. Permanent;
-  these stay tolerated unless DSQL itself relaxes.
+  restriction is semantic and dsql-lint catches it separately. The
+  grammar's `Typename → identifier` path matches any identifier as a
+  type name, so SERIAL/JSONB/array-type rejection lives in dsql-lint,
+  not the grammar.
 
 The list fails CI on stale entries, so it shrinks naturally as fixes
-land — every removal corresponds to a new rule, a recognizer fix, or a
-grammar update. Adding a new entry requires a comment block explaining
-why it's tolerated.
+land — every removal corresponds to a new rule, an oracle fix, or a
+grammar update. Adding a new entry requires a comment explaining why
+it's tolerated.
 
 ### Postgres regression-test corpus
 
-The dsql-lint test corpus (`tests/integration_test.rs`, `tests/common/mod.rs`)
-is curated by what dsql-lint already checks — a corpus selected that way
-can't surface what dsql-lint *doesn't* check. To find real coverage gaps
-the oracle also walks a vendored subset of the upstream PostgreSQL
-regression-test SQL under `dsql-lint/tests/grammar_oracle/pg_corpus/`.
+The curated dsql-lint corpus (`tests/integration_test.rs`,
+`tests/common/mod.rs`) is what dsql-lint already checks — a corpus
+selected that way can't surface what dsql-lint *doesn't* check. To
+find real coverage gaps the oracle also walks a vendored subset of
+the upstream PostgreSQL regression-test SQL under
+`dsql-lint/tests/grammar_oracle/pg_corpus/`.
 
-Drift on this larger corpus is **report-only** today: the agreement test
-prints a count + breakdown (LintFlagsGrammarAccepts vs
-GrammarRejectsLintQuiet) but does not fail CI. To see the full burndown
-surface:
+Drift on this larger corpus is **report-only** today: the agreement
+test prints a count + breakdown (LintFlagsGrammarAccepts vs
+GrammarRejectsLintQuiet) but does not fail CI. The
+GrammarRejectsLintQuiet entries are the rule-gap candidates. To see
+the full burndown surface:
 
 ```bash
 cargo test -p dsql-lint --test grammar_oracle pg_corpus_drift_report -- --nocapture
@@ -128,9 +145,7 @@ Refresh the vendored corpus by re-running the upstream sync:
 PG_REF=REL_17_STABLE ./dsql-lint/scripts/refresh_pg_corpus.sh
 ```
 
-Statements that use SELECT/INSERT/UPDATE/DELETE/EXPLAIN, embed
-CHECK/WHERE/VALUES expression clauses, or exceed 300 bytes are
-predicate-skipped from drift collection — chumsky's recognizer backtracks
-pathologically (or stack-overflows) on those shapes. Statements
-`lint_sql` flags as `ParseError` are also skipped: dsql-lint can't lint
-what it can't parse, so they aren't drift signal.
+Statements that `lint_sql` flags as `ParseError` are skipped:
+dsql-lint can't lint what it can't parse, so they aren't drift
+signal — the PG corpus contains intentionally-broken SQL marked
+`-- fail` plus exotic constructs `sqlparser-dsql` doesn't model.
