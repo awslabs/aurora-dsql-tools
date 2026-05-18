@@ -8,3 +8,4 @@ out/
 **/test-vscode-sqltools.code-workspace
 # Python build artifacts (maturin)
 dsql-lint/pypi/dist/
+AxdbSnowglobe/

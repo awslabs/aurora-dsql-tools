@@ -11,9 +11,8 @@
 //! in sync manually for now; if the duplication becomes painful we can
 //! extract a shared module.
 
-use crate::grammar_oracle::ebnf::{parse_grammar, Grammar};
 use crate::grammar_oracle::pg_corpus;
-use crate::grammar_oracle::recognizer::Recognizer;
+use crate::grammar_oracle::snowglobe;
 use dsql_lint::lint_sql;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -51,144 +50,20 @@ pub enum DisagreementKind {
     GrammarRejectsLintQuiet,
 }
 
-/// Top-level statement productions in the EBNF. The grammar has no single
-/// statement-level start; we tried building a synthetic union production
-/// (`Stmt1 | Stmt2 | …`) and it caused chumsky's backtracking to blow up
-/// (50+ GB resident, hours of CPU on ~140 inputs). Instead we *dispatch*
-/// from the SQL's leading keyword to a single statement-shaped production,
-/// then run the recognizer with that as the start. This avoids the 32-way
-/// `or`-chain at parse time entirely.
-///
-/// Each `(keyword_pattern, start_production)` row matches an input where
-/// the upper-cased first token (or first two tokens, joined by space)
-/// equals `keyword_pattern`. Two-token patterns are checked first so that
-/// e.g. `CREATE INDEX` wins over `CREATE`.
-///
-/// SQL whose leading keyword isn't covered here falls through to a
-/// reject-all behavior (the recognizer says "no match"); those statements
-/// land in `EXPECTED_DRIFT` if dsql-lint considers them clean. That's
-/// fine — the dispatch table is meant to be the simplest thing that
-/// works for the corpus we have today, not a complete cover.
-#[allow(clippy::type_complexity)]
-// INVARIANT: two-token entries must precede single-token entries with the
-// same first token. `dispatch_start` returns the first match, not the
-// longest — adding e.g. `(&["CREATE"], …)` above the two-token CREATE
-// rows would silently shadow them.
-const STMT_DISPATCH: &[(&[&str], &str)] = &[
-    // Two-token leads (checked first).
-    (&["CREATE", "TABLE"], "CreateStmt"),
-    (&["CREATE", "TEMP"], "CreateStmt"),
-    (&["CREATE", "TEMPORARY"], "CreateStmt"), // also covers TEMPORARY VIEW
-    (&["CREATE", "UNIQUE"], "IndexStmt"),
-    (&["CREATE", "INDEX"], "IndexStmt"),
-    (&["CREATE", "VIEW"], "ViewStmt"),
-    (&["CREATE", "MATERIALIZED"], "ViewStmt"),
-    (&["CREATE", "SEQUENCE"], "CreateSeqStmt"),
-    (&["CREATE", "SCHEMA"], "CreateSchemaStmt"),
-    (&["CREATE", "ROLE"], "CreateRoleStmt"),
-    (&["CREATE", "DOMAIN"], "CreateDomainStmt"),
-    (&["ALTER", "TABLE"], "AlterTableStmt"),
-    (&["ALTER", "SEQUENCE"], "AlterSeqStmt"),
-    (&["ALTER", "DOMAIN"], "AlterDomainStmt"),
-    (&["ALTER", "ROLE"], "AlterRoleStmt"),
-    (&["ALTER", "INDEX"], "RenameStmt"), // RenameStmt is a multi-shape rename grammar
-    (&["ALTER", "FUNCTION"], "RenameStmt"),
-    (&["DROP", "ROLE"], "DropRoleStmt"),
-    (&["DROP", "USER"], "DropRoleStmt"),
-    (&["DROP", "GROUP"], "DropRoleStmt"),
-    (&["SET", "TRANSACTION"], "VariableSetStmt"),
-    (&["SET", "LOCAL"], "VariableSetStmt"),
-    (&["SET", "SESSION"], "VariableSetStmt"),
-    (&["DEALLOCATE", "ALL"], "DeallocateStmt"),
-    (&["DEALLOCATE", "PREPARE"], "DeallocateStmt"),
-    // Single-token leads.
-    (&["SELECT"], "SelectStmt"),
-    (&["WITH"], "SelectStmt"), // CTE — SelectStmt path
-    (&["INSERT"], "InsertStmt"),
-    (&["UPDATE"], "UpdateStmt"),
-    (&["DELETE"], "DeleteStmt"),
-    (&["EXPLAIN"], "ExplainStmt"),
-    (&["COMMENT"], "CommentStmt"),
-    (&["GRANT"], "GrantStmt"),
-    (&["REVOKE"], "RevokeStmt"),
-    (&["DROP"], "DropStmt"),
-    (&["SET"], "VariableSetStmt"),
-    (&["RESET"], "VariableResetStmt"),
-    (&["SHOW"], "VariableShowStmt"),
-    (&["BEGIN"], "TransactionStmt"),
-    (&["START"], "TransactionStmt"),
-    (&["COMMIT"], "TransactionStmt"),
-    (&["ROLLBACK"], "TransactionStmt"),
-    (&["ABORT"], "TransactionStmt"),
-    (&["END"], "TransactionStmt"),
-];
-
-/// Lazy collection of one `Recognizer` per distinct start production used
-/// in `STMT_DISPATCH`. Each recognizer holds its own clone of the grammar.
-fn recognizer_for(start: &str) -> &'static Recognizer {
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-    static MAP: OnceLock<Mutex<HashMap<String, &'static Recognizer>>> = OnceLock::new();
-    let map = MAP.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = map.lock().expect("recognizer cache mutex poisoned");
-    if let Some(r) = guard.get(start) {
-        return r;
-    }
-    let g = grammar().clone();
-    let r: &'static Recognizer = Box::leak(Box::new(Recognizer::build(g, start)));
-    guard.insert(start.to_string(), r);
-    r
-}
-
-fn grammar() -> &'static Grammar {
-    static G: OnceLock<Grammar> = OnceLock::new();
+/// Lazily-loaded grammar from `dsql_grammar.json` (Snowglobe output).
+fn grammar() -> &'static snowglobe::Grammar {
+    static G: OnceLock<snowglobe::Grammar> = OnceLock::new();
     G.get_or_init(|| {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("workspace parent")
-            .join("dsql_grammar.ebnf");
-        let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-        parse_grammar(&text).expect("grammar parse")
+            .join("dsql_grammar.json");
+        snowglobe::Grammar::load(&path)
     })
 }
 
-/// Pick the start production for `sql` based on its leading keyword(s).
-/// Returns `None` if no dispatch entry matches — the caller treats that
-/// as "recognizer rejects".
-fn dispatch_start(sql: &str) -> Option<&'static str> {
-    let upper = sql.trim().to_ascii_uppercase();
-    let tokens: Vec<&str> = upper.split_whitespace().take(2).collect();
-    for (pattern, start) in STMT_DISPATCH {
-        if pattern.len() <= tokens.len() && pattern.iter().zip(tokens.iter()).all(|(p, t)| p == t) {
-            return Some(*start);
-        }
-    }
-    None
-}
-
-/// Start productions whose chumsky recognizer parse exhibits exponential
-/// backtracking on real-world SQL — running it OOMs the test process.
-/// We hard-skip these (treat as "recognizer rejects"), which means clean
-/// DML/SELECT inputs land in `EXPECTED_DRIFT` as `GrammarRejectsLintQuiet`.
-/// That's the same outcome we'd get from a real recognizer run that
-/// happened to reject; the only loss is that we can't actually validate
-/// agreement on these statement shapes.
-const RECOGNIZER_BLOCKLIST: &[&str] = &[
-    "SelectStmt",
-    "InsertStmt",
-    "UpdateStmt",
-    "DeleteStmt",
-    "ExplainStmt",
-];
-
 fn grammar_accepts(sql: &str) -> bool {
-    let stripped = strip_trailing_semi(sql);
-    match dispatch_start(stripped) {
-        Some(start) if RECOGNIZER_BLOCKLIST.contains(&start) => false,
-        Some(start) => recognizer_for(start).accepts(stripped),
-        None => false,
-    }
+    grammar().accepts(sql)
 }
 
 /// SQL strings that should be REJECTED by dsql-lint (i.e. trigger a
@@ -437,73 +312,17 @@ fn classify(sql: &str) -> Option<DisagreementKind> {
     }
 }
 
-/// Predicate-based skip for the Postgres corpus. Anything that returns
-/// `true` here is excluded from drift collection on the grounds that the
-/// disagreement (or agreement) tells us nothing about dsql-lint's coverage,
-/// or would blow up the recognizer:
-///
-/// - Statements `lint_sql` flags as `ParseError`: dsql-lint can't lint
-///   what it can't parse; the PG corpus contains intentionally-broken SQL
-///   marked `-- fail`, plus exotic constructs `sqlparser-dsql` doesn't model.
-/// - Statements starting with a recognizer-blocklisted keyword
-///   (SELECT/INSERT/UPDATE/DELETE/EXPLAIN): the recognizer hard-rejects
-///   these regardless of whether the grammar would accept them, so any
-///   "disagreement" is a recognizer hole, not lint-rule signal.
-/// - Statements with embedded CHECK/WHERE expressions: chumsky's pratt
-///   carve-out for `a_expr` only models a small operator subset, and
-///   complex expression trees (especially `::` casts on row literals)
-///   trigger pathological backtracking that OOMs the test process.
-/// - Statements over 300 bytes: large statements typically combine
-///   features dsql-lint already lints individually; the recognizer cost
-///   on them is high and the marginal coverage low.
+/// Statements `lint_sql` flags as `ParseError` get skipped: dsql-lint
+/// can't lint what it can't parse; the PG corpus contains intentionally
+/// broken SQL marked `-- fail`, plus exotic constructs `sqlparser-dsql`
+/// doesn't model. Both cases produce noise, not lint-rule signal.
 fn should_skip_pg_statement(sql: &str) -> bool {
-    if has_parse_error(sql) {
-        return true;
-    }
-    if starts_with_blocklisted_keyword(sql) {
-        return true;
-    }
-    if sql.len() > 300 {
-        return true;
-    }
-    // Statements embedding SELECT/CHECK/VALUES/WHERE clauses route through
-    // recognizer paths that backtrack pathologically or stack-overflow on
-    // deep `Recursive` chains. We skip on substring presence rather than a
-    // word-bounded match because the punctuation around these tokens varies
-    // (e.g. `, check(`). False-positive skips lose marginal coverage but
-    // never cause CI to silently miss a lint rule we'd otherwise catch.
-    let upper = sql.to_ascii_uppercase();
-    if upper.contains("SELECT")
-        || upper.contains("VALUES")
-        || upper.contains("WHERE")
-        || upper.contains("CHECK")
-    {
-        return true;
-    }
-    false
+    has_parse_error(sql)
 }
 
 pub fn has_parse_error(sql: &str) -> bool {
     use dsql_lint::LintRule;
     lint_sql(sql).iter().any(|d| d.rule == LintRule::ParseError)
-}
-
-pub fn starts_with_blocklisted_keyword(sql: &str) -> bool {
-    let upper = sql.trim_start().to_ascii_uppercase();
-    const BLOCKLISTED_LEADS: &[&str] = &[
-        "SELECT ", "WITH ", "INSERT ", "UPDATE ", "DELETE ", "EXPLAIN ",
-    ];
-    BLOCKLISTED_LEADS.iter().any(|p| upper.starts_with(p))
-}
-
-/// Classify a single SQL statement. Public for diagnostic tests; the
-/// in-tree `collect` machinery uses this internally too.
-pub fn classify_one(sql: &str) -> Option<DisagreementKind> {
-    classify(sql)
-}
-
-fn strip_trailing_semi(s: &str) -> &str {
-    s.trim().trim_end_matches(';').trim_end()
 }
 
 /// Why a known disagreement is tolerated. Tagging makes the burndown list
@@ -525,17 +344,24 @@ pub enum DriftReason {
     RecognizerHole,
 }
 
-/// Cases where dsql-lint and the grammar disagree, tolerated for now.
-/// Each entry is `(sql, reason)`. The test fails on stale entries, so the
-/// list naturally shrinks.
+/// Cases from the curated dsql-lint corpus where dsql-lint and the
+/// grammar disagree, tolerated for now. Each entry is `(sql, reason)`.
+/// The test fails on stale entries, so the list naturally shrinks.
 ///
 /// To find the next dsql-lint rule to write, filter entries whose reason
 /// is [`DriftReason::MissingDsqlLintRule`].
+///
+/// Re-baselined when the chumsky recognizer was replaced with the
+/// snowglobe-grammar-driven oracle in `snowglobe.rs`. Verdicts now come
+/// from `dsql_grammar.json` directly, so the entry set is much smaller
+/// and `RecognizerHole` is no longer a major category for this corpus.
 pub const EXPECTED_DRIFT: &[(&str, DriftReason)] = &[
     // -- SemanticOnly --
-    // The EBNF lets `GenericType -> type_function_name -> identifier` match
-    // any identifier as a type name, so SERIAL/JSONB/etc. parse cleanly.
-    // dsql-lint flags them at the semantic layer.
+    // The grammar's `Typename → GenericType → type_function_name →
+    // identifier` path matches any identifier as a type name (Postgres
+    // allows user-defined types to look the same as built-ins). dsql-lint
+    // flags `SERIAL`, `JSONB`, etc. at the semantic layer; the grammar
+    // permits the surface syntax.
     (
         "CREATE TABLE t (id SERIAL PRIMARY KEY);",
         DriftReason::SemanticOnly,
@@ -564,7 +390,16 @@ pub const EXPECTED_DRIFT: &[(&str, DriftReason)] = &[
         "CREATE TABLE t (id INT, data JSONB);",
         DriftReason::SemanticOnly,
     ),
-    // Array type column (`TYPE[]`) is allowed by the EBNF's Typename grammar.
+    (
+        "ALTER TABLE t ADD COLUMN id SERIAL;",
+        DriftReason::SemanticOnly,
+    ),
+    (
+        "ALTER TABLE t ADD COLUMN data JSONB;",
+        DriftReason::SemanticOnly,
+    ),
+    // Array type column (`TYPE[]`) is allowed by the grammar's Typename;
+    // dsql-lint flags arrays semantically.
     (
         "CREATE TABLE t (id INT, tags TEXT[]);",
         DriftReason::SemanticOnly,
@@ -573,64 +408,78 @@ pub const EXPECTED_DRIFT: &[(&str, DriftReason)] = &[
         "CREATE TABLE t (id INT, scores INT[]);",
         DriftReason::SemanticOnly,
     ),
-    // The EBNF's IndexStmt has `where_clause` so partial indexes parse.
+    (
+        "ALTER TABLE t ADD COLUMN tags TEXT[];",
+        DriftReason::SemanticOnly,
+    ),
+    // ADD COLUMN with NOT NULL: grammar accepts the column-constraint
+    // grammar shape; dsql-lint has the AddColumnConstraint rule.
+    (
+        "ALTER TABLE t ADD COLUMN status VARCHAR(50) NOT NULL;",
+        DriftReason::SemanticOnly,
+    ),
+    // Index expressions: the grammar's IndexElem accepts function-call
+    // expressions; dsql-lint has the IndexExpression rule.
+    (
+        "CREATE INDEX ASYNC idx ON t (lower(name));",
+        DriftReason::SemanticOnly,
+    ),
+    (
+        "CREATE INDEX ASYNC idx ON t (col, lower(name));",
+        DriftReason::SemanticOnly,
+    ),
+    // Partial index: grammar's IndexStmt has `where_clause`; dsql-lint
+    // has the IndexPartial rule.
     (
         "CREATE INDEX ASYNC idx ON t(col) WHERE col > 0;",
         DriftReason::SemanticOnly,
     ),
-    // RenameStmt is broad; dsql-lint flags this specific shape.
-    (
-        "ALTER INDEX idx_name RENAME TO idx_new;",
-        DriftReason::SemanticOnly,
-    ),
-    // alter_table_cmds covers these; dsql-lint flags by op semantics.
-    (
-        "ALTER TABLE t ALTER COLUMN name DROP DEFAULT;",
-        DriftReason::SemanticOnly,
-    ),
+    // CHECK constraint: grammar accepts; dsql-lint has the
+    // AddColumnConstraint rule for ADD CONSTRAINT.
     (
         "ALTER TABLE t ADD CONSTRAINT c CHECK (id > 0);",
         DriftReason::SemanticOnly,
     ),
     // -- RecognizerHole --
-    // SELECT/INSERT/UPDATE/DELETE/EXPLAIN are on the recognizer blocklist
-    // (chumsky backtracks pathologically on the EBNF's SelectStmt).
+    // CACHE clauses on identity columns / sequences route through the
+    // grammar's `SignedIconst` rule, which is undefined in the JSON.
+    // Our oracle stubs undefined nonterminals as "consume one token" but
+    // the actual grammar shape is `[+/-]? ICONST`, and our stub doesn't
+    // match the pattern needed in this position.
     (
-        "DELETE FROM events WHERE id = 1;",
+        "CREATE TABLE t (id BIGINT GENERATED ALWAYS AS IDENTITY (CACHE 1));",
         DriftReason::RecognizerHole,
     ),
     (
-        "INSERT INTO _clean_base (id, name) VALUES (1, 'test');",
+        "CREATE TABLE t (id BIGINT GENERATED ALWAYS AS IDENTITY (CACHE 65536));",
         DriftReason::RecognizerHole,
     ),
     (
-        "SELECT * FROM _clean_base WHERE id = 1;",
+        "CREATE TABLE _type_test (col BIGINT GENERATED ALWAYS AS IDENTITY (CACHE 1));",
         DriftReason::RecognizerHole,
     ),
     (
-        "UPDATE _clean_base SET name = 'updated' WHERE id = 1;",
+        "CREATE TABLE _type_test (col BIGINT GENERATED ALWAYS AS IDENTITY (CACHE 65536));",
         DriftReason::RecognizerHole,
+    ),
+    ("CREATE SEQUENCE s CACHE 1;", DriftReason::RecognizerHole),
+    (
+        "CREATE SEQUENCE s CACHE 65536;",
+        DriftReason::RecognizerHole,
+    ),
+    // ALTER INDEX RENAME and ALTER TABLE … DROP DEFAULT: grammar accepts
+    // both shapes; dsql-lint flags via UnsupportedAlterTableOp.
+    (
+        "ALTER INDEX idx_name RENAME TO idx_new;",
+        DriftReason::SemanticOnly,
     ),
     (
-        "DELETE FROM _clean_base WHERE id = 1;",
-        DriftReason::RecognizerHole,
+        "ALTER TABLE t ALTER COLUMN name DROP DEFAULT;",
+        DriftReason::SemanticOnly,
     ),
-    (
-        "INSERT INTO _clean_base (id, name) VALUES (2, 'TRUNCATE TABLE foo; CREATE TRIGGER bar');",
-        DriftReason::RecognizerHole,
-    ),
-    // `parameter`, `SignedIconst`, `var_list` are reject-everything stubs in
-    // `parser_for_undefined`; identity/sequence/CACHE inputs route through them.
+    // GENERATED BY DEFAULT IDENTITY (CACHE …): SignedIconst stub.
     (
         "CREATE TABLE t (id BIGINT GENERATED BY DEFAULT AS IDENTITY (CACHE 1));",
-        DriftReason::RecognizerHole,
-    ),
-    (
-        "CREATE SEQUENCE s AS BIGINT CACHE 65536;",
-        DriftReason::RecognizerHole,
-    ),
-    (
-        "CREATE SEQUENCE s CACHE 65537;",
         DriftReason::RecognizerHole,
     ),
     (
@@ -641,51 +490,51 @@ pub const EXPECTED_DRIFT: &[(&str, DriftReason)] = &[
         "CREATE TABLE _type_test (col BIGINT GENERATED BY DEFAULT AS IDENTITY (CACHE 65536));",
         DriftReason::RecognizerHole,
     ),
-    // Plain `BEGIN` and `BEGIN ISOLATION LEVEL …` aren't in the EBNF's
-    // TransactionStmt (which only lists ABORT/START/COMMIT/ROLLBACK).
+    // CREATE SEQUENCE … CACHE: same SignedIconst stub.
+    (
+        "CREATE SEQUENCE s AS BIGINT CACHE 65536;",
+        DriftReason::RecognizerHole,
+    ),
+    (
+        "CREATE SEQUENCE s CACHE 65537;",
+        DriftReason::RecognizerHole,
+    ),
+    // BEGIN forms: Snowglobe grammar's TransactionStmt enumerates ABORT/
+    // START/COMMIT/ROLLBACK but not bare BEGIN; recognizer can't follow.
+    ("BEGIN;", DriftReason::RecognizerHole),
     (
         "BEGIN ISOLATION LEVEL REPEATABLE READ;",
         DriftReason::RecognizerHole,
     ),
-    ("BEGIN;", DriftReason::RecognizerHole),
-    // ALTER TABLE ADD COLUMN bare type — the EBNF's ColumnDef path doesn't
-    // accept this through our current recursion.
-    (
-        "ALTER TABLE _clean_base ADD COLUMN description TEXT;",
-        DriftReason::RecognizerHole,
-    ),
-    (
-        "ALTER TABLE t ADD COLUMN x TEXT;",
-        DriftReason::RecognizerHole,
-    ),
-    // ALTER TABLE OWNER TO is not in the alter_table_cmds we expand.
+    // ALTER TABLE OWNER TO: recognizer's alter_table_cmds doesn't follow
+    // through to the relevant grammar branch.
     (
         "ALTER TABLE t OWNER TO new_owner;",
         DriftReason::RecognizerHole,
     ),
-    // COPY isn't covered by any Stmt our dispatch table maps.
+    // COPY: not modeled in the start-rule synthesis (statement_rules()
+    // returns only `*Stmt` rules; CopyStmt isn't one of them).
     ("COPY t FROM STDIN;", DriftReason::RecognizerHole),
     ("COPY t TO STDOUT;", DriftReason::RecognizerHole),
-    // Multi-word type names: the EBNF expresses these as fixed sequences
-    // we don't currently match through the Typename → identifier path.
+    // SELECT/INSERT/UPDATE/DELETE: dsql-lint accepts these; the grammar
+    // should accept them too. The oracle currently rejects these because
+    // the recursive a_expr / SELECT / WHERE clause expansions aren't fully
+    // followed by the input-driven derivation. Tagged as recognizer holes
+    // until the oracle covers them.
     (
-        "CREATE TABLE _type_test (col DOUBLE PRECISION);",
+        "DELETE FROM events WHERE id = 1;",
         DriftReason::RecognizerHole,
     ),
     (
-        "CREATE TABLE _type_test (col CHARACTER VARYING(100));",
+        "DELETE FROM _clean_base WHERE id = 1;",
         DriftReason::RecognizerHole,
     ),
     (
-        "CREATE TABLE _type_test (col TIME WITH TIME ZONE);",
-        DriftReason::RecognizerHole,
-    ),
-    (
-        "CREATE TABLE _type_test (col TIMESTAMP WITH TIME ZONE);",
+        "UPDATE _clean_base SET name = 'updated' WHERE id = 1;",
         DriftReason::RecognizerHole,
     ),
     // -- MissingDsqlLintRule --
-    // (initially empty — no entries in this category yet. Triage future
-    //  drift here when the grammar correctly rejects something dsql-lint
-    //  should also flag.)
+    // (initially empty — no entries in this category yet from the curated
+    //  corpus. PG-corpus disagreements are the larger surface; see the
+    //  pg_corpus_drift_report test.)
 ];
