@@ -1,0 +1,4 @@
+# Pinned upstream ref for the vendored Postgres regression corpus.
+# Refresh with: ./dsql-lint/scripts/refresh_pg_corpus.sh
+ref=REL_16_STABLE
+commit=59759e1a5b499294d73d409e0bc3343aafd2973f
