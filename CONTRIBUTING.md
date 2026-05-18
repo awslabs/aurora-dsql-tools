@@ -102,3 +102,35 @@ The list fails CI on stale entries, so it shrinks naturally as fixes
 land — every removal corresponds to a new rule, a recognizer fix, or a
 grammar update. Adding a new entry requires a comment block explaining
 why it's tolerated.
+
+### Postgres regression-test corpus
+
+The dsql-lint test corpus (`tests/integration_test.rs`, `tests/common/mod.rs`)
+is curated by what dsql-lint already checks — a corpus selected that way
+can't surface what dsql-lint *doesn't* check. To find real coverage gaps
+the oracle also walks a vendored subset of the upstream PostgreSQL
+regression-test SQL under `dsql-lint/tests/grammar_oracle/pg_corpus/`.
+
+Drift on this larger corpus is **report-only** today: the agreement test
+prints a count + breakdown (LintFlagsGrammarAccepts vs
+GrammarRejectsLintQuiet) but does not fail CI. To see the full burndown
+surface:
+
+```bash
+cargo test -p dsql-lint --test grammar_oracle pg_corpus_drift_report -- --nocapture
+```
+
+Refresh the vendored corpus by re-running the upstream sync:
+
+```bash
+./dsql-lint/scripts/refresh_pg_corpus.sh
+# or pin a different upstream ref:
+PG_REF=REL_17_STABLE ./dsql-lint/scripts/refresh_pg_corpus.sh
+```
+
+Statements that use SELECT/INSERT/UPDATE/DELETE/EXPLAIN, embed
+CHECK/WHERE/VALUES expression clauses, or exceed 300 bytes are
+predicate-skipped from drift collection — chumsky's recognizer backtracks
+pathologically (or stack-overflows) on those shapes. Statements
+`lint_sql` flags as `ParseError` are also skipped: dsql-lint can't lint
+what it can't parse, so they aren't drift signal.

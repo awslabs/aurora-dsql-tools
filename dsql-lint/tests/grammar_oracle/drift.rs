@@ -12,6 +12,7 @@
 //! extract a shared module.
 
 use crate::grammar_oracle::ebnf::{parse_grammar, Grammar};
+use crate::grammar_oracle::pg_corpus;
 use crate::grammar_oracle::recognizer::Recognizer;
 use dsql_lint::lint_sql;
 use std::path::Path;
@@ -21,6 +22,22 @@ use std::sync::OnceLock;
 pub struct Disagreement {
     pub sql: String,
     pub kind: DisagreementKind,
+    pub source: CorpusSource,
+}
+
+/// Which corpus a disagreement came from. Determines how it's triaged: the
+/// hand-curated `dsql-lint` corpus uses per-statement opt-out via
+/// `EXPECTED_DRIFT`; the much larger Postgres corpus uses predicate-based
+/// skipping (see `should_skip_pg_statement`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CorpusSource {
+    /// SQL drawn from `tests/integration_test.rs` and `tests/common/mod.rs` —
+    /// what dsql-lint already covers. Curated; every disagreement gets a
+    /// hand-tagged `EXPECTED_DRIFT` entry.
+    DsqlLint,
+    /// Vendored Postgres regression-test SQL (`tests/grammar_oracle/pg_corpus/`).
+    /// Bulk; opt-out is by predicate, not per-statement.
+    Pg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,22 +394,112 @@ pub const ACCEPT_SQLS: &[&str] = &[
 
 pub fn collect() -> Vec<Disagreement> {
     let mut out = Vec::new();
+
+    // dsql-lint corpus: every disagreement is meaningful (curated).
     for sql in REJECT_SQLS.iter().chain(ACCEPT_SQLS.iter()) {
-        let lint_flags = !lint_sql(sql).is_empty();
-        let accepts = grammar_accepts(sql);
-        match (lint_flags, accepts) {
-            (true, true) => out.push(Disagreement {
+        if let Some(kind) = classify(sql) {
+            out.push(Disagreement {
                 sql: (*sql).to_string(),
-                kind: DisagreementKind::LintFlagsGrammarAccepts,
-            }),
-            (false, false) => out.push(Disagreement {
-                sql: (*sql).to_string(),
-                kind: DisagreementKind::GrammarRejectsLintQuiet,
-            }),
-            _ => {}
+                kind,
+                source: CorpusSource::DsqlLint,
+            });
         }
     }
+
+    // Postgres corpus: predicate-skip disagreements that aren't dsql-lint
+    // signal (parse errors, recognizer-blocklisted DML, etc.). What's left
+    // is the actionable burndown.
+    for sql in pg_corpus::statements() {
+        if should_skip_pg_statement(sql) {
+            continue;
+        }
+        if let Some(kind) = classify(sql) {
+            out.push(Disagreement {
+                sql: sql.clone(),
+                kind,
+                source: CorpusSource::Pg,
+            });
+        }
+    }
+
     out
+}
+
+/// Classify a single statement against dsql-lint and the recognizer.
+/// Returns `None` if they agree, or the kind of disagreement otherwise.
+fn classify(sql: &str) -> Option<DisagreementKind> {
+    let lint_flags = !lint_sql(sql).is_empty();
+    let accepts = grammar_accepts(sql);
+    match (lint_flags, accepts) {
+        (true, true) => Some(DisagreementKind::LintFlagsGrammarAccepts),
+        (false, false) => Some(DisagreementKind::GrammarRejectsLintQuiet),
+        _ => None,
+    }
+}
+
+/// Predicate-based skip for the Postgres corpus. Anything that returns
+/// `true` here is excluded from drift collection on the grounds that the
+/// disagreement (or agreement) tells us nothing about dsql-lint's coverage,
+/// or would blow up the recognizer:
+///
+/// - Statements `lint_sql` flags as `ParseError`: dsql-lint can't lint
+///   what it can't parse; the PG corpus contains intentionally-broken SQL
+///   marked `-- fail`, plus exotic constructs `sqlparser-dsql` doesn't model.
+/// - Statements starting with a recognizer-blocklisted keyword
+///   (SELECT/INSERT/UPDATE/DELETE/EXPLAIN): the recognizer hard-rejects
+///   these regardless of whether the grammar would accept them, so any
+///   "disagreement" is a recognizer hole, not lint-rule signal.
+/// - Statements with embedded CHECK/WHERE expressions: chumsky's pratt
+///   carve-out for `a_expr` only models a small operator subset, and
+///   complex expression trees (especially `::` casts on row literals)
+///   trigger pathological backtracking that OOMs the test process.
+/// - Statements over 300 bytes: large statements typically combine
+///   features dsql-lint already lints individually; the recognizer cost
+///   on them is high and the marginal coverage low.
+fn should_skip_pg_statement(sql: &str) -> bool {
+    if has_parse_error(sql) {
+        return true;
+    }
+    if starts_with_blocklisted_keyword(sql) {
+        return true;
+    }
+    if sql.len() > 300 {
+        return true;
+    }
+    // Statements embedding SELECT/CHECK/VALUES/WHERE clauses route through
+    // recognizer paths that backtrack pathologically or stack-overflow on
+    // deep `Recursive` chains. We skip on substring presence rather than a
+    // word-bounded match because the punctuation around these tokens varies
+    // (e.g. `, check(`). False-positive skips lose marginal coverage but
+    // never cause CI to silently miss a lint rule we'd otherwise catch.
+    let upper = sql.to_ascii_uppercase();
+    if upper.contains("SELECT")
+        || upper.contains("VALUES")
+        || upper.contains("WHERE")
+        || upper.contains("CHECK")
+    {
+        return true;
+    }
+    false
+}
+
+pub fn has_parse_error(sql: &str) -> bool {
+    use dsql_lint::LintRule;
+    lint_sql(sql).iter().any(|d| d.rule == LintRule::ParseError)
+}
+
+pub fn starts_with_blocklisted_keyword(sql: &str) -> bool {
+    let upper = sql.trim_start().to_ascii_uppercase();
+    const BLOCKLISTED_LEADS: &[&str] = &[
+        "SELECT ", "WITH ", "INSERT ", "UPDATE ", "DELETE ", "EXPLAIN ",
+    ];
+    BLOCKLISTED_LEADS.iter().any(|p| upper.starts_with(p))
+}
+
+/// Classify a single SQL statement. Public for diagnostic tests; the
+/// in-tree `collect` machinery uses this internally too.
+pub fn classify_one(sql: &str) -> Option<DisagreementKind> {
+    classify(sql)
 }
 
 fn strip_trailing_semi(s: &str) -> &str {
