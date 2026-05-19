@@ -25,7 +25,9 @@ pub fn terminal_input_string(t: &Terminal) -> String {
         Terminal::Keyword(s) => s.clone(),
         Terminal::Punct(s) => (*s).to_string(),
         Terminal::CharClass(name) => charclass_terminal_name(name),
-        Terminal::Skip => panic!("Terminal::Skip should be filtered before reaching the recognizer"),
+        Terminal::Skip => {
+            panic!("Terminal::Skip should be filtered before reaching the recognizer")
+        }
     }
 }
 
@@ -317,7 +319,10 @@ mod tests {
                 (
                     "Col",
                     Production {
-                        choices: vec![vec![nt("Name"), term("INT")], vec![nt("Name"), term("TEXT")]],
+                        choices: vec![
+                            vec![nt("Name"), term("INT")],
+                            vec![nt("Name"), term("TEXT")],
+                        ],
                         optional: false,
                         repetition: None,
                     },
@@ -326,11 +331,15 @@ mod tests {
             "Stmt",
         );
 
-        assert!(r.accepts(&toks(&["CREATE", "TABLE", "IDENT", "(", "IDENT", "INT", ")"])));
+        assert!(r.accepts(&toks(&[
+            "CREATE", "TABLE", "IDENT", "(", "IDENT", "INT", ")"
+        ])));
         assert!(r.accepts(&toks(&[
             "CREATE", "TABLE", "IDENT", "(", "IDENT", "INT", ",", "IDENT", "TEXT", ")"
         ])));
-        assert!(!r.accepts(&toks(&["CRATE", "TABLE", "IDENT", "(", "IDENT", "INT", ")"])));
+        assert!(!r.accepts(&toks(&[
+            "CRATE", "TABLE", "IDENT", "(", "IDENT", "INT", ")"
+        ])));
         assert!(!r.accepts(&toks(&["CREATE", "TABLE", "IDENT", "(", "IDENT", ",", ")"])));
     }
 }

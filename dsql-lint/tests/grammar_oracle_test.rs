@@ -15,12 +15,13 @@ fn grammar_path() -> PathBuf {
 fn every_charclass_in_grammar_has_a_producer() {
     let g = Grammar::load(&grammar_path()).expect("load grammar");
     let referenced = g.referenced_charclasses();
-    let produced: std::collections::BTreeSet<String> = PRODUCED_CHARCLASSES
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let produced: std::collections::BTreeSet<String> =
+        PRODUCED_CHARCLASSES.iter().map(|s| s.to_string()).collect();
 
-    let missing: Vec<&String> = referenced.iter().filter(|c| !produced.contains(*c)).collect();
+    let missing: Vec<&String> = referenced
+        .iter()
+        .filter(|c| !produced.contains(*c))
+        .collect();
     assert!(
         missing.is_empty(),
         "Grammar references CharClass(es) the tokenizer doesn't produce: {missing:?}. \
@@ -30,7 +31,8 @@ fn every_charclass_in_grammar_has_a_producer() {
 }
 
 fn case(g: &Grammar, sql: &str) -> bool {
-    g.accepts(sql).unwrap_or_else(|e| panic!("oracle errored on `{sql}`: {e}"))
+    g.accepts(sql)
+        .unwrap_or_else(|e| panic!("oracle errored on `{sql}`: {e}"))
 }
 
 #[test]

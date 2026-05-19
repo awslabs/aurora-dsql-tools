@@ -178,13 +178,22 @@ mod tests {
 
     #[test]
     fn keyword_uppercased() {
-        assert_eq!(first_real_terminal("create"), Terminal::Keyword("CREATE".into()));
-        assert_eq!(first_real_terminal("Create"), Terminal::Keyword("CREATE".into()));
+        assert_eq!(
+            first_real_terminal("create"),
+            Terminal::Keyword("CREATE".into())
+        );
+        assert_eq!(
+            first_real_terminal("Create"),
+            Terminal::Keyword("CREATE".into())
+        );
     }
 
     #[test]
     fn quoted_identifier_is_ident_not_keyword() {
-        assert_eq!(first_real_terminal("\"create\""), Terminal::CharClass("IDENT"));
+        assert_eq!(
+            first_real_terminal("\"create\""),
+            Terminal::CharClass("IDENT")
+        );
     }
 
     #[test]

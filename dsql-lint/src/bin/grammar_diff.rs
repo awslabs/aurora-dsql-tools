@@ -103,10 +103,7 @@ fn main() {
         let stmts = match split_statements(&raw) {
             Ok(v) => v,
             Err(e) => {
-                println!(
-                    "== {} ==\n  whole-file tokenize error: {e}\n",
-                    rel_str
-                );
+                println!("== {} ==\n  whole-file tokenize error: {e}\n", rel_str);
                 totals.parse_error += 1;
                 continue;
             }
@@ -122,9 +119,10 @@ fn main() {
 
             let lint_diags: Vec<Diagnostic> = lint_sql(&stmt.raw);
             let lint_passes = lint_diags.is_empty();
-            let label = labels.iter().rev().find_map(|(at_line, l)| {
-                (*at_line <= stmt.line).then(|| l.clone())
-            });
+            let label = labels
+                .iter()
+                .rev()
+                .find_map(|(at_line, l)| (*at_line <= stmt.line).then(|| l.clone()));
 
             let grammar_verdict = grammar.accepts(&stmt.raw);
             match grammar_verdict {
@@ -211,7 +209,11 @@ fn print_entry(e: &Entry) {
         Category::ParseError => "parse-error",
         Category::Agreement => unreachable!("agreement entries are not emitted"),
     };
-    let label = e.label.as_deref().map(|l| format!("  [label: {l}]")).unwrap_or_default();
+    let label = e
+        .label
+        .as_deref()
+        .map(|l| format!("  [label: {l}]"))
+        .unwrap_or_default();
     println!();
     println!("  L{} {}{}", e.line, cat, label);
     match e.category {
@@ -241,13 +243,7 @@ fn print_entry(e: &Entry) {
 }
 
 fn preview(raw: &str) -> String {
-    let one_line: String = raw
-        .lines()
-        .next()
-        .unwrap_or("")
-        .trim()
-        .chars()
-        .collect();
+    let one_line: String = raw.lines().next().unwrap_or("").trim().chars().collect();
     if one_line.chars().count() > 120 {
         let truncated: String = one_line.chars().take(117).collect();
         format!("{truncated}...")
