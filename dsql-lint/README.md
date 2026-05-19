@@ -228,3 +228,41 @@ The `serde` feature (on by default) derives `Serialize` on `Diagnostic`, `FixRes
 [dependencies]
 dsql-lint = { version = "0.1", default-features = false }
 ```
+
+## Maintainer notes
+
+### `grammar-diff`
+
+`grammar/dsql_grammar.json` is the vendored grammar of what DSQL parses.
+The `grammar-diff` binary compares grammar acceptance to dsql-lint
+acceptance over a vendored corpus and prints a per-statement diff, so
+maintainers can keep the two in sync as DSQL evolves.
+
+To refresh after the grammar changes:
+
+1. Replace `grammar/dsql_grammar.json`. See
+   [`grammar/REFRESH.md`](grammar/REFRESH.md).
+2. Run the diff:
+
+   ```sh
+   cargo run --features grammar-diff --release --bin grammar-diff > diff.out
+   ```
+
+3. Triage each non-agreement entry:
+
+   | Category | Typical action |
+   |---|---|
+   | `lint-too-lenient` (lint passes, grammar rejects) | Investigate; usually means a missing rule. |
+   | `lint-too-strict` (lint flags, grammar accepts) | The grammar is syntactic; many lint rules are semantic (e.g. `ALTER TABLE ADD COLUMN x TEXT NOT NULL` parses but DSQL rejects it). Don't remove a semantic rule just because the grammar accepts the shape. |
+   | `parse-error` | Tokenizer mapping gap in `src/grammar/tokenize.rs`. |
+   | `agreement` | No action. (Counts only; not printed.) |
+
+The in-tree corpus mirror under `tests/grammar_corpus/in_tree/` is
+regenerated from curated arrays in `tests/common/mod.rs`. After editing
+those arrays:
+
+```sh
+BLESS_MIRROR=1 cargo test --features grammar-diff --test grammar_corpus_mirror_test
+```
+
+Without `BLESS_MIRROR`, the test fails on drift.

@@ -18,6 +18,9 @@ check-cfg = ["cfg(dsql_cluster)"]
 [features]
 default = ["serde"]
 serde = ["dep:serde", "dep:serde_json"]
+# Maintainer-only: builds the `grammar-diff` binary that compares grammar
+# acceptance to dsql-lint acceptance over a vendored corpus.
+grammar-diff = ["serde", "dep:earlgrey", "dep:indexmap"]
 
 [dependencies]
 sqlparser = { package = "sqlparser-dsql", version = "0.61.0" }
@@ -26,6 +29,9 @@ tempfile = "3"
 strum = { version = "0.26", features = ["derive"] }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
+# grammar-diff feature only:
+earlgrey = { version = "0.4", optional = true }
+indexmap = { version = "2", features = ["serde"], optional = true }
 
 [lib]
 name = "dsql_lint"
@@ -35,4 +41,9 @@ path = "src/lib.rs"
 name = "dsql-lint"
 path = "src/main.rs"
 required-features = ["serde"]
+
+[[bin]]
+name = "grammar-diff"
+path = "src/bin/grammar_diff.rs"
+required-features = ["grammar-diff"]
 
