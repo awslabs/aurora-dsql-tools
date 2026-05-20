@@ -124,7 +124,10 @@ fn mirror_matches_source() {
     // included in grammar-diff runs.
     let mut orphans = Vec::new();
     let read = std::fs::read_dir(&dir).expect("read in_tree dir for orphan check");
-    for entry in read.flatten() {
+    // Don't `.flatten()` here — a per-entry IO error could be hiding a stale
+    // `.sql` orphan that this test exists to catch.
+    for entry in read {
+        let entry = entry.expect("read dir entry for orphan check");
         let path = entry.path();
         if !path.is_file() {
             continue;

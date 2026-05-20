@@ -93,10 +93,9 @@ fn empty_input_returns_ok_false() {
 #[test]
 fn accepts_propagates_tokenize_error() {
     let g = Grammar::load(&grammar_path()).unwrap();
-    let err = match g.accepts("SELECT 'unterminated") {
-        Err(e) => e,
-        Ok(v) => panic!("expected tokenize error, got Ok({v})"),
-    };
+    let err = g
+        .accepts("SELECT 'unterminated")
+        .expect_err("expected tokenize error");
     assert!(
         err.starts_with("tokenize:"),
         "expected tokenize: prefix, got {err:?}"
