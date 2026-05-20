@@ -15,12 +15,11 @@ fn grammar_path() -> PathBuf {
 fn every_charclass_in_grammar_has_a_producer() {
     let g = Grammar::load(&grammar_path()).expect("load grammar");
     let referenced = g.referenced_charclasses();
-    let produced: std::collections::BTreeSet<String> =
-        PRODUCED_CHARCLASSES.iter().map(|s| s.to_string()).collect();
+    let produced: std::collections::BTreeSet<&str> = PRODUCED_CHARCLASSES.iter().copied().collect();
 
     let missing: Vec<&String> = referenced
         .iter()
-        .filter(|c| !produced.contains(*c))
+        .filter(|c| !produced.contains(c.as_str()))
         .collect();
     assert!(
         missing.is_empty(),
@@ -87,4 +86,66 @@ fn empty_input_returns_ok_false() {
             "expected reject for empty-ish input {sql:?}, got accept"
         );
     }
+}
+
+/// A sqlparser tokenize failure (e.g. unterminated string literal) must
+/// surface as `Err("tokenize: …")` rather than collapse to `Ok(false)`.
+#[test]
+fn accepts_propagates_tokenize_error() {
+    let g = Grammar::load(&grammar_path()).unwrap();
+    let err = match g.accepts("SELECT 'unterminated") {
+        Err(e) => e,
+        Ok(v) => panic!("expected tokenize error, got Ok({v})"),
+    };
+    assert!(
+        err.starts_with("tokenize:"),
+        "expected tokenize: prefix, got {err:?}"
+    );
+}
+
+fn expect_load_err(path: &std::path::Path) -> String {
+    match Grammar::load(path) {
+        Ok(_) => panic!("expected Grammar::load to fail for {}", path.display()),
+        Err(e) => e,
+    }
+}
+
+#[test]
+fn load_fails_on_missing_file() {
+    let path = PathBuf::from("/nonexistent/__definitely_not_a_grammar__.json");
+    let err = expect_load_err(&path);
+    assert!(
+        err.starts_with("read grammar"),
+        "expected read grammar prefix, got {err:?}"
+    );
+}
+
+#[test]
+fn load_fails_on_malformed_json() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("bad.json");
+    std::fs::write(&path, "{ not json").expect("write tempfile");
+    let err = expect_load_err(&path);
+    assert!(
+        err.starts_with("parse grammar"),
+        "expected parse grammar prefix, got {err:?}"
+    );
+}
+
+#[test]
+fn load_fails_when_no_top_level_rules() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("empty.json");
+    // A grammar with rules but none in TOP_LEVEL_RULES — Grammar::load must
+    // refuse rather than build a Grammar with zero recognizers.
+    std::fs::write(
+        &path,
+        r#"{"root":"Foo","rules":{"Foo":{"choices":[[{"text":"x","token_type":"Terminal"}]],"optional":false,"repetition":null}}}"#,
+    )
+    .expect("write tempfile");
+    let err = expect_load_err(&path);
+    assert!(
+        err.starts_with("no top-level rules"),
+        "expected no top-level rules prefix, got {err:?}"
+    );
 }

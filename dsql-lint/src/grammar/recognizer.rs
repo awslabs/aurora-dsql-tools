@@ -68,10 +68,11 @@ impl GrammarRecognizer {
         }
         // Separators must never collide with a rule name, since the
         // "rule wins over terminal" dedup below would silently drop the
-        // separator's predicate and the desugared rule would never match.
-        // Today's grammar only uses punctuation separators, but a future
-        // refresh introducing a word-shaped one (e.g. `AND`) would trip
-        // this without warning.
+        // separator's predicate and the separator name would resolve to
+        // the rule instead of a literal-text predicate, no longer
+        // matching the intended separator token. Today's grammar only
+        // uses punctuation separators, but a future refresh introducing
+        // a word-shaped one (e.g. `AND`) would trip this without warning.
         for prod in grammar.rules.values() {
             if let Some(sep) = &prod.repetition {
                 if !sep.is_empty() && nonterm_names.contains(sep) {

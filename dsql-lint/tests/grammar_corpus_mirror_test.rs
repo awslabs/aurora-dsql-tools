@@ -106,7 +106,14 @@ fn mirror_matches_source() {
     let mut diffs = Vec::new();
     for (name, expected) in &files {
         let path = dir.join(name);
-        let actual = std::fs::read_to_string(&path).unwrap_or_default();
+        // NotFound means the mirror file hasn't been created yet (treat as
+        // empty so the diff path picks it up); other IO errors are real
+        // problems that must not be silently rewritten under BLESS_MIRROR.
+        let actual = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => panic!("read mirror file {}: {e}", path.display()),
+        };
         if actual != *expected {
             diffs.push((path.clone(), actual, expected.clone(), name.to_string()));
         }
@@ -116,22 +123,21 @@ fn mirror_matches_source() {
     // behind a stale `.sql` mirror). These would otherwise be silently
     // included in grammar-diff runs.
     let mut orphans = Vec::new();
-    if let Ok(read) = std::fs::read_dir(&dir) {
-        for entry in read.flatten() {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let name = match path.file_name().and_then(|s| s.to_str()) {
-                Some(n) => n,
-                None => continue,
-            };
-            if expected_names.contains(name) {
-                continue;
-            }
-            if path.extension().is_some_and(|e| e == "sql") {
-                orphans.push(path);
-            }
+    let read = std::fs::read_dir(&dir).expect("read in_tree dir for orphan check");
+    for entry in read.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = match path.file_name().and_then(|s| s.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        if expected_names.contains(name) {
+            continue;
+        }
+        if path.extension().is_some_and(|e| e == "sql") {
+            orphans.push(path);
         }
     }
 

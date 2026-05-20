@@ -30,5 +30,10 @@ pub struct Production {
 #[derive(Debug, Clone, Deserialize)]
 pub struct GrammarFile {
     pub rules: IndexMap<String, Production>,
+    /// Declared in the JSON but the grammar oracle enumerates
+    /// `TOP_LEVEL_RULES` instead, since the file's root is a dispatch
+    /// rule that isn't itself defined. Kept on the type so deserialization
+    /// faithfully reflects the schema.
+    #[allow(dead_code)]
     pub root: String,
 }

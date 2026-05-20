@@ -76,7 +76,9 @@ fn main() {
 
     let mut totals = Totals::default();
     for file in &corpus_files {
-        let rel = file.strip_prefix(&corpus_root).unwrap_or(file);
+        let rel = file
+            .strip_prefix(&corpus_root)
+            .expect("walk only emits paths under corpus_root");
         let rel_str = rel.to_string_lossy();
 
         let raw = match std::fs::read_to_string(file) {
@@ -121,24 +123,7 @@ fn main() {
                 Ok(true) => (Category::LintTooStrict, None),
                 Ok(false) => (Category::LintTooLenient, None),
             };
-            match cat {
-                Category::Agreement => {
-                    summary.agreement += 1;
-                    totals.agreement += 1;
-                }
-                Category::LintTooLenient => {
-                    summary.lint_too_lenient += 1;
-                    totals.lint_too_lenient += 1;
-                }
-                Category::LintTooStrict => {
-                    summary.lint_too_strict += 1;
-                    totals.lint_too_strict += 1;
-                }
-                Category::ParseError => {
-                    summary.parse_error += 1;
-                    totals.parse_error += 1;
-                }
-            }
+            bump(cat, &mut summary, &mut totals);
             if !matches!(cat, Category::Agreement) {
                 entries.push(Entry {
                     line: stmt.line,
@@ -177,6 +162,33 @@ fn main() {
         totals.file_tokenize_errors,
         totals.agreement,
     );
+
+    // Non-zero exit on file-level failures keeps CI honest if a future
+    // pipeline runs grammar-diff against the corpus.
+    if totals.file_read_errors > 0 || totals.file_tokenize_errors > 0 {
+        std::process::exit(1);
+    }
+}
+
+fn bump(cat: Category, summary: &mut FileSummary, totals: &mut Totals) {
+    match cat {
+        Category::Agreement => {
+            summary.agreement += 1;
+            totals.agreement += 1;
+        }
+        Category::LintTooLenient => {
+            summary.lint_too_lenient += 1;
+            totals.lint_too_lenient += 1;
+        }
+        Category::LintTooStrict => {
+            summary.lint_too_strict += 1;
+            totals.lint_too_strict += 1;
+        }
+        Category::ParseError => {
+            summary.parse_error += 1;
+            totals.parse_error += 1;
+        }
+    }
 }
 
 fn print_entry(e: &Entry) {

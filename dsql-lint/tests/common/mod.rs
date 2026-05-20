@@ -410,6 +410,9 @@ pub fn cluster_test_for_rule(rule: LintRule) -> Option<(&'static str, &'static s
             "DDL statements",
         )),
         LintRule::ParseError => None,
+        // `LintRule` is `#[non_exhaustive]`; this match lives in an
+        // integration-test crate, so a wildcard is required even though
+        // every variant defined today is enumerated above.
         _ => None,
     }
 }

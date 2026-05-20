@@ -1,8 +1,8 @@
 //! Grammar oracle: load the grammar JSON, tokenize SQL, decide whether the
 //! grammar accepts it.
 
-pub mod model;
-pub mod recognizer;
+pub(crate) mod model;
+pub(crate) mod recognizer;
 pub mod tokenize;
 
 use std::path::Path;
@@ -115,7 +115,11 @@ impl Grammar {
                 if matches!(term, Terminal::Skip) {
                     return None;
                 }
-                // Statement-rule productions don't include a trailing `;`.
+                // Assumption: top-level statement productions don't list a
+                // trailing `;`. The splitter already strips the terminating
+                // semicolon, and statement rules in the current grammar
+                // don't list one. A future refresh that adds `;` to the end
+                // of a statement rule would need this filter revisited.
                 if matches!(t, Token::SemiColon) {
                     return None;
                 }
