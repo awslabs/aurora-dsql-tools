@@ -5,10 +5,6 @@ use dsql_lint::grammar::{split_statements, Grammar};
 use dsql_lint::{lint_sql, Diagnostic};
 use std::path::{Path, PathBuf};
 
-/// Each entry is a tax — every line in the corpus we've decided to ignore.
-/// Past a small handful, the corpus or the tool needs fixing instead.
-const SKIPPED_FILES: &[(&str, &str)] = &[];
-
 const GRAMMAR_REL: &str = "grammar/dsql_grammar.json";
 const CORPUS_REL: &str = "tests/grammar_corpus";
 
@@ -26,6 +22,10 @@ struct Entry {
     category: Category,
     label: Option<String>,
     diagnostics: Vec<Diagnostic>,
+    /// Populated only for `ParseError` entries; carries the grammar
+    /// tokenizer's error message so maintainers can distinguish a
+    /// tokenizer crash from a recognizer rejection.
+    grammar_error: Option<String>,
     sql_preview: String,
 }
 
@@ -41,7 +41,8 @@ struct FileSummary {
 #[derive(Default, Debug)]
 struct Totals {
     files_processed: usize,
-    files_skipped: usize,
+    file_read_errors: usize,
+    file_tokenize_errors: usize,
     agreement: usize,
     lint_too_lenient: usize,
     lint_too_strict: usize,
@@ -75,36 +76,25 @@ fn main() {
 
     let mut totals = Totals::default();
     for file in &corpus_files {
-        let rel = match file.strip_prefix(&corpus_root) {
-            Ok(p) => p.to_path_buf(),
-            Err(_) => file.clone(),
-        };
+        let rel = file.strip_prefix(&corpus_root).unwrap_or(file);
         let rel_str = rel.to_string_lossy();
-
-        if let Some(reason) = SKIPPED_FILES
-            .iter()
-            .find_map(|(p, r)| (*p == rel_str).then_some(*r))
-        {
-            println!("== {} ==  SKIPPED ({})", rel_str, reason);
-            totals.files_skipped += 1;
-            continue;
-        }
-
-        totals.files_processed += 1;
 
         let raw = match std::fs::read_to_string(file) {
             Ok(s) => s,
             Err(e) => {
                 println!("== {} ==  read error: {e}", rel_str);
+                totals.file_read_errors += 1;
                 continue;
             }
         };
+
+        totals.files_processed += 1;
 
         let stmts = match split_statements(&raw) {
             Ok(v) => v,
             Err(e) => {
                 println!("== {} ==\n  whole-file tokenize error: {e}\n", rel_str);
-                totals.parse_error += 1;
+                totals.file_tokenize_errors += 1;
                 continue;
             }
         };
@@ -124,55 +114,40 @@ fn main() {
                 .rev()
                 .find_map(|(at_line, l)| (*at_line <= stmt.line).then(|| l.clone()));
 
-            let grammar_verdict = grammar.accepts(&stmt.raw);
-            match grammar_verdict {
-                Err(_) => {
+            let (cat, grammar_error) = match grammar.accepts(&stmt.raw) {
+                Err(e) => (Category::ParseError, Some(e)),
+                Ok(true) if lint_passes => (Category::Agreement, None),
+                Ok(false) if !lint_passes => (Category::Agreement, None),
+                Ok(true) => (Category::LintTooStrict, None),
+                Ok(false) => (Category::LintTooLenient, None),
+            };
+            match cat {
+                Category::Agreement => {
+                    summary.agreement += 1;
+                    totals.agreement += 1;
+                }
+                Category::LintTooLenient => {
+                    summary.lint_too_lenient += 1;
+                    totals.lint_too_lenient += 1;
+                }
+                Category::LintTooStrict => {
+                    summary.lint_too_strict += 1;
+                    totals.lint_too_strict += 1;
+                }
+                Category::ParseError => {
                     summary.parse_error += 1;
                     totals.parse_error += 1;
-                    entries.push(Entry {
-                        line: stmt.line,
-                        category: Category::ParseError,
-                        label,
-                        diagnostics: lint_diags,
-                        sql_preview: preview(&stmt.raw),
-                    });
                 }
-                Ok(grammar_accepts) => {
-                    let cat = match (lint_passes, grammar_accepts) {
-                        (true, true) | (false, false) => Category::Agreement,
-                        (true, false) => Category::LintTooLenient,
-                        (false, true) => Category::LintTooStrict,
-                    };
-                    match cat {
-                        Category::Agreement => {
-                            summary.agreement += 1;
-                            totals.agreement += 1;
-                        }
-                        Category::LintTooLenient => {
-                            summary.lint_too_lenient += 1;
-                            totals.lint_too_lenient += 1;
-                            entries.push(Entry {
-                                line: stmt.line,
-                                category: cat,
-                                label,
-                                diagnostics: lint_diags,
-                                sql_preview: preview(&stmt.raw),
-                            });
-                        }
-                        Category::LintTooStrict => {
-                            summary.lint_too_strict += 1;
-                            totals.lint_too_strict += 1;
-                            entries.push(Entry {
-                                line: stmt.line,
-                                category: cat,
-                                label,
-                                diagnostics: lint_diags,
-                                sql_preview: preview(&stmt.raw),
-                            });
-                        }
-                        Category::ParseError => unreachable!(),
-                    }
-                }
+            }
+            if !matches!(cat, Category::Agreement) {
+                entries.push(Entry {
+                    line: stmt.line,
+                    category: cat,
+                    label,
+                    diagnostics: lint_diags,
+                    grammar_error,
+                    sql_preview: preview(&stmt.raw),
+                });
             }
         }
 
@@ -192,12 +167,14 @@ fn main() {
     }
 
     println!(
-        "Summary: {} lint-too-strict, {} lint-too-lenient, {} parse-error  (files: {} processed, {} skipped, {} agreement statements)",
+        "Summary: {} lint-too-strict, {} lint-too-lenient, {} parse-error  \
+         (files: {} processed, {} read-errors, {} tokenize-errors, {} agreement statements)",
         totals.lint_too_strict,
         totals.lint_too_lenient,
         totals.parse_error,
         totals.files_processed,
-        totals.files_skipped,
+        totals.file_read_errors,
+        totals.file_tokenize_errors,
         totals.agreement,
     );
 }
@@ -229,7 +206,10 @@ fn print_entry(e: &Entry) {
             println!("       grammar: rejects");
         }
         Category::ParseError => {
-            println!("       grammar: parse error");
+            match &e.grammar_error {
+                Some(msg) => println!("       grammar: parse error: {msg}"),
+                None => println!("       grammar: parse error"),
+            }
             if !e.diagnostics.is_empty() {
                 println!("       lint flagged:");
                 for d in &e.diagnostics {
@@ -243,12 +223,12 @@ fn print_entry(e: &Entry) {
 }
 
 fn preview(raw: &str) -> String {
-    let one_line: String = raw.lines().next().unwrap_or("").trim().chars().collect();
+    let one_line = raw.lines().next().unwrap_or("").trim();
     if one_line.chars().count() > 120 {
         let truncated: String = one_line.chars().take(117).collect();
         format!("{truncated}...")
     } else {
-        one_line
+        one_line.to_string()
     }
 }
 

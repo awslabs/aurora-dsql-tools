@@ -27,19 +27,11 @@ pub fn map_token(tok: &Token) -> Terminal {
             }
         }
 
-        Token::Number(_, is_long) => {
-            if *is_long {
+        Token::Number(s, is_long) => {
+            if *is_long || !s.bytes().any(|b| b == b'.' || b == b'e' || b == b'E') {
                 Terminal::CharClass("ICONST")
             } else {
-                let text = match tok {
-                    Token::Number(s, _) => s.as_str(),
-                    _ => unreachable!(),
-                };
-                if text.bytes().any(|b| b == b'.' || b == b'e' || b == b'E') {
-                    Terminal::CharClass("FCONST")
-                } else {
-                    Terminal::CharClass("ICONST")
-                }
+                Terminal::CharClass("FCONST")
             }
         }
         Token::Char(_) => Terminal::CharClass("SCONST"),
@@ -87,73 +79,78 @@ pub fn map_token(tok: &Token) -> Terminal {
         Token::Neq => Terminal::Punct("<>"),
         Token::RArrow => Terminal::Punct("=>"),
 
+        Token::SemiColon => Terminal::Punct(";"),
+
         // Operators the grammar doesn't list as `Quoted` go through the
         // `Op` character class — recognized only where the grammar permits
-        // an operator, rejected elsewhere.
-        Token::SemiColon => Terminal::Punct(";"),
-        Token::Backslash => Terminal::CharClass("Op"),
-        Token::DoubleEq => Terminal::CharClass("Op"),
-        Token::Spaceship => Terminal::CharClass("Op"),
-        Token::DuckIntDiv => Terminal::CharClass("Op"),
-        Token::StringConcat => Terminal::CharClass("Op"),
-        Token::Ampersand => Terminal::CharClass("Op"),
-        Token::Pipe => Terminal::CharClass("Op"),
-        Token::LBrace => Terminal::CharClass("Op"),
-        Token::RBrace => Terminal::CharClass("Op"),
-        Token::Sharp => Terminal::CharClass("Op"),
-        Token::DoubleSharp => Terminal::CharClass("Op"),
-        Token::Tilde => Terminal::CharClass("Op"),
-        Token::TildeAsterisk => Terminal::CharClass("Op"),
-        Token::ExclamationMarkTilde => Terminal::CharClass("Op"),
-        Token::ExclamationMarkTildeAsterisk => Terminal::CharClass("Op"),
-        Token::DoubleTilde => Terminal::CharClass("Op"),
-        Token::DoubleTildeAsterisk => Terminal::CharClass("Op"),
-        Token::ExclamationMarkDoubleTilde => Terminal::CharClass("Op"),
-        Token::ExclamationMarkDoubleTildeAsterisk => Terminal::CharClass("Op"),
-        Token::ShiftLeft => Terminal::CharClass("Op"),
-        Token::ShiftRight => Terminal::CharClass("Op"),
-        Token::Overlap => Terminal::CharClass("Op"),
-        Token::ExclamationMark => Terminal::CharClass("Op"),
-        Token::DoubleExclamationMark => Terminal::CharClass("Op"),
-        Token::AtSign => Terminal::CharClass("Op"),
-        Token::CaretAt => Terminal::CharClass("Op"),
-        Token::PGSquareRoot => Terminal::CharClass("Op"),
-        Token::PGCubeRoot => Terminal::CharClass("Op"),
-        Token::Arrow => Terminal::CharClass("Op"),
-        Token::LongArrow => Terminal::CharClass("Op"),
-        Token::HashArrow => Terminal::CharClass("Op"),
-        Token::AtDashAt => Terminal::CharClass("Op"),
-        Token::QuestionMarkDash => Terminal::CharClass("Op"),
-        Token::AmpersandLeftAngleBracket => Terminal::CharClass("Op"),
-        Token::AmpersandRightAngleBracket => Terminal::CharClass("Op"),
-        Token::AmpersandLeftAngleBracketVerticalBar => Terminal::CharClass("Op"),
-        Token::VerticalBarAmpersandRightAngleBracket => Terminal::CharClass("Op"),
-        Token::TwoWayArrow => Terminal::CharClass("Op"),
-        Token::LeftAngleBracketCaret => Terminal::CharClass("Op"),
-        Token::RightAngleBracketCaret => Terminal::CharClass("Op"),
-        Token::QuestionMarkSharp => Terminal::CharClass("Op"),
-        Token::QuestionMarkDashVerticalBar => Terminal::CharClass("Op"),
-        Token::QuestionMarkDoubleVerticalBar => Terminal::CharClass("Op"),
-        Token::TildeEqual => Terminal::CharClass("Op"),
-        Token::ShiftLeftVerticalBar => Terminal::CharClass("Op"),
-        Token::VerticalBarShiftRight => Terminal::CharClass("Op"),
-        Token::VerticalBarRightAngleBracket => Terminal::CharClass("Op"),
-        Token::HashLongArrow => Terminal::CharClass("Op"),
-        Token::AtArrow => Terminal::CharClass("Op"),
-        Token::ArrowAt => Terminal::CharClass("Op"),
-        Token::HashMinus => Terminal::CharClass("Op"),
-        Token::AtQuestion => Terminal::CharClass("Op"),
-        Token::AtAt => Terminal::CharClass("Op"),
-        Token::Question => Terminal::CharClass("Op"),
-        Token::QuestionAnd => Terminal::CharClass("Op"),
-        Token::QuestionPipe => Terminal::CharClass("Op"),
-        Token::CustomBinaryOperator(_) => Terminal::CharClass("Op"),
+        // an operator, rejected elsewhere. Listed as `|`-pattern alternatives
+        // (rather than `_ =>`) so a sqlparser bump that adds a new variant
+        // fails to compile, matching the rest of this match's contract.
+        Token::Backslash
+        | Token::DoubleEq
+        | Token::Spaceship
+        | Token::DuckIntDiv
+        | Token::StringConcat
+        | Token::Ampersand
+        | Token::Pipe
+        | Token::LBrace
+        | Token::RBrace
+        | Token::Sharp
+        | Token::DoubleSharp
+        | Token::Tilde
+        | Token::TildeAsterisk
+        | Token::ExclamationMarkTilde
+        | Token::ExclamationMarkTildeAsterisk
+        | Token::DoubleTilde
+        | Token::DoubleTildeAsterisk
+        | Token::ExclamationMarkDoubleTilde
+        | Token::ExclamationMarkDoubleTildeAsterisk
+        | Token::ShiftLeft
+        | Token::ShiftRight
+        | Token::Overlap
+        | Token::ExclamationMark
+        | Token::DoubleExclamationMark
+        | Token::AtSign
+        | Token::CaretAt
+        | Token::PGSquareRoot
+        | Token::PGCubeRoot
+        | Token::Arrow
+        | Token::LongArrow
+        | Token::HashArrow
+        | Token::AtDashAt
+        | Token::QuestionMarkDash
+        | Token::AmpersandLeftAngleBracket
+        | Token::AmpersandRightAngleBracket
+        | Token::AmpersandLeftAngleBracketVerticalBar
+        | Token::VerticalBarAmpersandRightAngleBracket
+        | Token::TwoWayArrow
+        | Token::LeftAngleBracketCaret
+        | Token::RightAngleBracketCaret
+        | Token::QuestionMarkSharp
+        | Token::QuestionMarkDashVerticalBar
+        | Token::QuestionMarkDoubleVerticalBar
+        | Token::TildeEqual
+        | Token::ShiftLeftVerticalBar
+        | Token::VerticalBarShiftRight
+        | Token::VerticalBarRightAngleBracket
+        | Token::HashLongArrow
+        | Token::AtArrow
+        | Token::ArrowAt
+        | Token::HashMinus
+        | Token::AtQuestion
+        | Token::AtAt
+        | Token::Question
+        | Token::QuestionAnd
+        | Token::QuestionPipe
+        | Token::CustomBinaryOperator(_) => Terminal::CharClass("Op"),
     }
 }
 
-/// Every CharClass name this mapper can emit. Asserted exhaustive against
-/// the grammar by `every_charclass_in_grammar_has_a_producer` so a refresh
-/// that adds a new class breaks loudly instead of silently mis-tokenizing.
+/// Every CharClass name this mapper can emit. Asserted to cover every
+/// CharClass the grammar references, by
+/// `every_charclass_in_grammar_has_a_producer` — so a refresh that adds a
+/// new class breaks loudly instead of silently mis-tokenizing. (The
+/// reverse — stale entries here that nothing references — is not checked.)
 pub const PRODUCED_CHARCLASSES: &[&str] = &[
     "IDENT", "ICONST", "FCONST", "SCONST", "BCONST", "XCONST", "PARAM", "Op",
 ];

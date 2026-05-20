@@ -66,15 +66,29 @@ impl GrammarRecognizer {
                 }
             }
         }
+        // Separators must never collide with a rule name, since the
+        // "rule wins over terminal" dedup below would silently drop the
+        // separator's predicate and the desugared rule would never match.
+        // Today's grammar only uses punctuation separators, but a future
+        // refresh introducing a word-shaped one (e.g. `AND`) would trip
+        // this without warning.
+        for prod in grammar.rules.values() {
+            if let Some(sep) = &prod.repetition {
+                if !sep.is_empty() && nonterm_names.contains(sep) {
+                    return Err(format!(
+                        "repetition separator '{sep}' collides with a defined rule name"
+                    ));
+                }
+            }
+        }
         // A defined rule wins over a coincidentally-same-named terminal.
         for nt in &nonterm_names {
             terminal_names.remove(nt);
         }
 
         for term in &terminal_names {
-            let term_owned = term.clone();
-            let term_for_pred = term_owned.clone();
-            b.terminal_try(&term_owned, move |s| s == term_for_pred);
+            let owned = term.clone();
+            b.terminal_try(term, move |s| s == owned);
         }
         // Includes referenced-but-undefined non-terminals; they end up with
         // zero productions and any derivation through them fails — which is
@@ -95,7 +109,7 @@ impl GrammarRecognizer {
         };
 
         // Desugar each production to plain BNF. Repetition becomes
-        // right-recursion plus a base case; optional/zero-or-more adds an
+        // left-recursion plus a base case; optional/zero-or-more adds an
         // empty alternative.
         for (name, prod) in &grammar.rules {
             match (&prod.repetition, prod.optional) {
@@ -196,6 +210,56 @@ mod tests {
             root,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn build_fails_when_root_is_undefined() {
+        let mut map: IndexMap<String, Production> = IndexMap::new();
+        map.insert(
+            "Defined".to_string(),
+            Production {
+                choices: vec![vec![term("x")]],
+                optional: false,
+                repetition: None,
+            },
+        );
+        let file = GrammarFile {
+            rules: map,
+            root: "Missing".to_string(),
+        };
+        let err = GrammarRecognizer::build(&file, "Missing")
+            .err()
+            .expect("build should fail for undefined root");
+        assert!(err.contains("'Missing'"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn build_fails_when_separator_collides_with_rule_name() {
+        let mut map: IndexMap<String, Production> = IndexMap::new();
+        map.insert(
+            "AND".to_string(),
+            Production {
+                choices: vec![vec![term("y")]],
+                optional: false,
+                repetition: None,
+            },
+        );
+        map.insert(
+            "List".to_string(),
+            Production {
+                choices: vec![vec![term("x")]],
+                optional: false,
+                repetition: Some("AND".to_string()),
+            },
+        );
+        let file = GrammarFile {
+            rules: map,
+            root: "List".to_string(),
+        };
+        let err = GrammarRecognizer::build(&file, "List")
+            .err()
+            .expect("build should fail when separator collides with rule name");
+        assert!(err.contains("'AND'"), "unexpected error: {err}");
     }
 
     fn toks(ts: &[&str]) -> Vec<String> {

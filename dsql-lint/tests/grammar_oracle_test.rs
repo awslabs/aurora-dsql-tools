@@ -72,3 +72,19 @@ fn golden_reject_cases() {
         assert!(!case(&g, sql), "expected reject, grammar accepted: {sql}");
     }
 }
+
+/// Empty / whitespace / comment-only input produces zero terminals; the
+/// contract is that `accepts` returns `Ok(false)` (not `Err`, not panic).
+#[test]
+fn empty_input_returns_ok_false() {
+    let g = Grammar::load(&grammar_path()).unwrap();
+    for sql in ["", "   ", "\n\n", ";", "-- only a comment\n"] {
+        let v = g
+            .accepts(sql)
+            .unwrap_or_else(|e| panic!("oracle errored on empty-ish input {sql:?}: {e}"));
+        assert!(
+            !v,
+            "expected reject for empty-ish input {sql:?}, got accept"
+        );
+    }
+}

@@ -100,6 +100,8 @@ fn mirror_matches_source() {
 
     let files = expected_files();
     let bless = std::env::var_os("BLESS_MIRROR").is_some();
+    let expected_names: std::collections::HashSet<&str> =
+        files.iter().map(|(name, _)| *name).collect();
 
     let mut diffs = Vec::new();
     for (name, expected) in &files {
@@ -110,7 +112,30 @@ fn mirror_matches_source() {
         }
     }
 
-    if diffs.is_empty() {
+    // Detect orphan files (e.g. a renamed/removed source array that left
+    // behind a stale `.sql` mirror). These would otherwise be silently
+    // included in grammar-diff runs.
+    let mut orphans = Vec::new();
+    if let Ok(read) = std::fs::read_dir(&dir) {
+        for entry in read.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = match path.file_name().and_then(|s| s.to_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+            if expected_names.contains(name) {
+                continue;
+            }
+            if path.extension().is_some_and(|e| e == "sql") {
+                orphans.push(path);
+            }
+        }
+    }
+
+    if diffs.is_empty() && orphans.is_empty() {
         return;
     }
 
@@ -136,10 +161,18 @@ fn mirror_matches_source() {
         eprintln!();
     }
 
+    for path in &orphans {
+        eprintln!("orphan: {}", path.display());
+    }
+
     if bless {
         for (path, _actual, expected, _name) in &diffs {
             std::fs::write(path, expected).expect("write mirror file");
             eprintln!("blessed: {}", path.display());
+        }
+        for path in &orphans {
+            std::fs::remove_file(path).expect("remove orphan mirror file");
+            eprintln!("removed: {}", path.display());
         }
     } else {
         eprintln!("Mirror is out of sync with the source const arrays in tests/common/mod.rs.");

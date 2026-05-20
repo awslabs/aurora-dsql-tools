@@ -55,10 +55,10 @@ pub const TOP_LEVEL_RULES: &[&str] = &[
 pub struct Grammar {
     file: GrammarFile,
     recognizers: Vec<(String, GrammarRecognizer)>,
-    /// Words sqlparser classifies as keywords but the grammar doesn't —
-    /// e.g. `ID`. Without this set, those tokens would be sent to the
-    /// recognizer as keywords and rejected wherever an identifier is
-    /// expected.
+    /// Every Terminal text the grammar lists — i.e. the grammar's keyword
+    /// vocabulary. Used to demote sqlparser-classified keywords that the
+    /// grammar doesn't list (e.g. `ID`) back to `IDENT` before recognition;
+    /// otherwise they'd be rejected wherever an identifier is expected.
     grammar_keywords: std::collections::HashSet<String>,
 }
 
