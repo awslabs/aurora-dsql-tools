@@ -140,12 +140,20 @@ name = "dsql-lint"
 version = "0.1.4"
 dependencies = [
  "clap",
+ "earlgrey",
+ "indexmap",
  "serde",
  "serde_json",
  "sqlparser-dsql",
  "strum",
  "tempfile",
 ]
+
+[[package]]
+name = "earlgrey"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b32641aafada8e78e674f8f96d494715dee5376f1ca7a100d6347ccfaa73624"
 
 [[package]]
 name = "equivalent"

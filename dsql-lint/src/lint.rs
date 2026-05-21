@@ -117,7 +117,12 @@ fn loc_to_byte(input: &str, offsets: &[usize], line: u64, col: u64) -> usize {
 /// Uses the tokenizer to correctly handle semicolons inside quoted strings or
 /// comments. Preserves original text (including newlines) by slicing the input
 /// using token span byte offsets rather than reconstructing from token strings.
-fn split_statements(input: &str) -> Result<Vec<(usize, String)>, String> {
+///
+/// `pub(crate)` so the `grammar-diff` binary, via the `crate::grammar`
+/// re-export, can reuse the exact same splitter and avoid an
+/// apples-to-oranges diff between what the lint engine sees per statement
+/// and what the grammar oracle sees per statement.
+pub(crate) fn split_statements(input: &str) -> Result<Vec<(usize, String)>, String> {
     let dialect = PostgreSqlDialect {};
     let all_tokens = Tokenizer::new(&dialect, input)
         .tokenize_with_location()
