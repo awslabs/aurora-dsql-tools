@@ -42,6 +42,28 @@ fn load_warns_on_stmt_rule_outside_top_level_rules() {
 }
 
 #[test]
+fn load_warns_on_top_level_rule_missing_from_grammar() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // `CreateStmt` is in TOP_LEVEL_RULES and defined; the rest of
+    // TOP_LEVEL_RULES (e.g. `IndexStmt`, `ViewStmt`, `AlterTableStmt`) are
+    // in TOP_LEVEL_RULES but absent from this synthetic grammar — the
+    // warning should enumerate them.
+    let path = write_synth_grammar(
+        &dir,
+        r#"{"root":"CreateStmt","rules":{
+            "CreateStmt":{"choices":[[{"text":"x","token_type":"Terminal"}]],"optional":false,"repetition":null}
+        }}"#,
+    );
+    let warnings = collect_warnings(&path);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("not defined in grammar") && w.contains("IndexStmt")),
+        "expected `IndexStmt` in not-defined-in-grammar warning, got: {warnings:?}"
+    );
+}
+
+#[test]
 fn load_warns_on_referenced_but_undefined_nonterminal() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = write_synth_grammar(

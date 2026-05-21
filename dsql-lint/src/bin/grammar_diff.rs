@@ -3,6 +3,7 @@
 
 use dsql_lint::grammar::{split_statements, Grammar};
 use dsql_lint::{lint_sql, Diagnostic};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 const GRAMMAR_REL: &str = "grammar/dsql_grammar.json";
@@ -75,8 +76,7 @@ fn main() {
     }
 
     let mut totals = Totals::default();
-    let mut demotions: std::collections::BTreeMap<String, usize> =
-        std::collections::BTreeMap::new();
+    let mut demotions: BTreeMap<String, usize> = BTreeMap::new();
     for file in &corpus_files {
         let rel = file
             .strip_prefix(&corpus_root)
@@ -172,9 +172,9 @@ fn main() {
     );
 
     // Keyword demotions: each entry is a sqlparser keyword the grammar
-    // doesn't list, demoted to IDENT before recognition. A high count, or a
-    // newly-appearing keyword after a refresh, suggests the grammar dropped
-    // a keyword it previously listed (silent inflater of `lint-too-lenient`).
+    // doesn't list, demoted to IDENT before recognition. A newly-appearing
+    // or rising keyword after a refresh suggests the grammar dropped a
+    // keyword it previously listed (silent inflater of `lint-too-lenient`).
     if !demotions.is_empty() {
         let mut sorted: Vec<(&String, &usize)> = demotions.iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));

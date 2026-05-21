@@ -5,6 +5,7 @@ pub(crate) mod model;
 pub(crate) mod recognizer;
 pub mod tokenize;
 
+use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 
 use sqlparser::dialect::PostgreSqlDialect;
@@ -59,7 +60,7 @@ pub struct Grammar {
     /// vocabulary. Used to demote sqlparser-classified keywords that the
     /// grammar doesn't list (e.g. `ID`) back to `IDENT` before recognition;
     /// otherwise they'd be rejected wherever an identifier is expected.
-    grammar_keywords: std::collections::HashSet<String>,
+    grammar_keywords: HashSet<String>,
 }
 
 impl Grammar {
@@ -77,21 +78,25 @@ impl Grammar {
 
         // Asymmetry warnings — silent drift here means a `lint-too-lenient`
         // landslide with no obvious cause. Surface it once at load time.
-        let in_grammar: std::collections::HashSet<&str> =
-            file.rules.keys().map(String::as_str).collect();
-        let in_top_level: std::collections::HashSet<&str> =
-            TOP_LEVEL_RULES.iter().copied().collect();
+        let in_grammar: HashSet<&str> = file.rules.keys().map(String::as_str).collect();
+        let in_top_level: HashSet<&str> = TOP_LEVEL_RULES.iter().copied().collect();
 
-        let missing_from_grammar: Vec<&&str> = TOP_LEVEL_RULES
+        let missing_from_grammar: Vec<&str> = TOP_LEVEL_RULES
             .iter()
-            .filter(|r| !in_grammar.contains(*r))
+            .copied()
+            .filter(|r| !in_grammar.contains(r))
             .collect();
         if !missing_from_grammar.is_empty() {
             warn(&format!(
-                "warning: TOP_LEVEL_RULES entries not defined in grammar: {missing_from_grammar:?}"
+                "warning: TOP_LEVEL_RULES entries not defined in grammar: {}",
+                missing_from_grammar.join(", ")
             ));
         }
 
+        // Naming contract: top-level statement rules in the grammar JSON end
+        // in `Stmt`. A future refresh that renames a rule away from this
+        // suffix would silently bypass this check; cross-check the rename
+        // against `TOP_LEVEL_RULES` directly.
         let mut stmt_rules_missing_from_top_level: Vec<&str> = file
             .rules
             .keys()
@@ -101,14 +106,15 @@ impl Grammar {
         stmt_rules_missing_from_top_level.sort();
         if !stmt_rules_missing_from_top_level.is_empty() {
             warn(&format!(
-                "warning: grammar `*Stmt` rules not in TOP_LEVEL_RULES: {stmt_rules_missing_from_top_level:?}"
+                "warning: grammar `*Stmt` rules not in TOP_LEVEL_RULES: {}",
+                stmt_rules_missing_from_top_level.join(", ")
             ));
         }
 
         // Non-terminals referenced in any rule but not defined as one. Each
         // becomes a non-derivable sink in the recognizer; derivations
         // through them silently produce `lint-too-lenient`. Surface once.
-        let mut referenced: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        let mut referenced: BTreeSet<&str> = BTreeSet::new();
         for prod in file.rules.values() {
             for choice in &prod.choices {
                 for t in choice {
@@ -118,13 +124,15 @@ impl Grammar {
                 }
             }
         }
-        let undefined_nonterms: Vec<&&str> = referenced
+        let undefined_nonterms: Vec<&str> = referenced
             .iter()
-            .filter(|n| !in_grammar.contains(*n))
+            .copied()
+            .filter(|n| !in_grammar.contains(n))
             .collect();
         if !undefined_nonterms.is_empty() {
             warn(&format!(
-                "warning: non-terminals referenced but not defined: {undefined_nonterms:?}"
+                "warning: non-terminals referenced but not defined: {}",
+                undefined_nonterms.join(", ")
             ));
         }
 
@@ -143,8 +151,7 @@ impl Grammar {
             ));
         }
 
-        let mut grammar_keywords: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut grammar_keywords: HashSet<String> = HashSet::new();
         for prod in file.rules.values() {
             for choice in &prod.choices {
                 for t in choice {
@@ -169,6 +176,11 @@ impl Grammar {
     /// `IDENT` because the grammar didn't list it. Aggregating demotions
     /// across the corpus surfaces silent drift if a refresh inadvertently
     /// drops a keyword the grammar relied on.
+    ///
+    /// On `Err`, no demotions are returned; the only `Err` paths today
+    /// (tokenizer failure, empty terminals after Skip filter) precede or
+    /// invalidate the demotion stream. A future `Err` introduced *after*
+    /// the filter would need to surface the partial demotion list.
     pub fn accepts_with_demotions(&self, sql: &str) -> Result<(bool, Vec<String>), String> {
         let dialect = PostgreSqlDialect {};
         let raw_tokens = Tokenizer::new(&dialect, sql)
@@ -186,11 +198,13 @@ impl Grammar {
                 // Assumption: top-level statement productions don't list a
                 // trailing `;`. The splitter already strips the terminating
                 // semicolon, and statement rules in the current grammar
-                // don't list one.
+                // don't list one. A future refresh that adds `;` to the end
+                // of a statement rule would need this filter revisited.
                 if matches!(t, Token::SemiColon) {
                     return None;
                 }
-                // See `grammar_keywords` above.
+                // Demote keywords the grammar doesn't list to `IDENT`; see
+                // `Self::grammar_keywords` for rationale.
                 let term = match term {
                     Terminal::Keyword(kw) if !self.grammar_keywords.contains(&kw) => {
                         demotions.push(kw);
@@ -219,8 +233,8 @@ impl Grammar {
         Ok((false, demotions))
     }
 
-    pub fn referenced_charclasses(&self) -> std::collections::BTreeSet<String> {
-        let mut classes = std::collections::BTreeSet::new();
+    pub fn referenced_charclasses(&self) -> BTreeSet<String> {
+        let mut classes = BTreeSet::new();
         for prod in self.file.rules.values() {
             for choice in &prod.choices {
                 for t in choice {

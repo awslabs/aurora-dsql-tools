@@ -109,14 +109,16 @@ impl GrammarRecognizer {
                 .collect()
         };
 
-        // Desugar each production to plain BNF. `prefix` controls the
-        // recursive arm's shape:
-        //   no repetition  → []           (no recursive arm)
-        //   `*`/`+`        → [name]       (A → A choice)
-        //   sep-separated  → [name, sep]  (A → A sep choice)
+        // Desugar each production to plain BNF. The base alternative
+        // `A → choice` is always emitted; `prefix` controls the optional
+        // recursive alternative:
+        //   no repetition  → []           (no recursive alt)
+        //   `*`/`+`        → [name]       (also emits A → A choice)
+        //   sep-separated  → [name, sep]  (also emits A → A sep choice)
         // ε is added only when `optional` is set. Repetition with
-        // `optional: false` is one-or-more (matching the upstream grammar's
-        // `*_list` rules); ε would change that to zero-or-more.
+        // `optional: false` is therefore one-or-more (matching upstream
+        // grammar rules with `_list` repetition shape); ε would change that
+        // to zero-or-more.
         for (name, prod) in &grammar.rules {
             let prefix: Vec<String> = match &prod.repetition {
                 None => vec![],
