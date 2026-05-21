@@ -8,6 +8,99 @@ fn grammar_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammar/dsql_grammar.json")
 }
 
+fn write_synth_grammar(dir: &tempfile::TempDir, json: &str) -> std::path::PathBuf {
+    let path = dir.path().join("synth.json");
+    std::fs::write(&path, json).expect("write synth grammar");
+    path
+}
+
+fn collect_warnings(path: &std::path::Path) -> Vec<String> {
+    let mut warnings: Vec<String> = Vec::new();
+    let _ = dsql_lint::grammar::Grammar::load_with_warnings(path, |w| warnings.push(w.to_string()))
+        .unwrap();
+    warnings
+}
+
+#[test]
+fn load_warns_on_stmt_rule_outside_top_level_rules() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // `CreateStmt` is in TOP_LEVEL_RULES; `WidgetStmt` is not.
+    let path = write_synth_grammar(
+        &dir,
+        r#"{"root":"CreateStmt","rules":{
+            "CreateStmt":{"choices":[[{"text":"x","token_type":"Terminal"}]],"optional":false,"repetition":null},
+            "WidgetStmt":{"choices":[[{"text":"y","token_type":"Terminal"}]],"optional":false,"repetition":null}
+        }}"#,
+    );
+    let warnings = collect_warnings(&path);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("not in TOP_LEVEL_RULES") && w.contains("WidgetStmt")),
+        "expected WidgetStmt asymmetry warning, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn load_warns_on_top_level_rule_missing_from_grammar() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // `CreateStmt` is in TOP_LEVEL_RULES and defined; the rest of
+    // TOP_LEVEL_RULES (e.g. `IndexStmt`, `ViewStmt`, `AlterTableStmt`) are
+    // in TOP_LEVEL_RULES but absent from this synthetic grammar — the
+    // warning should enumerate them.
+    let path = write_synth_grammar(
+        &dir,
+        r#"{"root":"CreateStmt","rules":{
+            "CreateStmt":{"choices":[[{"text":"x","token_type":"Terminal"}]],"optional":false,"repetition":null}
+        }}"#,
+    );
+    let warnings = collect_warnings(&path);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("not defined in grammar") && w.contains("IndexStmt")),
+        "expected `IndexStmt` in not-defined-in-grammar warning, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn load_warns_on_referenced_but_undefined_nonterminal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_synth_grammar(
+        &dir,
+        r#"{"root":"CreateStmt","rules":{
+            "CreateStmt":{"choices":[[{"text":"Missing","token_type":"NonTerminal"}]],"optional":false,"repetition":null}
+        }}"#,
+    );
+    let warnings = collect_warnings(&path);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("referenced but not defined") && w.contains("Missing")),
+        "expected undefined-nonterm warning for `Missing`, got: {warnings:?}"
+    );
+}
+
+/// Targeted regression for the keyword-demotion path. A breakage that
+/// disabled demotion entirely would surface here as a missing demotion for
+/// `id`, before any golden case starts failing in confusing ways.
+///
+/// Why `id`: sqlparser-dsql classifies `id` as `Keyword::ID`, but DSQL's
+/// grammar doesn't list `ID` as a Terminal anywhere, so it must be demoted
+/// to `IDENT` for the recognizer to accept normal identifier positions.
+#[test]
+fn keyword_demotion_path_demotes_id() {
+    let g = Grammar::load(&grammar_path()).unwrap();
+    let (accepts, demotions) = g
+        .accepts_with_demotions("CREATE TABLE t (id INT)")
+        .expect("accept ok");
+    assert!(accepts, "demotion broken: CREATE TABLE t (id INT) rejected");
+    assert!(
+        demotions.iter().any(|k| k == "ID"),
+        "expected `ID` in demotions, got {demotions:?}"
+    );
+}
+
 /// Catches a grammar refresh that introduces a new CharClass we haven't
 /// taught the tokenizer to emit — the silent-noise failure mode this tool
 /// is most exposed to.
@@ -72,18 +165,21 @@ fn golden_reject_cases() {
     }
 }
 
-/// Empty / whitespace / comment-only input produces zero terminals; the
-/// contract is that `accepts` returns `Ok(false)` (not `Err`, not panic).
+/// Empty / whitespace / comment-only input has zero terminals after the
+/// Skip filter; the contract is that `accepts` returns `Err`, not `Ok(false)`.
+/// Routing to `parse-error` instead of `lint-too-lenient` makes a future
+/// tokenizer regression that misclassifies everything as `Skip` visible.
 #[test]
-fn empty_input_returns_ok_false() {
+fn empty_input_returns_err() {
     let g = Grammar::load(&grammar_path()).unwrap();
     for sql in ["", "   ", "\n\n", ";", "-- only a comment\n"] {
-        let v = g
+        let err = g
             .accepts(sql)
-            .unwrap_or_else(|e| panic!("oracle errored on empty-ish input {sql:?}: {e}"));
+            .err()
+            .unwrap_or_else(|| panic!("expected Err on empty-ish input {sql:?}"));
         assert!(
-            !v,
-            "expected reject for empty-ish input {sql:?}, got accept"
+            err.contains("no terminals"),
+            "unexpected error on {sql:?}: {err}"
         );
     }
 }

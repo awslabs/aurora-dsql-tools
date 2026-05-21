@@ -109,54 +109,35 @@ impl GrammarRecognizer {
                 .collect()
         };
 
-        // Desugar each production to plain BNF. Repetition becomes
-        // left-recursion plus a base case; optional/zero-or-more adds an
-        // empty alternative.
+        // Desugar each production to plain BNF. The base alternative
+        // `A → choice` is always emitted; `prefix` controls the optional
+        // recursive alternative:
+        //   no repetition  → []           (no recursive alt)
+        //   `*`/`+`        → [name]       (also emits A → A choice)
+        //   sep-separated  → [name, sep]  (also emits A → A sep choice)
+        // ε is added only when `optional` is set. Repetition with
+        // `optional: false` is therefore one-or-more (matching upstream
+        // grammar rules with `_list` repetition shape); ε would change that
+        // to zero-or-more.
         for (name, prod) in &grammar.rules {
-            match (&prod.repetition, prod.optional) {
-                (None, false) => {
-                    for choice in &prod.choices {
-                        let rhs = to_rhs_strings(choice);
-                        let refs: Vec<&str> = rhs.iter().map(|s| s.as_str()).collect();
-                        b.rule_try(name, &refs);
-                    }
+            let prefix: Vec<String> = match &prod.repetition {
+                None => vec![],
+                Some(sep) if sep.is_empty() => vec![name.clone()],
+                Some(sep) => vec![name.clone(), sep.clone()],
+            };
+            for choice in &prod.choices {
+                let rhs = to_rhs_strings(choice);
+                let refs: Vec<&str> = rhs.iter().map(|s| s.as_str()).collect();
+                b.rule_try(name, &refs);
+                if !prefix.is_empty() {
+                    let mut rec = prefix.clone();
+                    rec.extend(rhs.iter().cloned());
+                    let rec_refs: Vec<&str> = rec.iter().map(|s| s.as_str()).collect();
+                    b.rule_try(name, &rec_refs);
                 }
-                (None, true) => {
-                    for choice in &prod.choices {
-                        let rhs = to_rhs_strings(choice);
-                        let refs: Vec<&str> = rhs.iter().map(|s| s.as_str()).collect();
-                        b.rule_try(name, &refs);
-                    }
-                    b.rule_try(name, &[]);
-                }
-                (Some(sep), opt) if sep.is_empty() => {
-                    for choice in &prod.choices {
-                        let rhs = to_rhs_strings(choice);
-                        let mut rec = vec![name.clone()];
-                        rec.extend(rhs.iter().cloned());
-                        let rec_refs: Vec<&str> = rec.iter().map(|s| s.as_str()).collect();
-                        b.rule_try(name, &rec_refs);
-                        let refs: Vec<&str> = rhs.iter().map(|s| s.as_str()).collect();
-                        b.rule_try(name, &refs);
-                    }
-                    if opt {
-                        b.rule_try(name, &[]);
-                    }
-                }
-                (Some(sep), opt) => {
-                    for choice in &prod.choices {
-                        let rhs = to_rhs_strings(choice);
-                        let mut rec = vec![name.clone(), sep.clone()];
-                        rec.extend(rhs.iter().cloned());
-                        let rec_refs: Vec<&str> = rec.iter().map(|s| s.as_str()).collect();
-                        b.rule_try(name, &rec_refs);
-                        let refs: Vec<&str> = rhs.iter().map(|s| s.as_str()).collect();
-                        b.rule_try(name, &refs);
-                    }
-                    if opt {
-                        b.rule_try(name, &[]);
-                    }
-                }
+            }
+            if prod.optional {
+                b.rule_try(name, &[]);
             }
         }
 
