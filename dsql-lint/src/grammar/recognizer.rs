@@ -36,7 +36,11 @@ pub struct GrammarRecognizer {
 }
 
 impl GrammarRecognizer {
-    pub fn build(grammar: &GrammarFile, root: &str) -> Result<Self, String> {
+    pub fn build(
+        grammar: &GrammarFile,
+        root: &str,
+        warn: &mut dyn FnMut(&str),
+    ) -> Result<Self, String> {
         if !grammar.rules.contains_key(root) {
             return Err(format!("root rule '{root}' not defined in grammar"));
         }
@@ -66,6 +70,11 @@ impl GrammarRecognizer {
                 }
             }
         }
+        // Per-root warnings are intentionally absent: the undefined-nonterm
+        // set is a grammar-wide property; `Grammar::load` warns once.
+        // The `warn` parameter is kept on the API so future per-root
+        // warnings can plug in here without ripple changes.
+        let _ = &warn;
         // Separators must never collide with a rule name, since the
         // "rule wins over terminal" dedup below would silently drop the
         // separator's predicate and the separator name would resolve to
@@ -109,54 +118,32 @@ impl GrammarRecognizer {
                 .collect()
         };
 
-        // Desugar each production to plain BNF. Repetition becomes
-        // left-recursion plus a base case; optional/zero-or-more adds an
-        // empty alternative.
+        // Desugar each production to plain BNF. The `prefix` controls shape:
+        //   no repetition  → prefix = []          (no recursive arm)
+        //   `*`/`+`        → prefix = [name]      (A → A choice)
+        //   sep-separated  → prefix = [name, sep] (A → A sep choice)
+        // A → ε is added only when the production may match empty:
+        // `optional` lists ε explicitly; repetition without `optional` is
+        // one-or-more, so we don't add ε for it.
         for (name, prod) in &grammar.rules {
-            match (&prod.repetition, prod.optional) {
-                (None, false) => {
-                    for choice in &prod.choices {
-                        let rhs = to_rhs_strings(choice);
-                        let refs: Vec<&str> = rhs.iter().map(|s| s.as_str()).collect();
-                        b.rule_try(name, &refs);
-                    }
+            let prefix: Vec<String> = match &prod.repetition {
+                None => vec![],
+                Some(sep) if sep.is_empty() => vec![name.clone()],
+                Some(sep) => vec![name.clone(), sep.clone()],
+            };
+            for choice in &prod.choices {
+                let rhs = to_rhs_strings(choice);
+                let refs: Vec<&str> = rhs.iter().map(|s| s.as_str()).collect();
+                b.rule_try(name, &refs);
+                if !prefix.is_empty() {
+                    let mut rec = prefix.clone();
+                    rec.extend(rhs.iter().cloned());
+                    let rec_refs: Vec<&str> = rec.iter().map(|s| s.as_str()).collect();
+                    b.rule_try(name, &rec_refs);
                 }
-                (None, true) => {
-                    for choice in &prod.choices {
-                        let rhs = to_rhs_strings(choice);
-                        let refs: Vec<&str> = rhs.iter().map(|s| s.as_str()).collect();
-                        b.rule_try(name, &refs);
-                    }
-                    b.rule_try(name, &[]);
-                }
-                (Some(sep), opt) if sep.is_empty() => {
-                    for choice in &prod.choices {
-                        let rhs = to_rhs_strings(choice);
-                        let mut rec = vec![name.clone()];
-                        rec.extend(rhs.iter().cloned());
-                        let rec_refs: Vec<&str> = rec.iter().map(|s| s.as_str()).collect();
-                        b.rule_try(name, &rec_refs);
-                        let refs: Vec<&str> = rhs.iter().map(|s| s.as_str()).collect();
-                        b.rule_try(name, &refs);
-                    }
-                    if opt {
-                        b.rule_try(name, &[]);
-                    }
-                }
-                (Some(sep), opt) => {
-                    for choice in &prod.choices {
-                        let rhs = to_rhs_strings(choice);
-                        let mut rec = vec![name.clone(), sep.clone()];
-                        rec.extend(rhs.iter().cloned());
-                        let rec_refs: Vec<&str> = rec.iter().map(|s| s.as_str()).collect();
-                        b.rule_try(name, &rec_refs);
-                        let refs: Vec<&str> = rhs.iter().map(|s| s.as_str()).collect();
-                        b.rule_try(name, &refs);
-                    }
-                    if opt {
-                        b.rule_try(name, &[]);
-                    }
-                }
+            }
+            if prod.optional {
+                b.rule_try(name, &[]);
             }
         }
 
@@ -209,6 +196,7 @@ mod tests {
                 root: root.to_string(),
             },
             root,
+            &mut |_| {},
         )
         .unwrap()
     }
@@ -228,7 +216,7 @@ mod tests {
             rules: map,
             root: "Missing".to_string(),
         };
-        let err = GrammarRecognizer::build(&file, "Missing")
+        let err = GrammarRecognizer::build(&file, "Missing", &mut |_| {})
             .err()
             .expect("build should fail for undefined root");
         assert!(err.contains("'Missing'"), "unexpected error: {err}");
@@ -257,7 +245,7 @@ mod tests {
             rules: map,
             root: "List".to_string(),
         };
-        let err = GrammarRecognizer::build(&file, "List")
+        let err = GrammarRecognizer::build(&file, "List", &mut |_| {})
             .err()
             .expect("build should fail when separator collides with rule name");
         assert!(err.contains("'AND'"), "unexpected error: {err}");

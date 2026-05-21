@@ -220,4 +220,26 @@ mod tests {
         assert_eq!(first_real_terminal("::"), Terminal::Punct("::"));
         assert_eq!(first_real_terminal(">="), Terminal::Punct(">="));
     }
+
+    #[test]
+    fn byte_string_is_bconst() {
+        assert_eq!(first_real_terminal("B'01'"), Terminal::CharClass("BCONST"));
+    }
+
+    #[test]
+    fn hex_string_is_xconst() {
+        assert_eq!(first_real_terminal("X'7f'"), Terminal::CharClass("XCONST"));
+    }
+
+    /// Catch-all `Op` arm: every operator the grammar's `Quoted` set
+    /// doesn't list collapses to `Op`. A refactor that accidentally re-
+    /// routed one of these (e.g. `||` → `SCONST`) would still pass the
+    /// CharClass-side exhaustiveness test, so test the route directly.
+    #[test]
+    fn unlisted_operators_are_op() {
+        assert_eq!(first_real_terminal("||"), Terminal::CharClass("Op"));
+        assert_eq!(first_real_terminal("~"), Terminal::CharClass("Op"));
+        assert_eq!(first_real_terminal("@"), Terminal::CharClass("Op"));
+        assert_eq!(first_real_terminal("?"), Terminal::CharClass("Op"));
+    }
 }

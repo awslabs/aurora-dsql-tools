@@ -75,6 +75,8 @@ fn main() {
     }
 
     let mut totals = Totals::default();
+    let mut demotions: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
     for file in &corpus_files {
         let rel = file
             .strip_prefix(&corpus_root)
@@ -116,12 +118,18 @@ fn main() {
                 .rev()
                 .find_map(|(at_line, l)| (*at_line <= stmt.line).then(|| l.clone()));
 
-            let (cat, grammar_error) = match grammar.accepts(&stmt.raw) {
+            let (cat, grammar_error) = match grammar.accepts_with_demotions(&stmt.raw) {
                 Err(e) => (Category::ParseError, Some(e)),
-                Ok(true) if lint_passes => (Category::Agreement, None),
-                Ok(false) if !lint_passes => (Category::Agreement, None),
-                Ok(true) => (Category::LintTooStrict, None),
-                Ok(false) => (Category::LintTooLenient, None),
+                Ok((accepts, stmt_demotions)) => {
+                    for kw in stmt_demotions {
+                        *demotions.entry(kw).or_insert(0) += 1;
+                    }
+                    match (accepts, lint_passes) {
+                        (true, true) | (false, false) => (Category::Agreement, None),
+                        (true, false) => (Category::LintTooStrict, None),
+                        (false, true) => (Category::LintTooLenient, None),
+                    }
+                }
             };
             bump(cat, &mut summary, &mut totals);
             if !matches!(cat, Category::Agreement) {
@@ -162,6 +170,26 @@ fn main() {
         totals.file_tokenize_errors,
         totals.agreement,
     );
+
+    // Keyword demotions: each entry is a sqlparser keyword the grammar
+    // doesn't list, demoted to IDENT before recognition. A high count, or a
+    // newly-appearing keyword after a refresh, suggests the grammar dropped
+    // a keyword it previously listed (silent inflater of `lint-too-lenient`).
+    if !demotions.is_empty() {
+        let mut sorted: Vec<(&String, &usize)> = demotions.iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        let head: Vec<String> = sorted
+            .iter()
+            .take(10)
+            .map(|(k, n)| format!("{k}({n})"))
+            .collect();
+        println!(
+            "Keyword demotions to IDENT (top {}/{}): {}",
+            head.len(),
+            sorted.len(),
+            head.join(", "),
+        );
+    }
 
     // Non-zero exit on file-level failures keeps CI honest if a future
     // pipeline runs grammar-diff against the corpus.
@@ -257,6 +285,11 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     }
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
+        // Skip symlinks: guards against cycles in case a corpus refresh
+        // introduces one, and avoids reading targets outside the corpus.
+        if entry.file_type()?.is_symlink() {
+            continue;
+        }
         let path = entry.path();
         if path.is_dir() {
             walk(&path, out)?;

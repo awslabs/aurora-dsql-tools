@@ -8,6 +8,54 @@ fn grammar_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammar/dsql_grammar.json")
 }
 
+/// `Grammar::load` warns once per asymmetry between `TOP_LEVEL_RULES` and
+/// the grammar JSON, plus once for non-terminals referenced but not
+/// defined. Catches silent drift on grammar refresh.
+#[test]
+fn load_warns_on_real_grammar_asymmetries() {
+    let mut warnings: Vec<String> = Vec::new();
+    let _ = dsql_lint::grammar::Grammar::load_with_warnings(&grammar_path(), |w| {
+        warnings.push(w.to_string())
+    })
+    .unwrap();
+    // Today's grammar has 6 *Stmt rules outside TOP_LEVEL_RULES (e.g.
+    // PreparableStmt) plus 3 referenced-but-undefined non-terminals. If a
+    // future refresh resolves these, the test should be updated to assert
+    // *no* warnings — that would be the cleaner state.
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("not in TOP_LEVEL_RULES")),
+        "expected `*Stmt` asymmetry warning, got: {warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("referenced but not defined")),
+        "expected undefined-nonterm warning, got: {warnings:?}"
+    );
+}
+
+/// Targeted regression for the keyword-demotion path. A breakage that
+/// disabled demotion entirely would surface here as a missing demotion for
+/// `id`, before any golden case starts failing in confusing ways.
+///
+/// Why `id`: sqlparser-dsql classifies `id` as `Keyword::ID`, but DSQL's
+/// grammar doesn't list `ID` as a Terminal anywhere, so it must be demoted
+/// to `IDENT` for the recognizer to accept normal identifier positions.
+#[test]
+fn keyword_demotion_path_demotes_id() {
+    let g = Grammar::load(&grammar_path()).unwrap();
+    let (accepts, demotions) = g
+        .accepts_with_demotions("CREATE TABLE t (id INT)")
+        .expect("accept ok");
+    assert!(accepts, "demotion broken: CREATE TABLE t (id INT) rejected");
+    assert!(
+        demotions.iter().any(|k| k == "ID"),
+        "expected `ID` in demotions, got {demotions:?}"
+    );
+}
+
 /// Catches a grammar refresh that introduces a new CharClass we haven't
 /// taught the tokenizer to emit — the silent-noise failure mode this tool
 /// is most exposed to.
@@ -72,18 +120,21 @@ fn golden_reject_cases() {
     }
 }
 
-/// Empty / whitespace / comment-only input produces zero terminals; the
-/// contract is that `accepts` returns `Ok(false)` (not `Err`, not panic).
+/// Empty / whitespace / comment-only input has zero terminals after the
+/// Skip filter; the contract is that `accepts` returns `Err`, not `Ok(false)`.
+/// Routing to `parse-error` instead of `lint-too-lenient` makes a future
+/// tokenizer regression that misclassifies everything as `Skip` visible.
 #[test]
-fn empty_input_returns_ok_false() {
+fn empty_input_returns_err() {
     let g = Grammar::load(&grammar_path()).unwrap();
     for sql in ["", "   ", "\n\n", ";", "-- only a comment\n"] {
-        let v = g
+        let err = g
             .accepts(sql)
-            .unwrap_or_else(|e| panic!("oracle errored on empty-ish input {sql:?}: {e}"));
+            .err()
+            .unwrap_or_else(|| panic!("expected Err on empty-ish input {sql:?}"));
         assert!(
-            !v,
-            "expected reject for empty-ish input {sql:?}, got accept"
+            err.contains("no terminals"),
+            "unexpected error on {sql:?}: {err}"
         );
     }
 }
