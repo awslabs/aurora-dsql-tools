@@ -172,9 +172,10 @@ fn main() {
     );
 
     // Keyword demotions: each entry is a sqlparser keyword the grammar
-    // doesn't list, demoted to IDENT before recognition. A newly-appearing
-    // or rising keyword after a refresh suggests the grammar dropped a
-    // keyword it previously listed (silent inflater of `lint-too-lenient`).
+    // doesn't list, demoted to IDENT before recognition. A high or new
+    // count after a refresh suggests the grammar dropped a keyword it
+    // previously listed (silent inflater of `lint-too-lenient`). Wording
+    // matches the README's `Refreshing the grammar` section.
     if !demotions.is_empty() {
         let mut sorted: Vec<(&String, &usize)> = demotions.iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));

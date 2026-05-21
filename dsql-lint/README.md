@@ -251,10 +251,16 @@ To refresh after the grammar changes:
 3. Before triaging, check the load-time warnings (stderr) and the
    `Keyword demotions to IDENT` line at the bottom of the diff. Both
    surface silent drift that masquerades as a flood of `lint-too-lenient`:
-   - **Load-time warnings** — `TOP_LEVEL_RULES` entries missing from the
-     grammar, or new `*Stmt` rules in the grammar missing from
-     `TOP_LEVEL_RULES`, mean a whole statement class is being routed to
-     "rejected." Update `src/grammar/mod.rs::TOP_LEVEL_RULES`.
+   - **Load-time warnings** — three categories, all printed once on stderr
+     by `Grammar::load`:
+     - `TOP_LEVEL_RULES` entries missing from the grammar, or new `*Stmt`
+       rules in the grammar missing from `TOP_LEVEL_RULES`. Either side
+       means a whole statement class is being routed to "rejected." Update
+       `src/grammar/mod.rs::TOP_LEVEL_RULES`.
+     - Non-terminals referenced in any rule but not defined as one. Each
+       becomes a non-derivable sink in the recognizer; derivations through
+       it silently produce `lint-too-lenient`. Add the missing rule or
+       remove the dangling reference.
    - **Keyword demotions** — counts of sqlparser keywords the grammar
      doesn't list (demoted to `IDENT` for recognition). A high or new
      count after a refresh suggests the grammar dropped a keyword.
