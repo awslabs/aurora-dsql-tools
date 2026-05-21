@@ -36,11 +36,7 @@ pub struct GrammarRecognizer {
 }
 
 impl GrammarRecognizer {
-    pub fn build(
-        grammar: &GrammarFile,
-        root: &str,
-        warn: &mut dyn FnMut(&str),
-    ) -> Result<Self, String> {
+    pub fn build(grammar: &GrammarFile, root: &str) -> Result<Self, String> {
         if !grammar.rules.contains_key(root) {
             return Err(format!("root rule '{root}' not defined in grammar"));
         }
@@ -70,11 +66,6 @@ impl GrammarRecognizer {
                 }
             }
         }
-        // Per-root warnings are intentionally absent: the undefined-nonterm
-        // set is a grammar-wide property; `Grammar::load` warns once.
-        // The `warn` parameter is kept on the API so future per-root
-        // warnings can plug in here without ripple changes.
-        let _ = &warn;
         // Separators must never collide with a rule name, since the
         // "rule wins over terminal" dedup below would silently drop the
         // separator's predicate and the separator name would resolve to
@@ -118,13 +109,14 @@ impl GrammarRecognizer {
                 .collect()
         };
 
-        // Desugar each production to plain BNF. The `prefix` controls shape:
-        //   no repetition  → prefix = []          (no recursive arm)
-        //   `*`/`+`        → prefix = [name]      (A → A choice)
-        //   sep-separated  → prefix = [name, sep] (A → A sep choice)
-        // A → ε is added only when the production may match empty:
-        // `optional` lists ε explicitly; repetition without `optional` is
-        // one-or-more, so we don't add ε for it.
+        // Desugar each production to plain BNF. `prefix` controls the
+        // recursive arm's shape:
+        //   no repetition  → []           (no recursive arm)
+        //   `*`/`+`        → [name]       (A → A choice)
+        //   sep-separated  → [name, sep]  (A → A sep choice)
+        // ε is added only when `optional` is set. Repetition with
+        // `optional: false` is one-or-more (matching the upstream grammar's
+        // `*_list` rules); ε would change that to zero-or-more.
         for (name, prod) in &grammar.rules {
             let prefix: Vec<String> = match &prod.repetition {
                 None => vec![],
@@ -196,7 +188,6 @@ mod tests {
                 root: root.to_string(),
             },
             root,
-            &mut |_| {},
         )
         .unwrap()
     }
@@ -216,7 +207,7 @@ mod tests {
             rules: map,
             root: "Missing".to_string(),
         };
-        let err = GrammarRecognizer::build(&file, "Missing", &mut |_| {})
+        let err = GrammarRecognizer::build(&file, "Missing")
             .err()
             .expect("build should fail for undefined root");
         assert!(err.contains("'Missing'"), "unexpected error: {err}");
@@ -245,7 +236,7 @@ mod tests {
             rules: map,
             root: "List".to_string(),
         };
-        let err = GrammarRecognizer::build(&file, "List", &mut |_| {})
+        let err = GrammarRecognizer::build(&file, "List")
             .err()
             .expect("build should fail when separator collides with rule name");
         assert!(err.contains("'AND'"), "unexpected error: {err}");

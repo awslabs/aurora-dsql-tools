@@ -8,31 +8,54 @@ fn grammar_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammar/dsql_grammar.json")
 }
 
-/// `Grammar::load` warns once per asymmetry between `TOP_LEVEL_RULES` and
-/// the grammar JSON, plus once for non-terminals referenced but not
-/// defined. Catches silent drift on grammar refresh.
-#[test]
-fn load_warns_on_real_grammar_asymmetries() {
+fn write_synth_grammar(dir: &tempfile::TempDir, json: &str) -> std::path::PathBuf {
+    let path = dir.path().join("synth.json");
+    std::fs::write(&path, json).expect("write synth grammar");
+    path
+}
+
+fn collect_warnings(path: &std::path::Path) -> Vec<String> {
     let mut warnings: Vec<String> = Vec::new();
-    let _ = dsql_lint::grammar::Grammar::load_with_warnings(&grammar_path(), |w| {
-        warnings.push(w.to_string())
-    })
-    .unwrap();
-    // Today's grammar has 6 *Stmt rules outside TOP_LEVEL_RULES (e.g.
-    // PreparableStmt) plus 3 referenced-but-undefined non-terminals. If a
-    // future refresh resolves these, the test should be updated to assert
-    // *no* warnings — that would be the cleaner state.
-    assert!(
-        warnings
-            .iter()
-            .any(|w| w.contains("not in TOP_LEVEL_RULES")),
-        "expected `*Stmt` asymmetry warning, got: {warnings:?}"
+    let _ = dsql_lint::grammar::Grammar::load_with_warnings(path, |w| warnings.push(w.to_string()))
+        .unwrap();
+    warnings
+}
+
+#[test]
+fn load_warns_on_stmt_rule_outside_top_level_rules() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // `CreateStmt` is in TOP_LEVEL_RULES; `WidgetStmt` is not.
+    let path = write_synth_grammar(
+        &dir,
+        r#"{"root":"CreateStmt","rules":{
+            "CreateStmt":{"choices":[[{"text":"x","token_type":"Terminal"}]],"optional":false,"repetition":null},
+            "WidgetStmt":{"choices":[[{"text":"y","token_type":"Terminal"}]],"optional":false,"repetition":null}
+        }}"#,
     );
+    let warnings = collect_warnings(&path);
     assert!(
         warnings
             .iter()
-            .any(|w| w.contains("referenced but not defined")),
-        "expected undefined-nonterm warning, got: {warnings:?}"
+            .any(|w| w.contains("not in TOP_LEVEL_RULES") && w.contains("WidgetStmt")),
+        "expected WidgetStmt asymmetry warning, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn load_warns_on_referenced_but_undefined_nonterminal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_synth_grammar(
+        &dir,
+        r#"{"root":"CreateStmt","rules":{
+            "CreateStmt":{"choices":[[{"text":"Missing","token_type":"NonTerminal"}]],"optional":false,"repetition":null}
+        }}"#,
+    );
+    let warnings = collect_warnings(&path);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("referenced but not defined") && w.contains("Missing")),
+        "expected undefined-nonterm warning for `Missing`, got: {warnings:?}"
     );
 }
 

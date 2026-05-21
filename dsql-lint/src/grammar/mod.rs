@@ -67,8 +67,8 @@ impl Grammar {
         Self::load_with_warnings(path, |line| eprintln!("{line}"))
     }
 
-    /// `warn` receives one line per warning; `Grammar::load` routes them to
-    /// stderr. Tests inject a sink to assert the warnings fire.
+    /// Like `load` but routes warnings to a caller-supplied sink instead of
+    /// stderr. Useful when callers want to capture or suppress them.
     pub fn load_with_warnings(path: &Path, mut warn: impl FnMut(&str)) -> Result<Self, String> {
         let raw = std::fs::read_to_string(path)
             .map_err(|e| format!("read grammar {}: {e}", path.display()))?;
@@ -133,7 +133,7 @@ impl Grammar {
             if !file.rules.contains_key(root) {
                 continue;
             }
-            let r = GrammarRecognizer::build(&file, root, &mut warn)?;
+            let r = GrammarRecognizer::build(&file, root)?;
             recognizers.push((root.to_string(), r));
         }
         if recognizers.is_empty() {
