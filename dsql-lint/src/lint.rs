@@ -107,6 +107,7 @@ pub enum LintRule {
     UnsupportedDropTrigger,
     UnsupportedDropPolicy,
     MultiDdlTransaction,
+    MixedDdlDmlTransaction,
     ParseError,
 }
 
@@ -243,6 +244,16 @@ fn is_ddl(stmt: &Statement) -> bool {
     )
 }
 
+fn is_dml(stmt: &Statement) -> bool {
+    matches!(
+        stmt,
+        Statement::Insert(_)
+            | Statement::Update { .. }
+            | Statement::Delete(_)
+            | Statement::Merge { .. }
+    )
+}
+
 fn is_begin(stmt: &Statement) -> bool {
     matches!(stmt, Statement::StartTransaction { .. })
 }
@@ -273,14 +284,35 @@ fn multi_ddl_txn_diagnostic(
     }
 }
 
-/// Cross-statement pass: detect transaction blocks (BEGIN … COMMIT) with more
-/// than one DDL statement. DSQL allows only one DDL per transaction.
+fn mixed_ddl_dml_txn_diagnostic(
+    line: usize,
+    ddl_count: usize,
+    dml_count: usize,
+    begin_text: &str,
+    fix_result: FixResult,
+) -> Diagnostic {
+    Diagnostic {
+        rule: LintRule::MixedDdlDmlTransaction,
+        line,
+        statement: begin_text.to_string(),
+        message: format!(
+            "Transaction mixes DDL and DML ({ddl_count} DDL, {dml_count} DML). DSQL does not allow DDL and DML in the same transaction."
+        ),
+        suggestion: "Split into separate transactions so each BEGIN/COMMIT block contains either DDL or DML, not both.".to_string(),
+        fix_result,
+    }
+}
+
+/// Cross-statement pass: detect transaction blocks (BEGIN … COMMIT) that
+/// violate DSQL's single-transaction constraints — either >1 DDL statement,
+/// or any mix of DDL and DML.
 fn check_ddl_transactions(stmts: &[(usize, String)], diagnostics: &mut Vec<Diagnostic>) {
     let dialect = PostgreSqlDialect {};
     let mut in_txn = false;
     let mut txn_begin_line: usize = 0;
     let mut txn_begin_text = String::new();
     let mut ddl_count: usize = 0;
+    let mut dml_count: usize = 0;
 
     for (line_num, stmt_text) in stmts {
         let parsed = match Parser::parse_sql(&dialect, stmt_text.trim()) {
@@ -308,25 +340,43 @@ fn check_ddl_transactions(stmts: &[(usize, String)], diagnostics: &mut Vec<Diagn
                 txn_begin_line = *line_num;
                 txn_begin_text = stmt_text.to_string();
                 ddl_count = 0;
+                dml_count = 0;
             } else if is_txn_end(stmt) {
-                if in_txn && ddl_count > 1 && is_commit(stmt) {
-                    diagnostics.push(multi_ddl_txn_diagnostic(
-                        txn_begin_line,
-                        ddl_count,
-                        &txn_begin_text,
-                        FixResult::Unfixable,
-                    ));
+                if in_txn && is_commit(stmt) {
+                    if ddl_count > 1 {
+                        diagnostics.push(multi_ddl_txn_diagnostic(
+                            txn_begin_line,
+                            ddl_count,
+                            &txn_begin_text,
+                            FixResult::Unfixable,
+                        ));
+                    }
+                    if ddl_count >= 1 && dml_count >= 1 {
+                        diagnostics.push(mixed_ddl_dml_txn_diagnostic(
+                            txn_begin_line,
+                            ddl_count,
+                            dml_count,
+                            &txn_begin_text,
+                            FixResult::Unfixable,
+                        ));
+                    }
                 }
                 in_txn = false;
-            } else if in_txn && is_ddl(stmt) {
-                ddl_count += 1;
+            } else if in_txn {
+                if is_ddl(stmt) {
+                    ddl_count += 1;
+                } else if is_dml(stmt) {
+                    dml_count += 1;
+                }
             }
         }
     }
 }
 
-/// Fix pass: split transaction blocks containing multiple DDL statements so
-/// each DDL gets its own BEGIN/COMMIT wrapper.
+/// Fix pass: split transaction blocks that DSQL would reject — either >1
+/// DDL statement, or a mix of DDL and DML. Each DDL ends up in its own
+/// BEGIN/COMMIT wrapper; runs of non-DDL statements are bundled into their
+/// own block.
 fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<Diagnostic>) {
     let dialect = PostgreSqlDialect {};
 
@@ -348,6 +398,7 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
         let begin_idx = i;
         let begin_line = parts[begin_idx].0;
         let mut ddl_indices = Vec::new();
+        let mut dml_count = 0;
         let mut commit_idx = None;
 
         let mut nested_begin_indices = Vec::new();
@@ -379,6 +430,8 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
                 nested_begin_indices.push(j);
             } else if p.iter().any(is_ddl) {
                 ddl_indices.push(j);
+            } else if p.iter().any(is_dml) {
+                dml_count += 1;
             }
         }
 
@@ -390,12 +443,13 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
             }
         };
 
-        if ddl_indices.len() <= 1 {
+        let ddl_count = ddl_indices.len();
+        let needs_split = ddl_count > 1 || (ddl_count >= 1 && dml_count >= 1);
+        if !needs_split {
             i = commit_idx + 1;
             continue;
         }
 
-        let ddl_count = ddl_indices.len();
         let begin_text = parts[begin_idx].1.clone();
 
         let mut replacement: Vec<(usize, String)> = Vec::new();
@@ -432,14 +486,27 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
         let range_len = commit_idx - begin_idx + 1;
         parts.splice(begin_idx..begin_idx + range_len, replacement);
 
-        diagnostics.push(multi_ddl_txn_diagnostic(
-            begin_line,
-            ddl_count,
-            &begin_text,
-            FixResult::FixedWithWarning(
-                "Split multi-DDL transaction into individual BEGIN/COMMIT blocks".to_string(),
-            ),
-        ));
+        if ddl_count > 1 {
+            diagnostics.push(multi_ddl_txn_diagnostic(
+                begin_line,
+                ddl_count,
+                &begin_text,
+                FixResult::FixedWithWarning(
+                    "Split multi-DDL transaction into individual BEGIN/COMMIT blocks".to_string(),
+                ),
+            ));
+        }
+        if ddl_count >= 1 && dml_count >= 1 {
+            diagnostics.push(mixed_ddl_dml_txn_diagnostic(
+                begin_line,
+                ddl_count,
+                dml_count,
+                &begin_text,
+                FixResult::FixedWithWarning(
+                    "Split mixed DDL+DML transaction so each BEGIN/COMMIT block contains either DDL or DML, not both".to_string(),
+                ),
+            ));
+        }
 
         i = begin_idx + replacement_len;
     }

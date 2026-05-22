@@ -106,10 +106,14 @@ SELECT 1;
             d.line,
             matching.len(),
         );
-        // MultiDdlTransaction is intentionally cross-statement; everything
-        // else must reproduce on the isolated statement.
+        // MultiDdlTransaction and MixedDdlDmlTransaction are intentionally
+        // cross-statement; everything else must reproduce on the isolated
+        // statement.
         let single = lint_sql(&matching[0].raw);
-        let cross_stmt_rule = matches!(d.rule, dsql_lint::LintRule::MultiDdlTransaction);
+        let cross_stmt_rule = matches!(
+            d.rule,
+            dsql_lint::LintRule::MultiDdlTransaction | dsql_lint::LintRule::MixedDdlDmlTransaction
+        );
         if !cross_stmt_rule {
             assert!(
                 single.iter().any(|s| s.rule == d.rule),

@@ -458,6 +458,12 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
             "BEGIN;\nCREATE TABLE _r_a (id INT);\nCREATE TABLE _r_b (id INT);\nCOMMIT;",
             "DDL statements",
         ),
+        LintRule::MixedDdlDmlTransaction => fix_with(
+            "BEGIN;\nCREATE TABLE _r_a (id INT);\nINSERT INTO _r_a VALUES (1);\nCOMMIT;",
+            "DDL and DML",
+            "",
+            "DROP TABLE IF EXISTS _r_a;",
+        ),
 
         // ─── ALTER TABLE per-arm rules ────────────────────────────────────
         LintRule::AtUnsupportedDropColumn => {

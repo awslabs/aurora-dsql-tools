@@ -1,4 +1,4 @@
-use dsql_lint::{fix_sql, FixResult};
+use dsql_lint::{fix_sql, FixResult, LintRule};
 
 // ═══════════════════════════════════════════════════════════════════════
 // FIX TIER MATRIX
@@ -561,13 +561,40 @@ fn fix_ddl_with_dml_roundtrip_clean() {
     let sql = "BEGIN;\nCREATE TABLE a (id INT);\nINSERT INTO a VALUES (1);\nCREATE TABLE b (id INT);\nCOMMIT;";
     let result = fix_sql(sql);
     let re_lint = dsql_lint::lint_sql(&result.sql);
-    let ddl_txn_errors: Vec<_> = re_lint
+    let txn_errors: Vec<_> = re_lint
         .iter()
-        .filter(|d| d.message.contains("DDL statements"))
+        .filter(|d| {
+            matches!(
+                d.rule,
+                LintRule::MultiDdlTransaction | LintRule::MixedDdlDmlTransaction
+            )
+        })
         .collect();
     assert!(
-        ddl_txn_errors.is_empty(),
-        "Fixed DDL+DML output should have no DDL transaction errors:\n  Fixed SQL: {}\n  Errors: {ddl_txn_errors:?}",
+        txn_errors.is_empty(),
+        "Fixed DDL+DML output should have no DDL transaction errors:\n  Fixed SQL: {}\n  Errors: {txn_errors:?}",
+        result.sql
+    );
+}
+
+#[test]
+fn fix_single_ddl_plus_dml_in_txn_emits_diagnostic_and_splits() {
+    let sql = "BEGIN;\nCREATE TABLE z (id INT);\nINSERT INTO z VALUES (1);\nCOMMIT;";
+    let result = fix_sql(sql);
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.rule == LintRule::MixedDdlDmlTransaction),
+        "Single-DDL + DML in same txn should emit MixedDdlDmlTransaction: {:?}",
+        result.diagnostics
+    );
+    let re_lint = dsql_lint::lint_sql(&result.sql);
+    assert!(
+        !re_lint
+            .iter()
+            .any(|d| d.rule == LintRule::MixedDdlDmlTransaction),
+        "Fixed output should re-lint clean:\n  Fixed: {}\n  Re-lint: {re_lint:?}",
         result.sql
     );
 }
