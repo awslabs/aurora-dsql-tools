@@ -348,9 +348,9 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
     (
         "drop-materialized-view",
         "DROP MATERIALIZED VIEW mv;",
-        "MATERIALIZED VIEW",
+        "MATERIALIZED VIEW 'mv'",
     ),
-    ("drop-type", "DROP TYPE mood;", "DROP TYPE"),
+    ("drop-type", "DROP TYPE mood;", "DROP TYPE 'mood'"),
     ("drop-trigger", "DROP TRIGGER trg ON t;", "DROP TRIGGER"),
     ("drop-policy", "DROP POLICY p ON t;", "DROP POLICY"),
     // Identity column with non-BIGINT type
