@@ -790,6 +790,45 @@ fn fixture_sample_migration() {
 // This test validates that every non-None mapping actually produces
 // the expected diagnostic, catching stale or wrong SQL/message pairs.
 
+// Tripwire: every Unfixable arm in `check_unsupported_statements` must have
+// at least one entry in `UNFIXABLE_REJECTION_MATRIX`. Without this, a new arm
+// could ship without per-statement-variant cluster proof that DSQL rejects it.
+//
+// Mechanism: count distinct matrix entries that produce a Diagnostic with
+// `rule == LintRule::UnsupportedStatement` AND `fix_result == Unfixable`,
+// and require at least `UNSUPPORTED_STMT_ARM_COUNT` of them. When a maintainer
+// adds an arm, they bump the constant in src/rules/errors.rs; this test then
+// forces them to also add a matrix row.
+#[test]
+fn unsupported_statement_matrix_covers_all_arms() {
+    use dsql_lint::{FixResult, UNSUPPORTED_STMT_ARM_COUNT};
+    use std::collections::BTreeSet;
+
+    // Each Unfixable arm in `check_unsupported_statements` produces a unique
+    // message. Counting distinct messages — rather than matrix entries —
+    // means N matrix rows that all share an arm count as one, so a new arm
+    // actually requires a new matrix row to satisfy the bound.
+    let mut distinct_messages: BTreeSet<String> = BTreeSet::new();
+    for (_label, sql, _setup, _cleanup) in common::UNFIXABLE_REJECTION_MATRIX {
+        for d in lint_sql(sql) {
+            if d.rule == LintRule::UnsupportedStatement
+                && matches!(d.fix_result, FixResult::Unfixable)
+            {
+                distinct_messages.insert(d.message);
+            }
+        }
+    }
+    let covered = distinct_messages.len();
+    assert!(
+        covered >= UNSUPPORTED_STMT_ARM_COUNT,
+        "UNFIXABLE_REJECTION_MATRIX covers {covered} distinct UnsupportedStatement \
+         messages, but errors.rs declares {UNSUPPORTED_STMT_ARM_COUNT} arms. \
+         Add a matrix entry for any new arm in `check_unsupported_statements`, \
+         or update UNSUPPORTED_STMT_ARM_COUNT in src/rules/errors.rs.\n\
+         Currently covered: {distinct_messages:#?}"
+    );
+}
+
 #[test]
 fn lint_rule_mapping_produces_expected_diagnostics() {
     for rule in LintRule::iter() {

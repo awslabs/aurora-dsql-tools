@@ -424,6 +424,280 @@ pub fn cluster_test_for_rule(rule: LintRule) -> Option<(&'static str, &'static s
     }
 }
 
+/// SQL that the linter flags as `Unfixable` and that DSQL must reject when
+/// executed. Used by `unfixable_inputs_rejected_by_cluster` in
+/// `tests/dsql_cluster_test.rs` to enforce the project tenet:
+///
+///   "for each rule that errors on DSQL, CI validates it actually errors."
+///
+/// This is the per-statement-variant matrix for `LintRule::UnsupportedStatement`
+/// (which fans out across 30+ statement types behind a single rule variant)
+/// plus other unfixable rules that the per-rule iterator can't validate.
+///
+/// Each entry: `(label, sql, setup_sql, cleanup_sql)`.
+/// - `setup_sql` runs before the assertion (use empty `""` if not needed).
+/// - `cleanup_sql` runs after, even on success — tolerate missing objects.
+#[allow(dead_code)] // only used by tests/dsql_cluster_test.rs (cfg=dsql_cluster)
+pub const UNFIXABLE_REJECTION_MATRIX: &[(&str, &str, &str, &str)] = &[
+    // ─── CREATE statements ────────────────────────────────────────────────
+    (
+        "create-materialized-view",
+        "CREATE MATERIALIZED VIEW _rej_mv AS SELECT 1 AS id;",
+        "",
+        "DROP MATERIALIZED VIEW IF EXISTS _rej_mv;",
+    ),
+    (
+        "create-trigger",
+        "CREATE TRIGGER _rej_trg AFTER INSERT ON _clust_base FOR EACH ROW EXECUTE FUNCTION f();",
+        "",
+        "",
+    ),
+    (
+        "create-extension",
+        "CREATE EXTENSION IF NOT EXISTS pgcrypto;",
+        "",
+        "",
+    ),
+    (
+        "create-function-plpgsql",
+        "CREATE FUNCTION _rej_fn() RETURNS INT LANGUAGE plpgsql AS $$ BEGIN RETURN 1; END $$;",
+        "",
+        "DROP FUNCTION IF EXISTS _rej_fn();",
+    ),
+    (
+        "create-procedure",
+        "CREATE PROCEDURE _rej_proc() LANGUAGE SQL AS $$ SELECT 1 $$;",
+        "",
+        "DROP PROCEDURE IF EXISTS _rej_proc();",
+    ),
+    ("create-database", "CREATE DATABASE _rej_db;", "", ""),
+    (
+        "create-policy",
+        "CREATE POLICY _rej_pol ON _clust_base USING (true);",
+        "",
+        "",
+    ),
+    (
+        "create-type",
+        "CREATE TYPE _rej_mood AS ENUM ('happy', 'sad');",
+        "",
+        "DROP TYPE IF EXISTS _rej_mood;",
+    ),
+    (
+        "create-server",
+        "CREATE SERVER _rej_srv FOREIGN DATA WRAPPER _rej_fdw;",
+        "",
+        "",
+    ),
+    // ─── Savepoint family ─────────────────────────────────────────────────
+    ("savepoint", "SAVEPOINT sp1;", "", ""),
+    ("release-savepoint", "RELEASE SAVEPOINT sp1;", "", ""),
+    (
+        "rollback-to-savepoint",
+        "ROLLBACK TO SAVEPOINT sp1;",
+        "",
+        "",
+    ),
+    // ─── Cursors ──────────────────────────────────────────────────────────
+    (
+        "declare-cursor",
+        "DECLARE _rej_cur CURSOR FOR SELECT 1;",
+        "",
+        "",
+    ),
+    // ─── Maintenance / locking ────────────────────────────────────────────
+    ("vacuum", "VACUUM;", "", ""),
+    (
+        "lock-table",
+        "LOCK TABLE _clust_base IN ACCESS EXCLUSIVE MODE;",
+        "",
+        "",
+    ),
+    (
+        "copy-from-file",
+        "COPY _clust_base FROM '/tmp/x.csv';",
+        "",
+        "",
+    ),
+    // ─── ALTER INDEX ─────────────────────────────────────────────────────
+    (
+        "alter-index",
+        "ALTER INDEX _rej_idx RENAME TO _rej_idx2;",
+        "",
+        "",
+    ),
+    // ─── ALTER FUNCTION (Actions only — properties) ──────────────────────
+    (
+        "alter-function-immutable",
+        "ALTER FUNCTION _rej_fn() IMMUTABLE;",
+        "",
+        "",
+    ),
+    (
+        "alter-function-strict",
+        "ALTER FUNCTION _rej_fn() STRICT;",
+        "",
+        "",
+    ),
+    // ─── ALTER AGGREGATE (entire family) ─────────────────────────────────
+    (
+        "alter-aggregate-rename",
+        "ALTER AGGREGATE _rej_agg(integer) RENAME TO _rej_agg2;",
+        "",
+        "",
+    ),
+    (
+        "alter-aggregate-owner",
+        "ALTER AGGREGATE _rej_agg(*) OWNER TO admin;",
+        "",
+        "",
+    ),
+    (
+        "alter-aggregate-set-schema",
+        "ALTER AGGREGATE _rej_agg(integer) SET SCHEMA public;",
+        "",
+        "",
+    ),
+    // ─── ALTER POLICY ────────────────────────────────────────────────────
+    (
+        "alter-policy",
+        "ALTER POLICY _rej_pol ON _clust_base USING (true);",
+        "",
+        "",
+    ),
+    // ─── ALTER TYPE ──────────────────────────────────────────────────────
+    (
+        "alter-type-add-value",
+        "ALTER TYPE _rej_mood ADD VALUE 'neutral';",
+        "",
+        "",
+    ),
+    (
+        "alter-type-rename",
+        "ALTER TYPE _rej_mood RENAME TO _rej_feeling;",
+        "",
+        "",
+    ),
+    // ─── ALTER ROLE — only WithOptions / Set rejected ────────────────────
+    (
+        "alter-role-password",
+        "ALTER ROLE _rej_role WITH PASSWORD 'pw';",
+        "",
+        "",
+    ),
+    (
+        "alter-role-valid-until",
+        "ALTER ROLE _rej_role VALID UNTIL 'infinity';",
+        "",
+        "",
+    ),
+    (
+        "alter-role-superuser",
+        "ALTER ROLE _rej_role SUPERUSER;",
+        "",
+        "",
+    ),
+    (
+        "alter-role-createrole",
+        "ALTER ROLE _rej_role CREATEROLE;",
+        "",
+        "",
+    ),
+    (
+        "alter-role-set",
+        "ALTER ROLE _rej_role SET work_mem = '64MB';",
+        "",
+        "",
+    ),
+    // ─── ALTER USER ──────────────────────────────────────────────────────
+    (
+        "alter-user-password",
+        "ALTER USER _rej_user WITH PASSWORD 'pw';",
+        "",
+        "",
+    ),
+    // ─── DROP variants ───────────────────────────────────────────────────
+    (
+        "drop-materialized-view",
+        "DROP MATERIALIZED VIEW _rej_mv;",
+        "",
+        "",
+    ),
+    ("drop-type", "DROP TYPE _rej_t;", "", ""),
+    (
+        "drop-trigger",
+        "DROP TRIGGER _rej_trg ON _clust_base;",
+        "",
+        "",
+    ),
+    (
+        "drop-policy",
+        "DROP POLICY _rej_pol ON _clust_base;",
+        "",
+        "",
+    ),
+    // ─── Unfixable ALTER TABLE operations ────────────────────────────────
+    (
+        "alter-table-drop-column",
+        "ALTER TABLE _clust_base DROP COLUMN col;",
+        "",
+        "",
+    ),
+    (
+        "alter-table-alter-column-type",
+        "ALTER TABLE _clust_base ALTER COLUMN col TYPE TEXT;",
+        "",
+        "",
+    ),
+    (
+        "alter-table-set-not-null",
+        "ALTER TABLE _clust_base ALTER COLUMN col SET NOT NULL;",
+        "",
+        "",
+    ),
+    (
+        "alter-table-add-check",
+        "ALTER TABLE _clust_base ADD CONSTRAINT _rej_chk CHECK (id > 0);",
+        "",
+        "",
+    ),
+    (
+        "alter-table-add-unique",
+        "ALTER TABLE _clust_base ADD CONSTRAINT _rej_uq UNIQUE (id);",
+        "",
+        "",
+    ),
+    // ─── SET TRANSACTION ─────────────────────────────────────────────────
+    (
+        "set-transaction-isolation",
+        "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;",
+        "",
+        "",
+    ),
+    // ─── CREATE TABLE AS ─────────────────────────────────────────────────
+    (
+        "create-table-as",
+        "CREATE TABLE _rej_cta AS SELECT 1 AS id;",
+        "",
+        "DROP TABLE IF EXISTS _rej_cta;",
+    ),
+    // ─── TRUNCATE ────────────────────────────────────────────────────────
+    ("truncate", "TRUNCATE TABLE _clust_base;", "", ""),
+    // ─── CREATE INDEX with unsupported clauses ───────────────────────────
+    (
+        "index-expression",
+        "CREATE INDEX ASYNC _rej_idx ON _clust_base(lower(col::text));",
+        "",
+        "DROP INDEX IF EXISTS _rej_idx;",
+    ),
+    (
+        "index-partial",
+        "CREATE INDEX ASYNC _rej_idx_p ON _clust_base(col) WHERE col > 0;",
+        "",
+        "DROP INDEX IF EXISTS _rej_idx_p;",
+    ),
+];
+
 /// Multi-statement SQL that must lint clean AND execute on a real DSQL cluster.
 /// Shared between unit and cluster tests so both validate the same cases.
 ///

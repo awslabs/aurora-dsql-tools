@@ -761,6 +761,18 @@ fn check_create_sequence(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut 
     );
 }
 
+/// Number of distinct `Unfixable` arms in `check_unsupported_statements` below.
+/// The tripwire test `unsupported_statement_matrix_covers_all_arms` in
+/// `tests/integration_test.rs` requires `UNFIXABLE_REJECTION_MATRIX`
+/// (in `tests/common/mod.rs`) to cover every arm. When you add or remove an
+/// arm here, update this constant AND add/remove the matching matrix entry —
+/// the tripwire fails on drift either way.
+pub const UNSUPPORTED_STMT_ARM_COUNT: usize = 28;
+
+// MAINTAINER NOTE: every Unfixable arm below MUST have a corresponding entry in
+// `UNFIXABLE_REJECTION_MATRIX` (tests/common/mod.rs) so CI proves DSQL really
+// rejects it. See `UNSUPPORTED_STMT_ARM_COUNT` above for the enforcement
+// mechanism.
 fn check_unsupported_statements(
     stmt: &mut Statement,
     raw_sql: &str,
