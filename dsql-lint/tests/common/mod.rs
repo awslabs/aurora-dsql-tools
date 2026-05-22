@@ -119,6 +119,7 @@ pub const CLEAN_STATEMENTS: &[(&str, &str, &str, &str)] = &[
 /// Mirrored into `tests/grammar_corpus/in_tree/false_positive_cases.sql` for
 /// the grammar-diff tool. The mirror is kept in sync by
 /// `tests/grammar_corpus_mirror_test.rs`.
+#[allow(dead_code)]
 pub const FALSE_POSITIVE_CASES: &[(&str, &str)] = &[
     // Column named 'serial_number' should not trigger SERIAL rule
     (
@@ -222,6 +223,7 @@ pub const FALSE_POSITIVE_CASES: &[(&str, &str)] = &[
 /// SQL that must trigger a diagnostic whose `message` contains the second
 /// element. Mirror in `in_tree/error_cases.sql`; mirror guard in
 /// `grammar_corpus_mirror_test.rs`.
+#[allow(dead_code)]
 pub const ADDITIONAL_ERROR_CASES: &[(&str, &str)] = &[
     (
         "ALTER TABLE t ADD COLUMN status VARCHAR(50) DEFAULT 'pending';",
@@ -298,6 +300,7 @@ pub const ADDITIONAL_ERROR_CASES: &[(&str, &str)] = &[
 
 /// Additional false-positive guards. Mirror in
 /// `in_tree/false_positive_cases.sql` (concatenated with `FALSE_POSITIVE_CASES`).
+#[allow(dead_code)]
 pub const ADDITIONAL_FALSE_POSITIVES: &[(&str, &str)] = &[
     ("ALTER TABLE t ADD COLUMN status VARCHAR(50);", "ADD COLUMN"),
     // REPEATABLE READ should not error
