@@ -26,18 +26,13 @@ pub enum FixResult {
 ///
 /// When serialized (via the `serde` feature), each variant becomes its
 /// `snake_case` form — e.g. `SerialType` → `"serial_type"`. These strings
-/// are the on-wire identifier documented in the README rule-vocabulary
-/// table, so variant renames change the JSON output.
-///
-/// The enum is `#[non_exhaustive]`: new rules can be added in minor
-/// releases, and downstream consumers must include a `_` arm when matching.
+/// are the on-wire identifier; variant renames change the JSON output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize),
     serde(rename_all = "snake_case")
 )]
-#[non_exhaustive]
 pub enum LintRule {
     SerialType,
     JsonType,
@@ -63,8 +58,54 @@ pub enum LintRule {
     AddColumnConstraint,
     TransactionIsolation,
     SetTransaction,
-    UnsupportedAlterTableOp,
-    UnsupportedStatement,
+    // ALTER TABLE operations — one variant per rejected operation arm.
+    AtUnsupportedDropColumn,
+    AtUnsupportedAlterColumnSetType,
+    AtUnsupportedAlterColumnSetNotNull,
+    AtUnsupportedAlterColumnDropNotNull,
+    AtUnsupportedAlterColumnSetDefault,
+    AtUnsupportedAlterColumnDropDefault,
+    AtUnsupportedAlterColumnAddGenerated,
+    AtUnsupportedAddCheck,
+    AtUnsupportedAddUnique,
+    AtUnsupportedDropConstraint,
+    AtUnsupportedPrimaryKeyUsingIndex,
+    AtUnsupportedUniqueUsingIndex,
+    AtUnsupportedRowLevelSecurity,
+    AtUnsupportedTrigger,
+    AtUnsupportedReplicaIdentity,
+    AtUnsupportedValidateConstraint,
+    AtUnsupportedRewriteRule,
+    // Top-level statement rejections — one variant per arm.
+    UnsupportedTempView,
+    UnsupportedMaterializedView,
+    UnsupportedCreateTrigger,
+    UnsupportedCreateExtension,
+    UnsupportedCreateFunctionNonSql,
+    UnsupportedCreateProcedure,
+    UnsupportedCreateDatabase,
+    UnsupportedCreatePolicy,
+    UnsupportedSavepoint,
+    UnsupportedReleaseSavepoint,
+    UnsupportedRollbackToSavepoint,
+    UnsupportedDeclareCursor,
+    UnsupportedCreateType,
+    UnsupportedCreateServer,
+    UnsupportedVacuum,
+    UnsupportedAlterIndex,
+    UnsupportedCopyFromFile,
+    UnsupportedLockTable,
+    UnsupportedAlterAggregate,
+    UnsupportedAlterFunctionAction,
+    UnsupportedAlterPolicy,
+    UnsupportedAlterType,
+    UnsupportedAlterRoleProperty,
+    UnsupportedAlterRoleSet,
+    UnsupportedAlterUser,
+    UnsupportedDropMaterializedView,
+    UnsupportedDropType,
+    UnsupportedDropTrigger,
+    UnsupportedDropPolicy,
     MultiDdlTransaction,
     ParseError,
 }

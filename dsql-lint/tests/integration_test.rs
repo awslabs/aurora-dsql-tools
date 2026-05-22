@@ -10,8 +10,7 @@
 
 mod common;
 
-use dsql_lint::{lint_sql, FixResult, LintRule, UNSUPPORTED_STMT_ARM_COUNT};
-use std::collections::BTreeSet;
+use dsql_lint::{lint_sql, LintRule};
 use strum::IntoEnumIterator;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -786,47 +785,20 @@ fn fixture_sample_migration() {
 // ═══════════════════════════════════════════════════════════════════════
 // 8. LINT RULE COVERAGE ENFORCEMENT
 // ═══════════════════════════════════════════════════════════════════════
-// The exhaustive match in `cluster_test_for_rule` is the primary
-// enforcement: new LintRule variant without a match arm = compile error.
-// This test validates that every non-None mapping actually produces
-// the expected diagnostic, catching stale or wrong SQL/message pairs.
-
-/// Tripwire: every Unfixable arm in `check_unsupported_statements` must have
-/// at least one entry in `UNFIXABLE_REJECTION_MATRIX`. Counts distinct
-/// diagnostic messages (not matrix rows) so duplicate rows can't inflate the
-/// count — adding a new arm requires a new matrix row whose lint output
-/// produces a previously-unseen message.
-#[test]
-fn unsupported_statement_matrix_covers_all_arms() {
-    let mut distinct_messages: BTreeSet<String> = BTreeSet::new();
-    for (_label, sql, _setup, _cleanup) in common::UNFIXABLE_REJECTION_MATRIX {
-        for d in lint_sql(sql) {
-            if d.rule == LintRule::UnsupportedStatement
-                && matches!(d.fix_result, FixResult::Unfixable)
-            {
-                distinct_messages.insert(d.message);
-            }
-        }
-    }
-    let covered = distinct_messages.len();
-    assert!(
-        covered >= UNSUPPORTED_STMT_ARM_COUNT,
-        "UNFIXABLE_REJECTION_MATRIX covers {covered} distinct UnsupportedStatement \
-         messages, but errors.rs declares {UNSUPPORTED_STMT_ARM_COUNT} arms. \
-         Add a matrix entry for any new arm in `check_unsupported_statements`, \
-         or update UNSUPPORTED_STMT_ARM_COUNT in src/rules/errors.rs.\n\
-         Currently covered: {distinct_messages:#?}"
-    );
-}
+// The exhaustive match in `fixture_for_rule` is the primary enforcement:
+// a new LintRule variant without a match arm = compile error. This test
+// validates that every non-None fixture actually produces the expected
+// diagnostic, catching stale or wrong SQL/message pairs.
 
 #[test]
 fn lint_rule_mapping_produces_expected_diagnostics() {
     for rule in LintRule::iter() {
-        if let Some((sql, expected_msg)) = common::cluster_test_for_rule(rule) {
-            let diags = lint_sql(sql);
+        if let Some(fix) = common::fixture_for_rule(rule) {
+            let diags = lint_sql(fix.sql);
             assert!(
-                diags.iter().any(|d| d.rule == rule && d.message.contains(expected_msg)),
-                "Rule {rule:?} mapping SQL doesn't trigger expected diagnostic.\n  SQL: {sql}\n  Expected: {expected_msg}\n  Got: {diags:?}"
+                diags.iter().any(|d| d.rule == rule && d.message.contains(fix.expected_msg_substr)),
+                "Rule {rule:?} fixture doesn't trigger expected diagnostic.\n  SQL: {}\n  Expected: {}\n  Got: {diags:?}",
+                fix.sql, fix.expected_msg_substr,
             );
         }
     }

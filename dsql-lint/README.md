@@ -182,23 +182,6 @@ fi
 # rc 0 or 3 both mean fix succeeded (3 = review warnings)
 ```
 
-### Lint rule vocabulary
-
-`rule` values emitted in JSON output (stable wire contract — renames are breaking changes):
-
-```
-serial_type, json_type, array_type, foreign_key, temp_table,
-partition_by, inherits, create_table_as, tablespace,
-identity_type, identity_cache, identity_cache_missing,
-index_async, index_concurrently, index_using, index_expression, index_partial,
-truncate, sequence_type, sequence_cache, sequence_cache_missing,
-add_column_constraint, transaction_isolation, set_transaction,
-unsupported_alter_table_op, unsupported_statement,
-multi_ddl_transaction, parse_error
-```
-
-New rules may be added in non-breaking releases. Consumers matching on `rule` should default-handle unknown values gracefully.
-
 ## Library
 
 Use `dsql-lint` as a Rust library to integrate DSQL compatibility checks into your own tools.
