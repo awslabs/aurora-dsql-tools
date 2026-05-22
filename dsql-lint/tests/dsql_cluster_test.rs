@@ -95,8 +95,11 @@ fn run_sql_file(endpoint: &str, token: &str, sql: &str) -> Result<String, String
     let path = dir.path().join("test.sql");
     std::fs::write(&path, sql).unwrap();
     for attempt in 0..MAX_RETRIES {
+        // ON_ERROR_STOP=1 makes psql exit non-zero on the first SQL error;
+        // without it, multi-statement scripts always exit 0, causing
+        // false-positive "succeeded" verdicts for cluster validation.
         let output = psql_cmd(endpoint, token)
-            .args(["-f", path.to_str().unwrap()])
+            .args(["-v", "ON_ERROR_STOP=1", "-f", path.to_str().unwrap()])
             .output()
             .expect("failed to run `psql`");
         if output.status.success() {
