@@ -136,6 +136,20 @@ fn run_cleanup_stmts(endpoint: &str, token: &str, cleanup_sql: &str) {
     }
 }
 
+/// True if `stderr` matches a phrase DSQL emits for feature rejections.
+/// Expand as new phrasings are observed.
+fn looks_like_dsql_rejection(stderr: &str) -> bool {
+    let lower = stderr.to_lowercase();
+    let expected = [
+        "not supported",
+        "unsupported",
+        "is not allowed",
+        "syntax error",
+        "feature is not yet supported",
+    ];
+    expected.iter().any(|n| lower.contains(n))
+}
+
 fn ensure_base_table(endpoint: &str, token: &str) {
     run_sql(
         endpoint,
@@ -696,13 +710,23 @@ fn lint_rule_fixtures_validated_on_cluster() {
             }
         }
 
-        // Unfixed SQL is expected to be rejected by DSQL today. If this ever
-        // succeeds, revisit the rule's justification rather than silencing the test.
-        if exec(&ep, &token, fix.sql).is_ok() {
-            failures.push(format!(
-                "[{rule:?}] expected DSQL to reject unfixed input, but it succeeded\n  Input: {}",
-                fix.sql
-            ));
+        // Unfixed SQL must be rejected by DSQL with a feature-rejection error;
+        // anything else (success, or an unrelated error) means the fixture is
+        // not actually exercising the rule.
+        match exec(&ep, &token, fix.sql) {
+            Ok(_) => {
+                failures.push(format!(
+                    "[{rule:?}] expected DSQL to reject unfixed input, but it succeeded\n  Input: {}",
+                    fix.sql
+                ));
+            }
+            Err(err) if !looks_like_dsql_rejection(&err) => {
+                failures.push(format!(
+                    "[{rule:?}] DSQL returned an error, but it does not look like a feature rejection (likely setup/transient).\n  Input: {}\n  Error: {err}",
+                    fix.sql
+                ));
+            }
+            Err(_) => {}
         }
         run_cleanup_stmts(&ep, &token, fix.cleanup_sql);
         scratch_cleanup(&ep, &token);

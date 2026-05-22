@@ -1010,7 +1010,7 @@ fn check_unsupported_statements(
             (AlterFunctionKind::Aggregate, _) => {
                 diagnostics.push(error(
                     LintRule::UnsupportedAlterAggregate,
-                    find_line_any(raw_sql, &["alter aggregate", "aggregate"]),
+                    find_line(raw_sql, "alter aggregate"),
                     "ALTER AGGREGATE is not supported in DSQL.",
                     "Drop and recreate the aggregate, or manage it from the application layer.",
                     FixResult::Unfixable,
@@ -1019,7 +1019,7 @@ fn check_unsupported_statements(
             (AlterFunctionKind::Function, AlterFunctionOperation::Actions { .. }) => {
                 diagnostics.push(error(
                     LintRule::UnsupportedAlterFunctionProperty,
-                    find_line_any(raw_sql, &["alter function", "function"]),
+                    find_line(raw_sql, "alter function"),
                     "ALTER FUNCTION property changes (IMMUTABLE/STRICT/COST/SET/...) are not supported in DSQL.",
                     "Drop and recreate the function with the desired properties.",
                     FixResult::Unfixable,
@@ -1031,7 +1031,7 @@ fn check_unsupported_statements(
         Statement::AlterPolicy(_) => {
             diagnostics.push(error(
                 LintRule::UnsupportedAlterPolicy,
-                find_line_any(raw_sql, &["alter policy", "policy"]),
+                find_line(raw_sql, "alter policy"),
                 "ALTER POLICY is not supported in DSQL.",
                 "Row-Level Security is not supported. Implement access control in the application layer.",
                 FixResult::Unfixable,
@@ -1041,7 +1041,7 @@ fn check_unsupported_statements(
         Statement::AlterType(_) => {
             diagnostics.push(error(
                 LintRule::UnsupportedAlterType,
-                find_line_any(raw_sql, &["alter type", "type"]),
+                find_line(raw_sql, "alter type"),
                 "ALTER TYPE is not supported in DSQL.",
                 "DSQL does not support user-defined types. Use CHECK constraints or application-layer validation.",
                 FixResult::Unfixable,
@@ -1102,7 +1102,7 @@ fn check_unsupported_statements(
         Statement::AlterUser(_) => {
             diagnostics.push(error(
                 LintRule::UnsupportedAlterUser,
-                find_line_any(raw_sql, &["alter user", "user"]),
+                find_line(raw_sql, "alter user"),
                 "ALTER USER is not supported in DSQL. Manage user attributes through AWS IAM.",
                 "DSQL users are managed via AWS IAM; remove ALTER USER statements.",
                 FixResult::Unfixable,
@@ -1118,7 +1118,7 @@ fn check_unsupported_statements(
             let label = names.first().map(|n| format!(" '{n}'")).unwrap_or_default();
             diagnostics.push(error(
                 LintRule::UnsupportedDropMaterializedView,
-                find_line(raw_sql, "materialized view"),
+                find_line_any(raw_sql, &["drop materialized view", "materialized view"]),
                 format!("DROP MATERIALIZED VIEW{label} is not supported in DSQL."),
                 "Materialized views are not supported; use a regular VIEW instead.",
                 FixResult::Unfixable,
@@ -1132,7 +1132,7 @@ fn check_unsupported_statements(
             let label = names.first().map(|n| format!(" '{n}'")).unwrap_or_default();
             diagnostics.push(error(
                 LintRule::UnsupportedDropType,
-                find_line_any(raw_sql, &["drop type", "type"]),
+                find_line(raw_sql, "drop type"),
                 format!("DROP TYPE{label} is not supported in DSQL."),
                 "User-defined types are not supported in DSQL.",
                 FixResult::Unfixable,
@@ -1142,7 +1142,7 @@ fn check_unsupported_statements(
         Statement::DropTrigger(_) => {
             diagnostics.push(error(
                 LintRule::UnsupportedDropTrigger,
-                find_line_any(raw_sql, &["drop trigger", "trigger"]),
+                find_line(raw_sql, "drop trigger"),
                 "DROP TRIGGER is not supported in DSQL.",
                 "Triggers are not supported in DSQL; remove trigger management from migrations.",
                 FixResult::Unfixable,
@@ -1151,7 +1151,7 @@ fn check_unsupported_statements(
         Statement::DropPolicy(_) => {
             diagnostics.push(error(
                 LintRule::UnsupportedDropPolicy,
-                find_line_any(raw_sql, &["drop policy", "policy"]),
+                find_line(raw_sql, "drop policy"),
                 "DROP POLICY is not supported in DSQL.",
                 "Row-Level Security policies are not supported; remove policy management from migrations.",
                 FixResult::Unfixable,

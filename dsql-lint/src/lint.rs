@@ -239,7 +239,14 @@ fn is_ddl(stmt: &Statement) -> bool {
             | Statement::CreateServer(_)
             | Statement::AlterTable(_)
             | Statement::AlterIndex { .. }
+            | Statement::AlterFunction(_)
+            | Statement::AlterPolicy(_)
+            | Statement::AlterType(_)
+            | Statement::AlterRole { .. }
+            | Statement::AlterUser(_)
             | Statement::Drop { .. }
+            | Statement::DropTrigger(_)
+            | Statement::DropPolicy(_)
             | Statement::Truncate(_)
     )
 }
