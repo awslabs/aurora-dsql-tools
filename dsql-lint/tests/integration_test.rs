@@ -267,7 +267,8 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "ALTER INDEX idx_name RENAME TO idx_new;",
         "ALTER INDEX",
     ),
-    // ALTER FUNCTION — property change (Actions). Other variants supported on DSQL.
+    // ALTER FUNCTION — only property-change Actions are rejected here.
+    // OWNER TO / RENAME TO / SET SCHEMA are covered by FALSE_POSITIVE_CASES in common/mod.rs.
     (
         "alter-function-immutable",
         "ALTER FUNCTION fn() IMMUTABLE;",
@@ -328,11 +329,16 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "CREATEROLE",
     ),
     (
+        "alter-role-multi-option",
+        "ALTER ROLE r WITH PASSWORD 'pw' VALID UNTIL 'infinity' SUPERUSER;",
+        "PASSWORD, VALID UNTIL, SUPERUSER",
+    ),
+    (
         "alter-role-set",
         "ALTER ROLE r SET work_mem = '64MB';",
         "ALTER ROLE",
     ),
-    // ALTER USER — every variant rejected
+    // ALTER USER — blanket-rejected (alias of ALTER ROLE in PostgreSQL).
     (
         "alter-user-password",
         "ALTER USER u WITH PASSWORD 'pw';",

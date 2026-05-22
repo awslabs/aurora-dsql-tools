@@ -96,7 +96,7 @@ pub enum LintRule {
     UnsupportedCopyFromFile,
     UnsupportedLockTable,
     UnsupportedAlterAggregate,
-    UnsupportedAlterFunctionAction,
+    UnsupportedAlterFunctionProperty,
     UnsupportedAlterPolicy,
     UnsupportedAlterType,
     UnsupportedAlterRoleProperty,

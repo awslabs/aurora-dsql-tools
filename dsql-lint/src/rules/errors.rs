@@ -402,8 +402,6 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
             _ => {}
         }
     }
-
-    // Read-only detection of unsupported operations handled by check_alter_table_operations
 }
 
 /// ALTER TABLE ADD COLUMN with inline DEFAULT or NOT NULL.
@@ -438,6 +436,13 @@ fn check_add_column_constraints(
     }
 }
 
+struct UnsupportedOp {
+    rule: LintRule,
+    msg: String,
+    suggestion: &'static str,
+    needle: &'static str,
+}
+
 /// Unsupported ALTER TABLE operations. Each arm names its own `LintRule` so
 /// the per-rule fixture map can drive coverage tests exhaustively.
 fn check_alter_table_operations(
@@ -450,92 +455,97 @@ fn check_alter_table_operations(
     };
 
     for op in &alter_table.operations {
-        let (rule, msg, suggestion, needle): (LintRule, String, &str, &str) = match op {
+        let UnsupportedOp {
+            rule,
+            msg,
+            suggestion,
+            needle,
+        } = match op {
             AlterTableOperation::DropColumn { column_names, .. } => {
                 let names: Vec<_> = column_names.iter().map(|n| n.to_string()).collect();
-                (
-                    LintRule::AtUnsupportedDropColumn,
-                    format!(
+                UnsupportedOp {
+                    rule: LintRule::AtUnsupportedDropColumn,
+                    msg: format!(
                         "ALTER TABLE DROP COLUMN ({}) is not supported in DSQL.",
                         names.join(", ")
                     ),
-                    "Recreate the table without the column, then migrate data.",
-                    "drop column",
-                )
+                    suggestion: "Recreate the table without the column, then migrate data.",
+                    needle: "drop column",
+                }
             }
             AlterTableOperation::AlterColumn {
                 column_name,
                 op: alter_op,
             } => match alter_op {
-                AlterColumnOperation::SetDataType { .. } => (
-                    LintRule::AtUnsupportedAlterColumnSetType,
-                    format!("ALTER COLUMN '{column_name}' TYPE is not supported in DSQL."),
-                    "Recreate the table with the desired column type.",
-                    "alter column",
-                ),
-                AlterColumnOperation::SetNotNull => (
-                    LintRule::AtUnsupportedAlterColumnSetNotNull,
-                    format!(
+                AlterColumnOperation::SetDataType { .. } => UnsupportedOp {
+                    rule: LintRule::AtUnsupportedAlterColumnSetType,
+                    msg: format!("ALTER COLUMN '{column_name}' TYPE is not supported in DSQL."),
+                    suggestion: "Recreate the table with the desired column type.",
+                    needle: "alter column",
+                },
+                AlterColumnOperation::SetNotNull => UnsupportedOp {
+                    rule: LintRule::AtUnsupportedAlterColumnSetNotNull,
+                    msg: format!(
                         "ALTER COLUMN '{column_name}' SET NOT NULL is not supported in DSQL."
                     ),
-                    "Add NOT NULL at table creation time.",
-                    "not null",
-                ),
-                AlterColumnOperation::DropNotNull => (
-                    LintRule::AtUnsupportedAlterColumnDropNotNull,
-                    format!(
+                    suggestion: "Add NOT NULL at table creation time.",
+                    needle: "not null",
+                },
+                AlterColumnOperation::DropNotNull => UnsupportedOp {
+                    rule: LintRule::AtUnsupportedAlterColumnDropNotNull,
+                    msg: format!(
                         "ALTER COLUMN '{column_name}' DROP NOT NULL is not supported in DSQL."
                     ),
-                    "Recreate the table if needed.",
-                    "not null",
-                ),
-                AlterColumnOperation::SetDefault { .. } => (
-                    LintRule::AtUnsupportedAlterColumnSetDefault,
-                    format!(
+                    suggestion: "Recreate the table if needed.",
+                    needle: "not null",
+                },
+                AlterColumnOperation::SetDefault { .. } => UnsupportedOp {
+                    rule: LintRule::AtUnsupportedAlterColumnSetDefault,
+                    msg: format!(
                         "ALTER COLUMN '{column_name}' SET DEFAULT is not supported in DSQL."
                     ),
-                    "Set default at table creation time.",
-                    "set default",
-                ),
-                AlterColumnOperation::DropDefault => (
-                    LintRule::AtUnsupportedAlterColumnDropDefault,
-                    format!(
+                    suggestion: "Set default at table creation time.",
+                    needle: "set default",
+                },
+                AlterColumnOperation::DropDefault => UnsupportedOp {
+                    rule: LintRule::AtUnsupportedAlterColumnDropDefault,
+                    msg: format!(
                         "ALTER COLUMN '{column_name}' DROP DEFAULT is not supported in DSQL."
                     ),
-                    "Recreate the table if needed.",
-                    "drop default",
-                ),
-                AlterColumnOperation::AddGenerated { .. } => (
-                    LintRule::AtUnsupportedAlterColumnAddGenerated,
-                    format!(
+                    suggestion: "Recreate the table if needed.",
+                    needle: "drop default",
+                },
+                AlterColumnOperation::AddGenerated { .. } => UnsupportedOp {
+                    rule: LintRule::AtUnsupportedAlterColumnAddGenerated,
+                    msg: format!(
                         "ALTER COLUMN '{column_name}' ADD GENERATED AS IDENTITY is not supported in DSQL."
                     ),
-                    "Define identity columns at table creation time.",
-                    "identity",
-                ),
+                    suggestion: "Define identity columns at table creation time.",
+                    needle: "identity",
+                },
             },
             AlterTableOperation::AddConstraint { constraint, .. } => match constraint {
-                TableConstraint::Check(_) => (
-                    LintRule::AtUnsupportedAddCheck,
-                    "ALTER TABLE ADD CHECK constraint is not supported in DSQL.".to_string(),
-                    "Add CHECK constraints at table creation time.",
-                    "add constraint",
-                ),
-                TableConstraint::Unique(_) => (
-                    LintRule::AtUnsupportedAddUnique,
-                    "ALTER TABLE ADD UNIQUE constraint is not supported in DSQL.".to_string(),
-                    "Add UNIQUE constraints at table creation time.",
-                    "add constraint",
-                ),
+                TableConstraint::Check(_) => UnsupportedOp {
+                    rule: LintRule::AtUnsupportedAddCheck,
+                    msg: "ALTER TABLE ADD CHECK constraint is not supported in DSQL.".to_string(),
+                    suggestion: "Add CHECK constraints at table creation time.",
+                    needle: "add constraint",
+                },
+                TableConstraint::Unique(_) => UnsupportedOp {
+                    rule: LintRule::AtUnsupportedAddUnique,
+                    msg: "ALTER TABLE ADD UNIQUE constraint is not supported in DSQL.".to_string(),
+                    suggestion: "Add UNIQUE constraints at table creation time.",
+                    needle: "add constraint",
+                },
                 // ForeignKey handled by check_alter_table; other variants skipped.
                 _ => continue,
             },
-            AlterTableOperation::DropConstraint { name, .. } => (
-                LintRule::AtUnsupportedDropConstraint,
-                format!("ALTER TABLE DROP CONSTRAINT '{name}' is not supported in DSQL."),
-                "Recreate the table without the constraint.",
-                "drop constraint",
-            ),
+            AlterTableOperation::DropConstraint { name, .. } => UnsupportedOp {
+                rule: LintRule::AtUnsupportedDropConstraint,
+                msg: format!("ALTER TABLE DROP CONSTRAINT '{name}' is not supported in DSQL."),
+                suggestion: "Recreate the table without the constraint.",
+                needle: "drop constraint",
+            },
             _ => continue,
         };
         diagnostics.push(error(
@@ -993,36 +1003,35 @@ fn check_unsupported_statements(
             ));
         }
 
-        // ALTER AGGREGATE — entire statement family is rejected by DSQL.
-        Statement::AlterFunction(af) if matches!(af.kind, AlterFunctionKind::Aggregate) => {
-            diagnostics.push(error(
-                LintRule::UnsupportedAlterAggregate,
-                find_line(raw_sql, "alter aggregate"),
-                "ALTER AGGREGATE is not supported in DSQL.",
-                "Drop and recreate the aggregate, or manage it from the application layer.",
-                FixResult::Unfixable,
-            ));
-        }
-        // ALTER FUNCTION — only property changes (Actions: IMMUTABLE/STRICT/COST/SET/etc.)
-        // are rejected. RENAME TO, OWNER TO, SET SCHEMA, and DEPENDS ON EXTENSION all
-        // execute successfully on DSQL, so we leave those alone.
-        Statement::AlterFunction(af)
-            if matches!(af.kind, AlterFunctionKind::Function)
-                && matches!(af.operation, AlterFunctionOperation::Actions { .. }) =>
-        {
-            diagnostics.push(error(
-                LintRule::UnsupportedAlterFunctionAction,
-                find_line(raw_sql, "alter function"),
-                "ALTER FUNCTION property changes (IMMUTABLE/STRICT/COST/SET/...) are not supported in DSQL.",
-                "Drop and recreate the function with the desired properties.",
-                FixResult::Unfixable,
-            ));
-        }
+        // ALTER AGGREGATE — entire family rejected.
+        // ALTER FUNCTION — only property changes (Actions: IMMUTABLE/STRICT/COST/SET/...)
+        // are rejected; RENAME TO, OWNER TO, SET SCHEMA, DEPENDS ON EXTENSION run on DSQL.
+        Statement::AlterFunction(af) => match (&af.kind, &af.operation) {
+            (AlterFunctionKind::Aggregate, _) => {
+                diagnostics.push(error(
+                    LintRule::UnsupportedAlterAggregate,
+                    find_line_any(raw_sql, &["alter aggregate", "aggregate"]),
+                    "ALTER AGGREGATE is not supported in DSQL.",
+                    "Drop and recreate the aggregate, or manage it from the application layer.",
+                    FixResult::Unfixable,
+                ));
+            }
+            (AlterFunctionKind::Function, AlterFunctionOperation::Actions { .. }) => {
+                diagnostics.push(error(
+                    LintRule::UnsupportedAlterFunctionProperty,
+                    find_line_any(raw_sql, &["alter function", "function"]),
+                    "ALTER FUNCTION property changes (IMMUTABLE/STRICT/COST/SET/...) are not supported in DSQL.",
+                    "Drop and recreate the function with the desired properties.",
+                    FixResult::Unfixable,
+                ));
+            }
+            _ => {}
+        },
 
         Statement::AlterPolicy(_) => {
             diagnostics.push(error(
                 LintRule::UnsupportedAlterPolicy,
-                find_line(raw_sql, "alter policy"),
+                find_line_any(raw_sql, &["alter policy", "policy"]),
                 "ALTER POLICY is not supported in DSQL.",
                 "Row-Level Security is not supported. Implement access control in the application layer.",
                 FixResult::Unfixable,
@@ -1032,7 +1041,7 @@ fn check_unsupported_statements(
         Statement::AlterType(_) => {
             diagnostics.push(error(
                 LintRule::UnsupportedAlterType,
-                find_line(raw_sql, "alter type"),
+                find_line_any(raw_sql, &["alter type", "type"]),
                 "ALTER TYPE is not supported in DSQL.",
                 "DSQL does not support user-defined types. Use CHECK constraints or application-layer validation.",
                 FixResult::Unfixable,
@@ -1045,8 +1054,8 @@ fn check_unsupported_statements(
             operation: AlterRoleOperation::WithOptions { options },
             ..
         } => {
-            let opt_name = options
-                .first()
+            let names: Vec<&'static str> = options
+                .iter()
                 .map(|opt| match opt {
                     RoleOption::Password(_) => "PASSWORD",
                     RoleOption::ValidUntil(_) => "VALID UNTIL",
@@ -1059,12 +1068,17 @@ fn check_unsupported_statements(
                     RoleOption::BypassRLS(_) => "BYPASSRLS",
                     RoleOption::ConnectionLimit(_) => "CONNECTION LIMIT",
                 })
-                .unwrap_or("options");
+                .collect();
+            let opt_list = if names.is_empty() {
+                "options".to_string()
+            } else {
+                names.join(", ")
+            };
             diagnostics.push(error(
                 LintRule::UnsupportedAlterRoleProperty,
                 find_line(raw_sql, "alter role"),
                 format!(
-                    "ALTER ROLE with {opt_name} is not supported in DSQL. Manage role attributes through IAM."
+                    "ALTER ROLE with {opt_list} is not supported in DSQL. Manage role attributes through IAM."
                 ),
                 "DSQL roles are managed via AWS IAM; remove role-attribute changes.",
                 FixResult::Unfixable,
@@ -1088,7 +1102,7 @@ fn check_unsupported_statements(
         Statement::AlterUser(_) => {
             diagnostics.push(error(
                 LintRule::UnsupportedAlterUser,
-                find_line(raw_sql, "alter user"),
+                find_line_any(raw_sql, &["alter user", "user"]),
                 "ALTER USER is not supported in DSQL. Manage user attributes through AWS IAM.",
                 "DSQL users are managed via AWS IAM; remove ALTER USER statements.",
                 FixResult::Unfixable,
@@ -1098,24 +1112,28 @@ fn check_unsupported_statements(
         // DROP MATERIALIZED VIEW / DROP TYPE — DSQL rejects with "unsupported object in DROP".
         Statement::Drop {
             object_type: ObjectType::MaterializedView,
+            names,
             ..
         } => {
+            let label = names.first().map(|n| format!(" '{n}'")).unwrap_or_default();
             diagnostics.push(error(
                 LintRule::UnsupportedDropMaterializedView,
                 find_line(raw_sql, "materialized view"),
-                "DROP MATERIALIZED VIEW is not supported in DSQL.",
+                format!("DROP MATERIALIZED VIEW{label} is not supported in DSQL."),
                 "Materialized views are not supported; use a regular VIEW instead.",
                 FixResult::Unfixable,
             ));
         }
         Statement::Drop {
             object_type: ObjectType::Type,
+            names,
             ..
         } => {
+            let label = names.first().map(|n| format!(" '{n}'")).unwrap_or_default();
             diagnostics.push(error(
                 LintRule::UnsupportedDropType,
-                find_line(raw_sql, "drop type"),
-                "DROP TYPE is not supported in DSQL.",
+                find_line_any(raw_sql, &["drop type", "type"]),
+                format!("DROP TYPE{label} is not supported in DSQL."),
                 "User-defined types are not supported in DSQL.",
                 FixResult::Unfixable,
             ));
@@ -1124,7 +1142,7 @@ fn check_unsupported_statements(
         Statement::DropTrigger(_) => {
             diagnostics.push(error(
                 LintRule::UnsupportedDropTrigger,
-                find_line(raw_sql, "drop trigger"),
+                find_line_any(raw_sql, &["drop trigger", "trigger"]),
                 "DROP TRIGGER is not supported in DSQL.",
                 "Triggers are not supported in DSQL; remove trigger management from migrations.",
                 FixResult::Unfixable,
@@ -1133,7 +1151,7 @@ fn check_unsupported_statements(
         Statement::DropPolicy(_) => {
             diagnostics.push(error(
                 LintRule::UnsupportedDropPolicy,
-                find_line(raw_sql, "drop policy"),
+                find_line_any(raw_sql, &["drop policy", "policy"]),
                 "DROP POLICY is not supported in DSQL.",
                 "Row-Level Security policies are not supported; remove policy management from migrations.",
                 FixResult::Unfixable,

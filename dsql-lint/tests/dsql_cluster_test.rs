@@ -87,7 +87,7 @@ fn run_sql(endpoint: &str, token: &str, sql: &str) -> Result<String, String> {
             Err(err) => return Err(err),
         }
     }
-    unreachable!()
+    Err("run_sql: retry loop exited without result (MAX_RETRIES=0?)".into())
 }
 
 fn run_sql_file(endpoint: &str, token: &str, sql: &str) -> Result<String, String> {
@@ -109,7 +109,7 @@ fn run_sql_file(endpoint: &str, token: &str, sql: &str) -> Result<String, String
         }
         return Err(err);
     }
-    unreachable!()
+    Err("run_sql_file: retry loop exited without result (MAX_RETRIES=0?)".into())
 }
 
 fn cleanup(endpoint: &str, token: &str, sql: &str) {
@@ -680,7 +680,8 @@ fn lint_rule_fixtures_validated_on_cluster() {
             }
         }
 
-        // Unfixed SQL must be rejected by DSQL — proves the rule is necessary.
+        // Unfixed SQL is expected to be rejected by DSQL today. If this ever
+        // succeeds, revisit the rule's justification rather than silencing the test.
         if exec(&ep, &token, fix.sql).is_ok() {
             failures.push(format!(
                 "[{rule:?}] expected DSQL to reject unfixed input, but it succeeded\n  Input: {}",

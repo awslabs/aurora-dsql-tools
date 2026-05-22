@@ -335,8 +335,10 @@ use dsql_lint::LintRule;
 /// One example per `LintRule` variant: SQL that triggers the rule, the
 /// expected error substring, and optional setup/cleanup SQL for cluster
 /// runs. Adding a new `LintRule` variant without a match arm is a compile
-/// error — that's the whole guarantee. `None` is reserved for rules that
-/// can't be validated on a cluster (e.g. parser errors).
+/// error — that's the whole guarantee. Returning `None` skips the rule
+/// from BOTH unit (integration_test.rs) and cluster validation
+/// (dsql_cluster_test.rs); reserve `None` for rules that can't be
+/// expressed as a single statement (e.g. `ParseError`).
 ///
 /// Cluster tests assume `_clust_base (id INT, col INT)` exists; the
 /// per-rule cluster runner creates it before iteration. Setup/cleanup
@@ -589,7 +591,7 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
             "ALTER AGGREGATE _rej_agg(integer) RENAME TO _rej_agg2;",
             "ALTER AGGREGATE",
         ),
-        LintRule::UnsupportedAlterFunctionAction => {
+        LintRule::UnsupportedAlterFunctionProperty => {
             fix("ALTER FUNCTION _rej_fn() IMMUTABLE;", "ALTER FUNCTION")
         }
         LintRule::UnsupportedAlterPolicy => fix(
