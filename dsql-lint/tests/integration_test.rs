@@ -10,7 +10,8 @@
 
 mod common;
 
-use dsql_lint::{lint_sql, LintRule};
+use dsql_lint::{lint_sql, FixResult, LintRule, UNSUPPORTED_STMT_ARM_COUNT};
+use std::collections::BTreeSet;
 use strum::IntoEnumIterator;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -790,24 +791,13 @@ fn fixture_sample_migration() {
 // This test validates that every non-None mapping actually produces
 // the expected diagnostic, catching stale or wrong SQL/message pairs.
 
-// Tripwire: every Unfixable arm in `check_unsupported_statements` must have
-// at least one entry in `UNFIXABLE_REJECTION_MATRIX`. Without this, a new arm
-// could ship without per-statement-variant cluster proof that DSQL rejects it.
-//
-// Mechanism: count distinct matrix entries that produce a Diagnostic with
-// `rule == LintRule::UnsupportedStatement` AND `fix_result == Unfixable`,
-// and require at least `UNSUPPORTED_STMT_ARM_COUNT` of them. When a maintainer
-// adds an arm, they bump the constant in src/rules/errors.rs; this test then
-// forces them to also add a matrix row.
+/// Tripwire: every Unfixable arm in `check_unsupported_statements` must have
+/// at least one entry in `UNFIXABLE_REJECTION_MATRIX`. Counts distinct
+/// diagnostic messages (not matrix rows) so duplicate rows can't inflate the
+/// count — adding a new arm requires a new matrix row whose lint output
+/// produces a previously-unseen message.
 #[test]
 fn unsupported_statement_matrix_covers_all_arms() {
-    use dsql_lint::{FixResult, UNSUPPORTED_STMT_ARM_COUNT};
-    use std::collections::BTreeSet;
-
-    // Each Unfixable arm in `check_unsupported_statements` produces a unique
-    // message. Counting distinct messages — rather than matrix entries —
-    // means N matrix rows that all share an arm count as one, so a new arm
-    // actually requires a new matrix row to satisfy the bound.
     let mut distinct_messages: BTreeSet<String> = BTreeSet::new();
     for (_label, sql, _setup, _cleanup) in common::UNFIXABLE_REJECTION_MATRIX {
         for d in lint_sql(sql) {

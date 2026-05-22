@@ -424,20 +424,10 @@ pub fn cluster_test_for_rule(rule: LintRule) -> Option<(&'static str, &'static s
     }
 }
 
-/// SQL that the linter flags as `Unfixable` and that DSQL must reject when
-/// executed. Used by `unfixable_inputs_rejected_by_cluster` in
-/// `tests/dsql_cluster_test.rs` to enforce the project tenet:
-///
-///   "for each rule that errors on DSQL, CI validates it actually errors."
-///
-/// This is the per-statement-variant matrix for `LintRule::UnsupportedStatement`
-/// (which fans out across 30+ statement types behind a single rule variant)
-/// plus other unfixable rules that the per-rule iterator can't validate.
-///
-/// Each entry: `(label, sql, setup_sql, cleanup_sql)`.
-/// - `setup_sql` runs before the assertion (use empty `""` if not needed).
-/// - `cleanup_sql` runs after, even on success — tolerate missing objects.
-#[allow(dead_code)] // only used by tests/dsql_cluster_test.rs (cfg=dsql_cluster)
+/// Per-arm rejection cases for `LintRule::UnsupportedStatement` and other
+/// unfixable rules the per-rule cluster iterator can't reach. Each entry is
+/// `(label, sql, setup_sql, cleanup_sql)`.
+#[allow(dead_code)]
 pub const UNFIXABLE_REJECTION_MATRIX: &[(&str, &str, &str, &str)] = &[
     // ─── CREATE statements ────────────────────────────────────────────────
     (

@@ -19,7 +19,7 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-use dsql_lint::{fix_sql, LintRule};
+use dsql_lint::{fix_sql, lint_sql, FixResult, LintRule};
 use strum::IntoEnumIterator;
 
 const MAX_RETRIES: usize = 5;
@@ -629,8 +629,6 @@ fn clean_multi_statement_cases_accepted_by_cluster() {
 #[test]
 #[ignore = "requires DSQL cluster — run via `cargo test --ignored` with DSQL_ENDPOINT set"]
 fn lint_rule_fixes_execute_on_cluster() {
-    use dsql_lint::{lint_sql, FixResult};
-
     let ep = endpoint();
     let region = region();
     let token = generate_token(&ep, &region);
@@ -653,8 +651,7 @@ fn lint_rule_fixes_execute_on_cluster() {
             continue;
         };
 
-        // Sanity: the lint must actually flag this SQL — otherwise the cluster test
-        // is meaningless. Catches drift between rule code and the example.
+        // Catches drift between rule code and the example.
         let diags = lint_sql(sql);
         if !diags.iter().any(|d| d.rule == rule) {
             failures.push(format!(
@@ -663,11 +660,7 @@ fn lint_rule_fixes_execute_on_cluster() {
             continue;
         }
 
-        // Step 1 — assert the UNFIXED SQL is rejected by DSQL. This proves the
-        // rule is necessary (DSQL really would fail without the lint warning).
-        // Identity-in-ALTER and a couple of other edge cases are skipped here
-        // because their precondition (existing table/column) is environment
-        // -dependent in ways the cleanup helpers don't model.
+        // Unfixed SQL must be rejected by DSQL — proves the rule is necessary.
         scratch_cleanup(&ep, &token);
         let unfixed_result = if sql.contains(";\n") {
             run_sql_file(&ep, &token, sql)
@@ -681,7 +674,7 @@ fn lint_rule_fixes_execute_on_cluster() {
         }
         scratch_cleanup(&ep, &token);
 
-        // Step 2 — for fixable rules, assert the FIXED SQL succeeds on DSQL.
+        // For fixable rules, the fixed SQL must succeed on DSQL.
         let result = fix_sql(sql);
         let has_unfixable = result
             .diagnostics
@@ -719,25 +712,14 @@ fn lint_rule_fixes_execute_on_cluster() {
 // ═══════════════════════════════════════════════════════════════════════
 // 8b. UNFIXABLE REJECTION MATRIX — per-statement-variant cluster validation
 // ═══════════════════════════════════════════════════════════════════════
-// The `UnsupportedStatement` lint rule fans out across 30+ distinct statement
-// kinds (CREATE TRIGGER, ALTER POLICY, DROP TYPE, ...). The per-rule iterator
-// above only validates one representative per `LintRule` variant, so without
-// this test most unfixable arms would have no CI proof that DSQL rejects them.
-//
-// Project tenet:
-//   "for each rule that errors on DSQL, CI validates it actually errors."
-//
-// This test enforces the tenet for every entry in `UNFIXABLE_REJECTION_MATRIX`.
-// When adding a new unfixable arm to `check_unsupported_statements`, add a
-// matching entry — the linter assertion below catches matrix entries that
-// don't actually fire the rule, and the cluster assertion catches rules that
-// don't actually correspond to a DSQL rejection.
+// `LintRule::UnsupportedStatement` fans out across 28 arms in
+// `check_unsupported_statements`; the per-rule iterator above validates only
+// one. This test runs every `UNFIXABLE_REJECTION_MATRIX` entry against DSQL
+// to fill that gap.
 
 #[test]
 #[ignore = "requires DSQL cluster — run via `cargo test --ignored` with DSQL_ENDPOINT set"]
 fn unfixable_inputs_rejected_by_cluster() {
-    use dsql_lint::{lint_sql, FixResult};
-
     let ep = endpoint();
     let region = region();
     let token = generate_token(&ep, &region);
@@ -748,9 +730,7 @@ fn unfixable_inputs_rejected_by_cluster() {
     let mut failures = Vec::new();
 
     for (label, sql, setup_sql, cleanup_sql) in common::UNFIXABLE_REJECTION_MATRIX {
-        // Sanity-check the lint side first: the matrix entry must trigger at
-        // least one Unfixable diagnostic. This prevents matrix bit-rot — if
-        // the rule arm is removed or weakened, the test fails loudly.
+        // Catches matrix bit-rot when a rule arm is removed or weakened.
         let diags = lint_sql(sql);
         let has_unfixable = diags
             .iter()
@@ -762,7 +742,6 @@ fn unfixable_inputs_rejected_by_cluster() {
             continue;
         }
 
-        // Per-entry setup (e.g. create base objects the rejection needs).
         if !setup_sql.is_empty() {
             run_cleanup_stmts(&ep, &token, cleanup_sql);
             if let Err(err) = run_sql(&ep, &token, setup_sql) {
@@ -774,7 +753,6 @@ fn unfixable_inputs_rejected_by_cluster() {
             }
         }
 
-        // Cluster must reject the unfixed SQL.
         let exec_result = if sql.contains(";\n") {
             run_sql_file(&ep, &token, sql)
         } else {
