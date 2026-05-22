@@ -604,6 +604,20 @@ fn unclosed_mixed_txn_does_not_emit_mixed_diagnostic() {
 }
 
 #[test]
+fn dml_then_ddl_in_txn_still_emits_mixed_diagnostic() {
+    // Order-invariance: the analyzer must flag the violation regardless
+    // of which side of the transaction the DDL appears on.
+    let sql = "BEGIN;\nINSERT INTO z VALUES (1);\nCREATE TABLE z (id INT);\nCOMMIT;";
+    let diags = dsql_lint::lint_sql(sql);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.rule == LintRule::MixedDdlDmlTransaction),
+        "DML-then-DDL ordering should still emit MixedDdlDmlTransaction: {diags:?}"
+    );
+}
+
+#[test]
 fn savepoint_inside_mixed_txn_still_flagged_at_commit() {
     let sql = "BEGIN;\nCREATE TABLE z (id INT);\nSAVEPOINT sp;\nINSERT INTO z VALUES (1);\nCOMMIT;";
     let diags = dsql_lint::lint_sql(sql);

@@ -144,7 +144,6 @@ fn looks_like_dsql_rejection(stderr: &str) -> bool {
         "not supported",
         "unsupported",
         "is not allowed",
-        "syntax error",
         "feature is not yet supported",
     ];
     expected.iter().any(|n| lower.contains(n))
