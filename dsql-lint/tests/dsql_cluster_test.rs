@@ -627,7 +627,6 @@ fn clean_multi_statement_cases_accepted_by_cluster() {
 //   • If fix_sql produces non-Unfixable output, the fixed SQL must run clean
 
 #[test]
-#[ignore = "requires DSQL cluster — run via `cargo test --ignored` with DSQL_ENDPOINT set"]
 fn lint_rule_fixtures_validated_on_cluster() {
     let ep = endpoint();
     let region = region();
