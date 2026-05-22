@@ -219,9 +219,12 @@ pub const FALSE_POSITIVE_CASES: &[(&str, &str)] = &[
         "ALTER FUNCTION fn() DEPENDS ON EXTENSION ext;",
         "ALTER FUNCTION",
     ),
-    // ALTER ROLE RENAME TO / RESET ALL are supported on DSQL
+    // ALTER ROLE RENAME TO / RESET ALL / RESET <param> are supported on DSQL
     ("ALTER ROLE r RENAME TO r2;", "ALTER ROLE"),
     ("ALTER ROLE r RESET ALL;", "ALTER ROLE"),
+    ("ALTER ROLE r RESET work_mem;", "ALTER ROLE"),
+    // DROP VIEW (non-materialized) is supported on DSQL
+    ("DROP VIEW v;", "MATERIALIZED VIEW"),
 ];
 
 /// SQL that must trigger a diagnostic whose `message` contains the second

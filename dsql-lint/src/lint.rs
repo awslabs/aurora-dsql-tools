@@ -286,7 +286,7 @@ fn multi_ddl_txn_diagnostic(
         message: format!(
             "Transaction contains {ddl_count} DDL statements. DSQL supports only one DDL statement per transaction."
         ),
-        suggestion: "Split into separate transactions: wrap each DDL statement in its own BEGIN/COMMIT block.".to_string(),
+        suggestion: "Split into separate transactions: wrap each DDL statement in its own BEGIN/COMMIT block. Note: this changes semantics — the original transaction's atomicity guarantee is lost. If a later statement fails, earlier statements remain committed.".to_string(),
         fix_result,
     }
 }
@@ -305,7 +305,7 @@ fn mixed_ddl_dml_txn_diagnostic(
         message: format!(
             "Transaction mixes DDL and DML ({ddl_count} DDL, {dml_count} DML). DSQL does not allow DDL and DML in the same transaction."
         ),
-        suggestion: "Split into separate transactions so each BEGIN/COMMIT block contains either DDL or DML, not both.".to_string(),
+        suggestion: "Split into separate transactions so each BEGIN/COMMIT block contains either DDL or DML, not both. Note: this changes semantics — the original transaction's atomicity guarantee is lost. If a later statement fails, earlier statements remain committed.".to_string(),
         fix_result,
     }
 }
@@ -499,7 +499,7 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
                 ddl_count,
                 &begin_text,
                 FixResult::FixedWithWarning(
-                    "Split multi-DDL transaction into individual BEGIN/COMMIT blocks".to_string(),
+                    "Split multi-DDL transaction into individual BEGIN/COMMIT blocks; atomicity guarantee LOST — if a later statement fails after fix, earlier statements remain committed. Review carefully before applying.".to_string(),
                 ),
             ));
         }
@@ -510,7 +510,7 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
                 dml_count,
                 &begin_text,
                 FixResult::FixedWithWarning(
-                    "Split mixed DDL+DML transaction so each BEGIN/COMMIT block contains either DDL or DML, not both".to_string(),
+                    "Split mixed DDL+DML transaction; atomicity guarantee LOST — if a later statement fails after fix, earlier statements remain committed. Review carefully before applying.".to_string(),
                 ),
             ));
         }

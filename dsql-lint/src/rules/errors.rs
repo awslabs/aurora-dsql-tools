@@ -1078,9 +1078,9 @@ fn check_unsupported_statements(
                 LintRule::UnsupportedAlterRoleProperty,
                 find_line(raw_sql, "alter role"),
                 format!(
-                    "ALTER ROLE with {opt_list} is not supported in DSQL. Manage role attributes through IAM."
+                    "ALTER ROLE with {opt_list} is not supported in DSQL."
                 ),
-                "DSQL roles are managed via AWS IAM; remove role-attribute changes.",
+                "DSQL does not honor these role attributes; remove them. Use IAM (aws_iam_authorize) for authentication and GRANT for privileges.",
                 FixResult::Unfixable,
             ));
         }
@@ -1097,14 +1097,13 @@ fn check_unsupported_statements(
             ));
         }
 
-        // ALTER USER — every variant is rejected by DSQL because role/user attributes
-        // are managed through IAM rather than SQL.
+        // ALTER USER — entire statement rejected by DSQL.
         Statement::AlterUser(_) => {
             diagnostics.push(error(
                 LintRule::UnsupportedAlterUser,
                 find_line(raw_sql, "alter user"),
-                "ALTER USER is not supported in DSQL. Manage user attributes through AWS IAM.",
-                "DSQL users are managed via AWS IAM; remove ALTER USER statements.",
+                "ALTER USER is not supported in DSQL.",
+                "Recreate the role with the desired attributes, or set session parameters via SET at connection time.",
                 FixResult::Unfixable,
             ));
         }
