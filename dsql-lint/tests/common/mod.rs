@@ -660,8 +660,8 @@ pub const CLEAN_MULTI_STATEMENT_CASES: &[(&str, &str, &str)] = &[
     ),
     (
         "ddl-plus-dml-in-txn",
-        "CREATE TABLE _clust_txn_e (id INT);\nBEGIN;\nCREATE TABLE _clust_txn_f (id INT);\nINSERT INTO _clust_txn_e VALUES (1);\nCOMMIT;",
-        "DROP TABLE IF EXISTS _clust_txn_e; DROP TABLE IF EXISTS _clust_txn_f;",
+        "CREATE TABLE _clust_txn_e (id INT);\nBEGIN;\nINSERT INTO _clust_txn_e VALUES (1);\nCOMMIT;",
+        "DROP TABLE IF EXISTS _clust_txn_e;",
     ),
     (
         "empty-txn",

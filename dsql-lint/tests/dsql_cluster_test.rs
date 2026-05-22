@@ -320,12 +320,6 @@ const FIX_MATRIX: &[(&str, &str, &str)] = &[
         "BEGIN ISOLATION LEVEL READ COMMITTED;",
         "ROLLBACK;",
     ),
-    // Unfixable — identity in ALTER TABLE ADD COLUMN
-    (
-        "alter-add-col-identity",
-        "ALTER TABLE _clust_base ADD COLUMN ident_col BIGINT GENERATED ALWAYS AS IDENTITY;",
-        "ALTER TABLE _clust_base DROP COLUMN IF EXISTS ident_col;",
-    ),
 ];
 
 #[test]
@@ -348,6 +342,25 @@ fn fix_matrix_against_cluster() {
         let fixed = &result.sql;
 
         if fixed.is_empty() {
+            continue;
+        }
+
+        // FIX_MATRIX is the "fixable → executes clean" matrix. An Unfixable
+        // diagnostic means fix_sql returned the input unchanged, which would
+        // be (correctly) rejected by the cluster — covered elsewhere by
+        // `lint_rule_fixtures_validated_on_cluster`. Such entries don't
+        // belong here.
+        let has_unfixable = result
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.fix_result, FixResult::Unfixable));
+        if has_unfixable {
+            failures.push(format!(
+                "[{label}] entry produced Unfixable diagnostics — does not belong in FIX_MATRIX\n  Input: {input_sql}"
+            ));
+            if !cleanup_sql.is_empty() {
+                cleanup(&ep, &token, cleanup_sql);
+            }
             continue;
         }
 
