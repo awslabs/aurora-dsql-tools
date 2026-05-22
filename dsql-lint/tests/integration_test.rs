@@ -267,6 +267,86 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "ALTER INDEX idx_name RENAME TO idx_new;",
         "ALTER INDEX",
     ),
+    // ALTER FUNCTION — property change (Actions). Other variants supported on DSQL.
+    (
+        "alter-function-immutable",
+        "ALTER FUNCTION fn() IMMUTABLE;",
+        "ALTER FUNCTION",
+    ),
+    (
+        "alter-function-strict",
+        "ALTER FUNCTION fn() STRICT;",
+        "ALTER FUNCTION",
+    ),
+    // ALTER AGGREGATE — entire family rejected
+    (
+        "alter-aggregate-rename",
+        "ALTER AGGREGATE my_agg(integer) RENAME TO new_agg;",
+        "ALTER AGGREGATE",
+    ),
+    (
+        "alter-aggregate-owner",
+        "ALTER AGGREGATE my_agg(*) OWNER TO admin;",
+        "ALTER AGGREGATE",
+    ),
+    // ALTER POLICY
+    (
+        "alter-policy",
+        "ALTER POLICY p ON t USING (true);",
+        "ALTER POLICY",
+    ),
+    // ALTER TYPE
+    (
+        "alter-type-add-value",
+        "ALTER TYPE mood ADD VALUE 'neutral';",
+        "ALTER TYPE",
+    ),
+    (
+        "alter-type-rename",
+        "ALTER TYPE mood RENAME TO feeling;",
+        "ALTER TYPE",
+    ),
+    // ALTER ROLE — WithOptions and Set are rejected
+    (
+        "alter-role-password",
+        "ALTER ROLE r WITH PASSWORD 'pw';",
+        "PASSWORD",
+    ),
+    (
+        "alter-role-valid-until",
+        "ALTER ROLE r VALID UNTIL 'infinity';",
+        "VALID UNTIL",
+    ),
+    (
+        "alter-role-superuser",
+        "ALTER ROLE r SUPERUSER;",
+        "SUPERUSER",
+    ),
+    (
+        "alter-role-createrole",
+        "ALTER ROLE r CREATEROLE;",
+        "CREATEROLE",
+    ),
+    (
+        "alter-role-set",
+        "ALTER ROLE r SET work_mem = '64MB';",
+        "ALTER ROLE",
+    ),
+    // ALTER USER — every variant rejected
+    (
+        "alter-user-password",
+        "ALTER USER u WITH PASSWORD 'pw';",
+        "ALTER USER",
+    ),
+    // DROP MATERIALIZED VIEW / TYPE / TRIGGER / POLICY
+    (
+        "drop-materialized-view",
+        "DROP MATERIALIZED VIEW mv;",
+        "MATERIALIZED VIEW",
+    ),
+    ("drop-type", "DROP TYPE mood;", "DROP TYPE"),
+    ("drop-trigger", "DROP TRIGGER trg ON t;", "DROP TRIGGER"),
+    ("drop-policy", "DROP POLICY p ON t;", "DROP POLICY"),
     // Identity column with non-BIGINT type
     (
         "identity-non-bigint",

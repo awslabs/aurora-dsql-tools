@@ -210,6 +210,13 @@ pub const FALSE_POSITIVE_CASES: &[(&str, &str)] = &[
         "ALTER TABLE t ADD CONSTRAINT c CHECK (id > 0);",
         "USING INDEX",
     ),
+    // ALTER FUNCTION OWNER TO / RENAME TO / SET SCHEMA are supported on DSQL
+    ("ALTER FUNCTION fn() OWNER TO admin;", "ALTER FUNCTION"),
+    ("ALTER FUNCTION fn() RENAME TO fn2;", "ALTER FUNCTION"),
+    ("ALTER FUNCTION fn() SET SCHEMA s;", "ALTER FUNCTION"),
+    // ALTER ROLE RENAME TO / RESET ALL are supported on DSQL
+    ("ALTER ROLE r RENAME TO r2;", "ALTER ROLE"),
+    ("ALTER ROLE r RESET ALL;", "ALTER ROLE"),
 ];
 
 /// SQL that must trigger a diagnostic whose `message` contains the second

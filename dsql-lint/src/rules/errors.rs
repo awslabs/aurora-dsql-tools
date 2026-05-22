@@ -1,8 +1,9 @@
 use sqlparser::ast::{
-    AlterColumnOperation, AlterTableOperation, ColumnDef, ColumnOption, ColumnOptionDef,
-    CopyTarget, CreateTableOptions, DataType, DeclareType, Expr, GeneratedAs, IndexOption,
-    SequenceOptions, Set, SqlOption, Statement, TableConstraint, TransactionIsolationLevel,
-    TransactionMode, UnaryOperator, Value, ValueWithSpan,
+    AlterColumnOperation, AlterFunctionKind, AlterFunctionOperation, AlterRoleOperation,
+    AlterTableOperation, ColumnDef, ColumnOption, ColumnOptionDef, CopyTarget, CreateTableOptions,
+    DataType, DeclareType, Expr, GeneratedAs, IndexOption, ObjectType, RoleOption, SequenceOptions,
+    Set, SqlOption, Statement, TableConstraint, TransactionIsolationLevel, TransactionMode,
+    UnaryOperator, Value, ValueWithSpan,
 };
 use sqlparser::tokenizer::Span;
 
@@ -978,6 +979,153 @@ fn check_unsupported_statements(
                 find_line(raw_sql, "lock"),
                 "LOCK TABLE is not supported in DSQL.",
                 "Remove LOCK TABLE statements. DSQL uses optimistic concurrency control.",
+                FixResult::Unfixable,
+            ));
+        }
+
+        // ALTER AGGREGATE — entire statement family is rejected by DSQL.
+        Statement::AlterFunction(af) if matches!(af.kind, AlterFunctionKind::Aggregate) => {
+            diagnostics.push(error(
+                LintRule::UnsupportedStatement,
+                find_line(raw_sql, "alter aggregate"),
+                "ALTER AGGREGATE is not supported in DSQL.",
+                "Drop and recreate the aggregate, or manage it from the application layer.",
+                FixResult::Unfixable,
+            ));
+        }
+        // ALTER FUNCTION — only property changes (Actions: IMMUTABLE/STRICT/COST/SET/etc.)
+        // are rejected. RENAME TO, OWNER TO, SET SCHEMA, and DEPENDS ON EXTENSION all
+        // execute successfully on DSQL, so we leave those alone.
+        Statement::AlterFunction(af)
+            if matches!(af.kind, AlterFunctionKind::Function)
+                && matches!(af.operation, AlterFunctionOperation::Actions { .. }) =>
+        {
+            diagnostics.push(error(
+                LintRule::UnsupportedStatement,
+                find_line(raw_sql, "alter function"),
+                "ALTER FUNCTION property changes (IMMUTABLE/STRICT/COST/SET/...) are not supported in DSQL.",
+                "Drop and recreate the function with the desired properties.",
+                FixResult::Unfixable,
+            ));
+        }
+
+        Statement::AlterPolicy(_) => {
+            diagnostics.push(error(
+                LintRule::UnsupportedStatement,
+                find_line(raw_sql, "alter policy"),
+                "ALTER POLICY is not supported in DSQL.",
+                "Row-Level Security is not supported. Implement access control in the application layer.",
+                FixResult::Unfixable,
+            ));
+        }
+
+        Statement::AlterType(_) => {
+            diagnostics.push(error(
+                LintRule::UnsupportedStatement,
+                find_line(raw_sql, "alter type"),
+                "ALTER TYPE is not supported in DSQL.",
+                "DSQL does not support user-defined types. Use CHECK constraints or application-layer validation.",
+                FixResult::Unfixable,
+            ));
+        }
+
+        // ALTER ROLE — only WithOptions (PASSWORD/VALID UNTIL/SUPERUSER/CREATEROLE/...)
+        // and Set (config parameters) are rejected. RenameRole and Reset execute on DSQL.
+        Statement::AlterRole {
+            operation: AlterRoleOperation::WithOptions { options },
+            ..
+        } => {
+            let opt_name = options
+                .first()
+                .map(|opt| match opt {
+                    RoleOption::Password(_) => "PASSWORD",
+                    RoleOption::ValidUntil(_) => "VALID UNTIL",
+                    RoleOption::SuperUser(_) => "SUPERUSER",
+                    RoleOption::CreateRole(_) => "CREATEROLE",
+                    RoleOption::CreateDB(_) => "CREATEDB",
+                    RoleOption::Inherit(_) => "INHERIT",
+                    RoleOption::Login(_) => "LOGIN",
+                    RoleOption::Replication(_) => "REPLICATION",
+                    RoleOption::BypassRLS(_) => "BYPASSRLS",
+                    RoleOption::ConnectionLimit(_) => "CONNECTION LIMIT",
+                })
+                .unwrap_or("options");
+            diagnostics.push(error(
+                LintRule::UnsupportedStatement,
+                find_line(raw_sql, "alter role"),
+                format!(
+                    "ALTER ROLE with {opt_name} is not supported in DSQL. Manage role attributes through IAM."
+                ),
+                "DSQL roles are managed via AWS IAM; remove role-attribute changes.",
+                FixResult::Unfixable,
+            ));
+        }
+        Statement::AlterRole {
+            operation: AlterRoleOperation::Set { .. },
+            ..
+        } => {
+            diagnostics.push(error(
+                LintRule::UnsupportedStatement,
+                find_line(raw_sql, "alter role"),
+                "ALTER ROLE ... SET <config> is not supported in DSQL.",
+                "Set session parameters via SET at connection time instead.",
+                FixResult::Unfixable,
+            ));
+        }
+
+        // ALTER USER — every variant is rejected by DSQL because role/user attributes
+        // are managed through IAM rather than SQL.
+        Statement::AlterUser(_) => {
+            diagnostics.push(error(
+                LintRule::UnsupportedStatement,
+                find_line(raw_sql, "alter user"),
+                "ALTER USER is not supported in DSQL. Manage user attributes through AWS IAM.",
+                "DSQL users are managed via AWS IAM; remove ALTER USER statements.",
+                FixResult::Unfixable,
+            ));
+        }
+
+        // DROP MATERIALIZED VIEW / DROP TYPE — DSQL rejects with "unsupported object in DROP".
+        Statement::Drop {
+            object_type: ObjectType::MaterializedView,
+            ..
+        } => {
+            diagnostics.push(error(
+                LintRule::UnsupportedStatement,
+                find_line(raw_sql, "materialized view"),
+                "DROP MATERIALIZED VIEW is not supported in DSQL.",
+                "Materialized views are not supported; use a regular VIEW instead.",
+                FixResult::Unfixable,
+            ));
+        }
+        Statement::Drop {
+            object_type: ObjectType::Type,
+            ..
+        } => {
+            diagnostics.push(error(
+                LintRule::UnsupportedStatement,
+                find_line(raw_sql, "drop type"),
+                "DROP TYPE is not supported in DSQL.",
+                "User-defined types are not supported in DSQL.",
+                FixResult::Unfixable,
+            ));
+        }
+
+        Statement::DropTrigger(_) => {
+            diagnostics.push(error(
+                LintRule::UnsupportedStatement,
+                find_line(raw_sql, "drop trigger"),
+                "DROP TRIGGER is not supported in DSQL.",
+                "Triggers are not supported in DSQL; remove trigger management from migrations.",
+                FixResult::Unfixable,
+            ));
+        }
+        Statement::DropPolicy(_) => {
+            diagnostics.push(error(
+                LintRule::UnsupportedStatement,
+                find_line(raw_sql, "drop policy"),
+                "DROP POLICY is not supported in DSQL.",
+                "Row-Level Security policies are not supported; remove policy management from migrations.",
                 FixResult::Unfixable,
             ));
         }
