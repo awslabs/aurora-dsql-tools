@@ -641,6 +641,27 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
             "DROP POLICY _rej_pol ON _clust_base;",
             "DROP POLICY",
         ),
+        LintRule::UnsupportedListen => fix("LISTEN _rej_ch;", "LISTEN"),
+        LintRule::UnsupportedUnlisten => fix("UNLISTEN _rej_ch;", "UNLISTEN"),
+        LintRule::UnsupportedNotify => fix("NOTIFY _rej_ch;", "NOTIFY"),
+        LintRule::UnsupportedLoad => fix("LOAD 'auto_explain';", "LOAD"),
+        LintRule::UnsupportedPrepare => {
+            fix("PREPARE _rej_p AS SELECT 1;", "PREPARE")
+        }
+        LintRule::UnsupportedDeallocate => fix("DEALLOCATE _rej_p;", "DEALLOCATE"),
+        LintRule::UnsupportedDiscard => fix("DISCARD ALL;", "DISCARD"),
+        LintRule::UnsupportedPartitionOf => fix(
+            "CREATE TABLE _rej_part PARTITION OF _clust_base FOR VALUES FROM (1) TO (100);",
+            "PARTITION OF",
+        ),
+        LintRule::UnsupportedOnCommit => fix(
+            "CREATE TABLE _rej_oc (id INT) ON COMMIT DROP;",
+            "ON COMMIT",
+        ),
+        LintRule::UnsupportedCreateTableWithOptions => fix(
+            "CREATE TABLE _rej_wo (id INT) WITH (autovacuum_enabled = false);",
+            "WITH",
+        ),
 
         LintRule::ParseError => None,
     }
