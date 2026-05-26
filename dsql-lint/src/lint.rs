@@ -27,6 +27,12 @@ pub enum FixResult {
 /// When serialized (via the `serde` feature), each variant becomes its
 /// `snake_case` form — e.g. `SerialType` → `"serial_type"`. These strings
 /// are the on-wire identifier; variant renames change the JSON output.
+///
+/// **Not stable for external pattern matching.** The set of variants grows
+/// as new rules are added, and existing variants may be renamed or split.
+/// External consumers should treat `LintRule` as opaque (or match on the
+/// serde string form) rather than relying on exhaustive matches.
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
 #[cfg_attr(
     feature = "serde",

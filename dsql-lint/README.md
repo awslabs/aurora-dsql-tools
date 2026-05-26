@@ -158,7 +158,7 @@ Schema notes:
 
 Stable wire contract for programmatic consumers:
 
-- `rule` — stable string vocabulary (see *Lint rule vocabulary* below).
+- `rule` — opaque string identifier. New rules may be added at any time, and existing rules may be renamed or split as DSQL grammar evolves; consumers should treat unknown values gracefully and not rely on the rule string set being closed.
 - `fix_result.status` — one of `"fixed"`, `"fixed_with_warning"`, `"unfixable"`.
 - **`fix_result.detail` is informational only.** The prose is subject to copy-edits between releases. Match on `rule` + `fix_result.status` for programmatic logic; surface `detail` to humans only.
 - For `fix_result.status == "unfixable"` the `detail` key is omitted entirely (the rule had no payload to attach). The other two statuses always carry a `detail` string.

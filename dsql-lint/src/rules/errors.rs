@@ -1138,20 +1138,22 @@ fn check_unsupported_statements(
             ));
         }
 
-        Statement::DropTrigger(_) => {
+        Statement::DropTrigger(t) => {
+            let label = format!(" '{}'", t.trigger_name);
             diagnostics.push(error(
                 LintRule::UnsupportedDropTrigger,
                 find_line(raw_sql, "drop trigger"),
-                "DROP TRIGGER is not supported in DSQL.",
+                format!("DROP TRIGGER{label} is not supported in DSQL."),
                 "Triggers are not supported in DSQL; remove trigger management from migrations.",
                 FixResult::Unfixable,
             ));
         }
-        Statement::DropPolicy(_) => {
+        Statement::DropPolicy(p) => {
+            let label = format!(" '{}'", p.name);
             diagnostics.push(error(
                 LintRule::UnsupportedDropPolicy,
                 find_line(raw_sql, "drop policy"),
-                "DROP POLICY is not supported in DSQL.",
+                format!("DROP POLICY{label} is not supported in DSQL."),
                 "Row-Level Security policies are not supported; remove policy management from migrations.",
                 FixResult::Unfixable,
             ));

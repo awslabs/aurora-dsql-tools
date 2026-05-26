@@ -700,7 +700,10 @@ fn lint_rule_fixtures_validated_on_cluster() {
         // succeeds, revisit the rule's justification rather than silencing the test.
         if exec(&ep, &token, fix.sql).is_ok() {
             failures.push(format!(
-                "[{rule:?}] expected DSQL to reject unfixed input, but it succeeded\n  Input: {}",
+                "[{rule:?}] expected DSQL to reject unfixed input, but it succeeded. \
+                 Check if DSQL now supports this feature — if so, remove the rule. \
+                 Otherwise the fixture's setup may have masked the rejection (e.g. the \
+                 referenced object exists when it shouldn't, or vice versa).\n  Input: {}",
                 fix.sql
             ));
         }
