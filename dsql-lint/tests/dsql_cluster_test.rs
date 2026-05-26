@@ -63,6 +63,18 @@ fn shared_public_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Acquire the `public`-schema lock and the cached cluster creds in one call.
+/// `unwrap_or_else(|e| e.into_inner())` recovers from poisoning so a panicked
+/// earlier test doesn't cascade through every later test as a `PoisonError`
+/// that hides the real assertion.
+fn locked_creds() -> (std::sync::MutexGuard<'static, ()>, String, String) {
+    let guard = shared_public_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let (ep, token) = cluster_creds();
+    (guard, ep, token)
+}
+
 fn generate_token(endpoint: &str, region: &str) -> String {
     let output = Command::new("aws")
         .args([
@@ -155,7 +167,6 @@ fn run_sql_file_in_schema_once(
     }
 }
 
-
 fn run_sql_once(endpoint: &str, token: &str, sql: &str) -> Result<String, String> {
     let output = psql_cmd(endpoint, token)
         .args(["-c", sql])
@@ -228,7 +239,14 @@ fn cleanup(endpoint: &str, token: &str, sql: &str) {
             Err(err) if err.contains("OC001") && attempt < MAX_RETRIES - 1 => {
                 thread::sleep(Duration::from_millis(RETRY_BASE_MS * (attempt as u64 + 1)));
             }
-            _ => return,
+            Err(err) => {
+                // Cleanup failures are non-fatal (the next test's setup may
+                // succeed anyway), but silently swallowing them turns a real
+                // failure ("relation already exists" on next attempt) into a
+                // misleading error. Surface them so a flaky cluster is debuggable.
+                eprintln!("WARN: cleanup `{sql}` failed: {err}");
+                return;
+            }
         }
     }
 }
@@ -430,8 +448,7 @@ const FIX_MATRIX: &[(&str, &str, &str)] = &[
 
 #[test]
 fn fix_matrix_against_cluster() {
-    let _shared = shared_public_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let (ep, token) = cluster_creds();
+    let (_shared, ep, token) = locked_creds();
     cleanup(&ep, &token, "DROP TABLE IF EXISTS _clust_base CASCADE;");
     ensure_base_table(&ep, &token);
 
@@ -501,8 +518,7 @@ fn fix_matrix_against_cluster() {
 
 #[test]
 fn fix_multi_statement_against_cluster() {
-    let _shared = shared_public_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let (ep, token) = cluster_creds();
+    let (_shared, ep, token) = locked_creds();
 
     cleanup(&ep, &token, "DROP INDEX IF EXISTS _clust_multi_idx;");
     cleanup(&ep, &token, "DROP TABLE IF EXISTS _clust_multi;");
@@ -510,8 +526,7 @@ fn fix_multi_statement_against_cluster() {
     let input = "CREATE TABLE _clust_multi (id SERIAL PRIMARY KEY);\nCREATE INDEX _clust_multi_idx ON _clust_multi(id);";
     let result = fix_sql(input);
 
-    let multi_cleanup =
-        "DROP INDEX IF EXISTS _clust_multi_idx; DROP TABLE IF EXISTS _clust_multi;";
+    let multi_cleanup = "DROP INDEX IF EXISTS _clust_multi_idx; DROP TABLE IF EXISTS _clust_multi;";
     let exec_result = run_sql_file(&ep, &token, &result.sql, multi_cleanup);
     run_cleanup_stmts(&ep, &token, multi_cleanup);
 
@@ -531,8 +546,7 @@ fn fix_multi_statement_against_cluster() {
 
 #[test]
 fn clean_types_accepted_by_cluster() {
-    let _shared = shared_public_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let (ep, token) = cluster_creds();
+    let (_shared, ep, token) = locked_creds();
 
     let mut failures = Vec::new();
 
@@ -565,8 +579,7 @@ fn clean_types_accepted_by_cluster() {
 
 #[test]
 fn clean_statements_accepted_by_cluster() {
-    let _shared = shared_public_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let (ep, token) = cluster_creds();
+    let (_shared, ep, token) = locked_creds();
 
     cleanup(&ep, &token, "DROP TABLE IF EXISTS _clean_base CASCADE;");
     run_sql(&ep, &token, "CREATE TABLE _clean_base (id INT, name TEXT);").expect("setup failed");
@@ -603,8 +616,7 @@ fn clean_statements_accepted_by_cluster() {
 
 #[test]
 fn index_variants_accepted_by_cluster() {
-    let _shared = shared_public_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let (ep, token) = cluster_creds();
+    let (_shared, ep, token) = locked_creds();
 
     cleanup(&ep, &token, "DROP TABLE IF EXISTS _clust_idxtbl CASCADE;");
     run_sql(
@@ -661,8 +673,7 @@ fn index_variants_accepted_by_cluster() {
 
 #[test]
 fn sequence_variants_accepted_by_cluster() {
-    let _shared = shared_public_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let (ep, token) = cluster_creds();
+    let (_shared, ep, token) = locked_creds();
 
     let cases: &[(&str, &str, &str)] = &[
         (
@@ -712,8 +723,7 @@ fn sequence_variants_accepted_by_cluster() {
 
 #[test]
 fn clean_multi_statement_cases_accepted_by_cluster() {
-    let _shared = shared_public_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let (ep, token) = cluster_creds();
+    let (_shared, ep, token) = locked_creds();
 
     let mut failures = Vec::new();
 
@@ -871,7 +881,7 @@ fn lint_rule_fixtures_validated_on_cluster() {
                     // OC001 hits mid-file; reset between retries so each attempt
                     // starts clean.
                     let mut last_err = None;
-                    for retry in 0..3 {
+                    for retry in 0..MAX_RETRIES {
                         if retry > 0 {
                             if let Err(e) = reset(&schema) {
                                 last_err = Some(format!("reset before retry {retry} failed: {e}"));
@@ -912,7 +922,10 @@ fn lint_rule_fixtures_validated_on_cluster() {
         }
     });
 
-    let failures = failures.into_inner().unwrap();
+    let mut failures = failures.into_inner().unwrap();
+    // Workers process the rule queue in nondeterministic order; sort so the
+    // failure message diff is stable across runs.
+    failures.sort();
     assert!(
         failures.is_empty(),
         "LintRule fixture failures against DSQL cluster:\n\n{}",
@@ -956,8 +969,7 @@ const DDL_TXN_FIX_CASES: &[(&str, &str, &str)] = &[
 
 #[test]
 fn ddl_transaction_fix_against_cluster() {
-    let _shared = shared_public_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let (ep, token) = cluster_creds();
+    let (_shared, ep, token) = locked_creds();
 
     let mut failures = Vec::new();
 

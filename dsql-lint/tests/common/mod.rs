@@ -337,6 +337,15 @@ pub const ADDITIONAL_FALSE_POSITIVES: &[(&str, &str)] = &[
         "ALTER TABLE t ADD COLUMN id BIGINT GENERATED ALWAYS AS IDENTITY (CACHE 1);",
         "CACHE clause",
     ),
+    // DEALLOCATE ALL is the one form DSQL accepts.
+    ("DEALLOCATE ALL;", "DEALLOCATE"),
+    ("deallocate all;", "DEALLOCATE"),
+    // TABLESPACE-only CREATE TABLE must not double-fire as a storage-parameter
+    // diagnostic — Tablespace removal above empties the opts list.
+    (
+        "CREATE TABLE t (id INT) TABLESPACE my_space;",
+        "storage parameters",
+    ),
 ];
 
 use dsql_lint::LintRule;
@@ -658,7 +667,7 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
             "CREATE TABLE _rej_oc (id INT) ON COMMIT DROP;",
             "ON COMMIT",
         ),
-        LintRule::UnsupportedCreateTableWithOptions => fix(
+        LintRule::UnsupportedCreateTableWithStorageParameters => fix(
             "CREATE TABLE _rej_wo (id INT) WITH (autovacuum_enabled = false);",
             "WITH",
         ),

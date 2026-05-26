@@ -121,7 +121,7 @@ pub enum LintRule {
     UnsupportedDiscard,
     UnsupportedPartitionOf,
     UnsupportedOnCommit,
-    UnsupportedCreateTableWithOptions,
+    UnsupportedCreateTableWithStorageParameters,
     MultiDdlTransaction,
     MixedDdlDmlTransaction,
     ParseError,

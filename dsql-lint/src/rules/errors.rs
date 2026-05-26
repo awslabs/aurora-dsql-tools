@@ -269,17 +269,18 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
             CreateTableOptions::None => {}
         }
 
-        // CREATE TABLE ... WITH (storage_param = ...) — DSQL rejects all
-        // PostgreSQL storage parameters (autovacuum_enabled, fillfactor, etc.).
-        // Reported after Tablespace removal so we don't double-flag the same opts.
-        let with_opts_remaining = matches!(
-            &ct.table_options,
-            CreateTableOptions::With(opts) | CreateTableOptions::Options(opts) | CreateTableOptions::Plain(opts) | CreateTableOptions::TableProperties(opts)
-                if !opts.is_empty()
-        );
+        // Reported after Tablespace removal above so a TABLESPACE-only
+        // CREATE TABLE doesn't double-flag.
+        let with_opts_remaining = match &ct.table_options {
+            CreateTableOptions::With(opts)
+            | CreateTableOptions::Options(opts)
+            | CreateTableOptions::Plain(opts)
+            | CreateTableOptions::TableProperties(opts) => !opts.is_empty(),
+            CreateTableOptions::None => false,
+        };
         if with_opts_remaining {
             diagnostics.push(error(
-                LintRule::UnsupportedCreateTableWithOptions,
+                LintRule::UnsupportedCreateTableWithStorageParameters,
                 find_line(raw_sql, "with"),
                 "CREATE TABLE WITH (...) storage parameters are not supported in DSQL.",
                 "Remove the WITH clause. DSQL manages storage parameters automatically.",
@@ -287,7 +288,6 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
             ));
         }
 
-        // PARTITION OF — declarative partition children.
         if ct.partition_of.is_some() {
             diagnostics.push(error(
                 LintRule::UnsupportedPartitionOf,
@@ -298,8 +298,8 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
             ));
         }
 
-        // ON COMMIT clause — only valid on temporary tables in PostgreSQL,
-        // and DSQL does not support either.
+        // ON COMMIT in PostgreSQL is only meaningful on TEMP tables, which DSQL
+        // also does not support — flagging ON COMMIT covers both.
         if ct.on_commit.is_some() {
             diagnostics.push(error(
                 LintRule::UnsupportedOnCommit,
@@ -1179,7 +1179,6 @@ fn check_unsupported_statements(
             ));
         }
 
-        // LISTEN / UNLISTEN / NOTIFY — notification subsystem not supported.
         Statement::LISTEN { .. } => {
             diagnostics.push(error(
                 LintRule::UnsupportedListen,
@@ -1208,7 +1207,6 @@ fn check_unsupported_statements(
             ));
         }
 
-        // LOAD '<extension>' — extensions cannot be loaded in DSQL.
         Statement::Load { .. } => {
             diagnostics.push(error(
                 LintRule::UnsupportedLoad,
@@ -1219,8 +1217,8 @@ fn check_unsupported_statements(
             ));
         }
 
-        // PREPARE — server-side prepared statements via SQL are rejected.
-        // (Driver-level prepared statements over the wire still work.)
+        // SQL-level PREPARE is rejected; driver-level prepared statements
+        // over the wire still work.
         Statement::Prepare { .. } => {
             diagnostics.push(error(
                 LintRule::UnsupportedPrepare,
@@ -1231,18 +1229,19 @@ fn check_unsupported_statements(
             ));
         }
 
-        // DEALLOCATE <name> is rejected by DSQL; DEALLOCATE ALL is accepted.
+        // DEALLOCATE ALL is accepted by DSQL; named DEALLOCATE is not.
         Statement::Deallocate { name, .. } if !name.value.eq_ignore_ascii_case("ALL") => {
             diagnostics.push(error(
                 LintRule::UnsupportedDeallocate,
                 find_line(raw_sql, "deallocate"),
-                format!("DEALLOCATE '{name}' is not supported in DSQL. Only DEALLOCATE ALL is allowed."),
+                format!(
+                    "DEALLOCATE '{name}' is not supported in DSQL. Only DEALLOCATE ALL is allowed."
+                ),
                 "Use DEALLOCATE ALL, or rely on driver-level prepared statement management.",
                 FixResult::Unfixable,
             ));
         }
 
-        // DISCARD ALL/PLANS/SEQUENCES/TEMP — none are supported by DSQL.
         Statement::Discard { .. } => {
             diagnostics.push(error(
                 LintRule::UnsupportedDiscard,
