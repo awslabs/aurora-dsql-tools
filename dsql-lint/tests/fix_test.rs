@@ -1,4 +1,4 @@
-use dsql_lint::{fix_sql, FixResult};
+use dsql_lint::{fix_sql, FixResult, LintRule};
 
 // ═══════════════════════════════════════════════════════════════════════
 // FIX TIER MATRIX
@@ -561,13 +561,108 @@ fn fix_ddl_with_dml_roundtrip_clean() {
     let sql = "BEGIN;\nCREATE TABLE a (id INT);\nINSERT INTO a VALUES (1);\nCREATE TABLE b (id INT);\nCOMMIT;";
     let result = fix_sql(sql);
     let re_lint = dsql_lint::lint_sql(&result.sql);
-    let ddl_txn_errors: Vec<_> = re_lint
+    let txn_errors: Vec<_> = re_lint
         .iter()
-        .filter(|d| d.message.contains("DDL statements"))
+        .filter(|d| {
+            matches!(
+                d.rule,
+                LintRule::MultiDdlTransaction | LintRule::MixedDdlDmlTransaction
+            )
+        })
         .collect();
     assert!(
-        ddl_txn_errors.is_empty(),
-        "Fixed DDL+DML output should have no DDL transaction errors:\n  Fixed SQL: {}\n  Errors: {ddl_txn_errors:?}",
+        txn_errors.is_empty(),
+        "Fixed DDL+DML output should have no DDL transaction errors:\n  Fixed SQL: {}\n  Errors: {txn_errors:?}",
+        result.sql
+    );
+}
+
+#[test]
+fn rollback_terminated_mixed_txn_does_not_emit_mixed_diagnostic() {
+    // ROLLBACK never commits, so DSQL never sees the violation.
+    let sql = "BEGIN;\nCREATE TABLE z (id INT);\nINSERT INTO z VALUES (1);\nROLLBACK;";
+    let diags = dsql_lint::lint_sql(sql);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.rule == LintRule::MixedDdlDmlTransaction),
+        "ROLLBACK-terminated mixed txn should not emit MixedDdlDmlTransaction: {diags:?}"
+    );
+}
+
+#[test]
+fn unclosed_mixed_txn_does_not_emit_mixed_diagnostic() {
+    // No COMMIT seen → analyzer cannot conclude the txn would have violated.
+    let sql = "BEGIN;\nCREATE TABLE z (id INT);\nINSERT INTO z VALUES (1);";
+    let diags = dsql_lint::lint_sql(sql);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.rule == LintRule::MixedDdlDmlTransaction),
+        "Unclosed mixed txn should not emit MixedDdlDmlTransaction: {diags:?}"
+    );
+}
+
+#[test]
+fn dml_then_ddl_in_txn_still_emits_mixed_diagnostic() {
+    // Order-invariance: the analyzer must flag the violation regardless
+    // of which side of the transaction the DDL appears on.
+    let sql = "BEGIN;\nINSERT INTO z VALUES (1);\nCREATE TABLE z (id INT);\nCOMMIT;";
+    let diags = dsql_lint::lint_sql(sql);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.rule == LintRule::MixedDdlDmlTransaction),
+        "DML-then-DDL ordering should still emit MixedDdlDmlTransaction: {diags:?}"
+    );
+}
+
+#[test]
+fn savepoint_inside_mixed_txn_still_flagged_at_commit() {
+    let sql = "BEGIN;\nCREATE TABLE z (id INT);\nSAVEPOINT sp;\nINSERT INTO z VALUES (1);\nCOMMIT;";
+    let diags = dsql_lint::lint_sql(sql);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.rule == LintRule::MixedDdlDmlTransaction),
+        "SAVEPOINT inside mixed txn should not suppress MixedDdlDmlTransaction at COMMIT: {diags:?}"
+    );
+}
+
+#[test]
+fn two_transactions_only_mixed_one_flagged() {
+    let sql = "BEGIN;\nINSERT INTO existing VALUES (1);\nCOMMIT;\n\
+               BEGIN;\nCREATE TABLE z (id INT);\nINSERT INTO z VALUES (1);\nCOMMIT;";
+    let diags = dsql_lint::lint_sql(sql);
+    let mixed: Vec<_> = diags
+        .iter()
+        .filter(|d| d.rule == LintRule::MixedDdlDmlTransaction)
+        .collect();
+    assert_eq!(
+        mixed.len(),
+        1,
+        "Only the mixed transaction should be flagged, got: {mixed:?}"
+    );
+}
+
+#[test]
+fn fix_single_ddl_plus_dml_in_txn_emits_diagnostic_and_splits() {
+    let sql = "BEGIN;\nCREATE TABLE z (id INT);\nINSERT INTO z VALUES (1);\nCOMMIT;";
+    let result = fix_sql(sql);
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.rule == LintRule::MixedDdlDmlTransaction),
+        "Single-DDL + DML in same txn should emit MixedDdlDmlTransaction: {:?}",
+        result.diagnostics
+    );
+    let re_lint = dsql_lint::lint_sql(&result.sql);
+    assert!(
+        !re_lint
+            .iter()
+            .any(|d| d.rule == LintRule::MixedDdlDmlTransaction),
+        "Fixed output should re-lint clean:\n  Fixed: {}\n  Re-lint: {re_lint:?}",
         result.sql
     );
 }

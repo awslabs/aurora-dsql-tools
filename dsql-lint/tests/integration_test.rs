@@ -267,6 +267,92 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "ALTER INDEX idx_name RENAME TO idx_new;",
         "ALTER INDEX",
     ),
+    // ALTER FUNCTION — only property-change Actions are rejected here.
+    // OWNER TO / RENAME TO / SET SCHEMA are covered by FALSE_POSITIVE_CASES in common/mod.rs.
+    (
+        "alter-function-immutable",
+        "ALTER FUNCTION fn() IMMUTABLE;",
+        "ALTER FUNCTION",
+    ),
+    (
+        "alter-function-strict",
+        "ALTER FUNCTION fn() STRICT;",
+        "ALTER FUNCTION",
+    ),
+    // ALTER AGGREGATE — entire family rejected
+    (
+        "alter-aggregate-rename",
+        "ALTER AGGREGATE my_agg(integer) RENAME TO new_agg;",
+        "ALTER AGGREGATE",
+    ),
+    (
+        "alter-aggregate-owner",
+        "ALTER AGGREGATE my_agg(*) OWNER TO admin;",
+        "ALTER AGGREGATE",
+    ),
+    // ALTER POLICY
+    (
+        "alter-policy",
+        "ALTER POLICY p ON t USING (true);",
+        "ALTER POLICY",
+    ),
+    // ALTER TYPE
+    (
+        "alter-type-add-value",
+        "ALTER TYPE mood ADD VALUE 'neutral';",
+        "ALTER TYPE",
+    ),
+    (
+        "alter-type-rename",
+        "ALTER TYPE mood RENAME TO feeling;",
+        "ALTER TYPE",
+    ),
+    // ALTER ROLE — WithOptions and Set are rejected
+    (
+        "alter-role-password",
+        "ALTER ROLE r WITH PASSWORD 'pw';",
+        "PASSWORD",
+    ),
+    (
+        "alter-role-valid-until",
+        "ALTER ROLE r VALID UNTIL 'infinity';",
+        "VALID UNTIL",
+    ),
+    (
+        "alter-role-superuser",
+        "ALTER ROLE r SUPERUSER;",
+        "SUPERUSER",
+    ),
+    (
+        "alter-role-createrole",
+        "ALTER ROLE r CREATEROLE;",
+        "CREATEROLE",
+    ),
+    (
+        "alter-role-multi-option",
+        "ALTER ROLE r WITH PASSWORD 'pw' VALID UNTIL 'infinity' SUPERUSER;",
+        "PASSWORD, VALID UNTIL, SUPERUSER",
+    ),
+    (
+        "alter-role-set",
+        "ALTER ROLE r SET work_mem = '64MB';",
+        "ALTER ROLE",
+    ),
+    // ALTER USER — blanket-rejected (alias of ALTER ROLE in PostgreSQL).
+    (
+        "alter-user-password",
+        "ALTER USER u WITH PASSWORD 'pw';",
+        "ALTER USER",
+    ),
+    // DROP MATERIALIZED VIEW / TYPE / TRIGGER / POLICY
+    (
+        "drop-materialized-view",
+        "DROP MATERIALIZED VIEW mv;",
+        "MATERIALIZED VIEW 'mv'",
+    ),
+    ("drop-type", "DROP TYPE mood;", "DROP TYPE 'mood'"),
+    ("drop-trigger", "DROP TRIGGER trg ON t;", "DROP TRIGGER"),
+    ("drop-policy", "DROP POLICY p ON t;", "DROP POLICY"),
     // Identity column with non-BIGINT type
     (
         "identity-non-bigint",
@@ -705,19 +791,20 @@ fn fixture_sample_migration() {
 // ═══════════════════════════════════════════════════════════════════════
 // 8. LINT RULE COVERAGE ENFORCEMENT
 // ═══════════════════════════════════════════════════════════════════════
-// The exhaustive match in `cluster_test_for_rule` is the primary
-// enforcement: new LintRule variant without a match arm = compile error.
-// This test validates that every non-None mapping actually produces
-// the expected diagnostic, catching stale or wrong SQL/message pairs.
+// The exhaustive match in `fixture_for_rule` is the primary enforcement:
+// a new LintRule variant without a match arm = compile error. This test
+// validates that every non-None fixture actually produces the expected
+// diagnostic, catching stale or wrong SQL/message pairs.
 
 #[test]
 fn lint_rule_mapping_produces_expected_diagnostics() {
     for rule in LintRule::iter() {
-        if let Some((sql, expected_msg)) = common::cluster_test_for_rule(rule) {
-            let diags = lint_sql(sql);
+        if let Some(fix) = common::fixture_for_rule(rule) {
+            let diags = lint_sql(fix.sql);
             assert!(
-                diags.iter().any(|d| d.rule == rule && d.message.contains(expected_msg)),
-                "Rule {rule:?} mapping SQL doesn't trigger expected diagnostic.\n  SQL: {sql}\n  Expected: {expected_msg}\n  Got: {diags:?}"
+                diags.iter().any(|d| d.rule == rule && d.message.contains(fix.expected_msg_substr)),
+                "Rule {rule:?} fixture doesn't trigger expected diagnostic.\n  SQL: {}\n  Expected: {}\n  Got: {diags:?}",
+                fix.sql, fix.expected_msg_substr,
             );
         }
     }

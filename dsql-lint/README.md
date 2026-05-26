@@ -158,7 +158,7 @@ Schema notes:
 
 Stable wire contract for programmatic consumers:
 
-- `rule` — stable string vocabulary (see *Lint rule vocabulary* below).
+- `rule` — opaque string identifier. New rules may be added at any time, and existing rules may be renamed or split as DSQL grammar evolves; consumers should treat unknown values gracefully and not rely on the rule string set being closed.
 - `fix_result.status` — one of `"fixed"`, `"fixed_with_warning"`, `"unfixable"`.
 - **`fix_result.detail` is informational only.** The prose is subject to copy-edits between releases. Match on `rule` + `fix_result.status` for programmatic logic; surface `detail` to humans only.
 - For `fix_result.status == "unfixable"` the `detail` key is omitted entirely (the rule had no payload to attach). The other two statuses always carry a `detail` string.
@@ -181,23 +181,6 @@ if [ $rc -eq 1 ]; then
 fi
 # rc 0 or 3 both mean fix succeeded (3 = review warnings)
 ```
-
-### Lint rule vocabulary
-
-`rule` values emitted in JSON output (stable wire contract — renames are breaking changes):
-
-```
-serial_type, json_type, array_type, foreign_key, temp_table,
-partition_by, inherits, create_table_as, tablespace,
-identity_type, identity_cache, identity_cache_missing,
-index_async, index_concurrently, index_using, index_expression, index_partial,
-truncate, sequence_type, sequence_cache, sequence_cache_missing,
-add_column_constraint, transaction_isolation, set_transaction,
-unsupported_alter_table_op, unsupported_statement,
-multi_ddl_transaction, parse_error
-```
-
-New rules may be added in non-breaking releases. Consumers matching on `rule` should default-handle unknown values gracefully.
 
 ## Library
 

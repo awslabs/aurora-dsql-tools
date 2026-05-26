@@ -119,6 +119,7 @@ pub const CLEAN_STATEMENTS: &[(&str, &str, &str, &str)] = &[
 /// Mirrored into `tests/grammar_corpus/in_tree/false_positive_cases.sql` for
 /// the grammar-diff tool. The mirror is kept in sync by
 /// `tests/grammar_corpus_mirror_test.rs`.
+#[allow(dead_code)]
 pub const FALSE_POSITIVE_CASES: &[(&str, &str)] = &[
     // Column named 'serial_number' should not trigger SERIAL rule
     (
@@ -210,11 +211,28 @@ pub const FALSE_POSITIVE_CASES: &[(&str, &str)] = &[
         "ALTER TABLE t ADD CONSTRAINT c CHECK (id > 0);",
         "USING INDEX",
     ),
+    // ALTER FUNCTION OWNER TO / RENAME TO / SET SCHEMA / DEPENDS ON EXTENSION are supported on DSQL
+    ("ALTER FUNCTION fn() OWNER TO admin;", "ALTER FUNCTION"),
+    ("ALTER FUNCTION fn() RENAME TO fn2;", "ALTER FUNCTION"),
+    ("ALTER FUNCTION fn() SET SCHEMA s;", "ALTER FUNCTION"),
+    (
+        "ALTER FUNCTION fn() DEPENDS ON EXTENSION ext;",
+        "ALTER FUNCTION",
+    ),
+    // ALTER ROLE RENAME TO / RESET are supported on DSQL.
+    // RESET ALL and RESET <param> are distinct sqlparser AST variants
+    // (ResetConfig::ALL vs ResetConfig::ConfigName); both must be pinned.
+    ("ALTER ROLE r RENAME TO r2;", "ALTER ROLE"),
+    ("ALTER ROLE r RESET ALL;", "ALTER ROLE"),
+    ("ALTER ROLE r RESET work_mem;", "ALTER ROLE"),
+    // DROP VIEW (non-materialized) is supported on DSQL
+    ("DROP VIEW v;", "MATERIALIZED VIEW"),
 ];
 
 /// SQL that must trigger a diagnostic whose `message` contains the second
 /// element. Mirror in `in_tree/error_cases.sql`; mirror guard in
 /// `grammar_corpus_mirror_test.rs`.
+#[allow(dead_code)]
 pub const ADDITIONAL_ERROR_CASES: &[(&str, &str)] = &[
     (
         "ALTER TABLE t ADD COLUMN status VARCHAR(50) DEFAULT 'pending';",
@@ -291,6 +309,7 @@ pub const ADDITIONAL_ERROR_CASES: &[(&str, &str)] = &[
 
 /// Additional false-positive guards. Mirror in
 /// `in_tree/false_positive_cases.sql` (concatenated with `FALSE_POSITIVE_CASES`).
+#[allow(dead_code)]
 pub const ADDITIONAL_FALSE_POSITIVES: &[(&str, &str)] = &[
     ("ALTER TABLE t ADD COLUMN status VARCHAR(50);", "ADD COLUMN"),
     // REPEATABLE READ should not error
@@ -322,98 +341,308 @@ pub const ADDITIONAL_FALSE_POSITIVES: &[(&str, &str)] = &[
 
 use dsql_lint::LintRule;
 
-/// Maps every lint rule to representative SQL that triggers it, plus the
-/// expected error substring.
+/// One example per `LintRule` variant: SQL that triggers the rule, the
+/// expected error substring, and optional setup/cleanup SQL for cluster
+/// runs. Adding a new `LintRule` variant without a match arm is a compile
+/// error — that's the whole guarantee. Returning `None` skips the rule
+/// from BOTH unit (integration_test.rs) and cluster validation
+/// (dsql_cluster_test.rs); reserve `None` for rules that can't be
+/// expressed as a single statement (e.g. `ParseError`).
 ///
-/// Adding a new `LintRule` variant without a match arm here is a compile error.
-/// Return `None` for rules that don't need cluster validation (e.g. parse errors).
+/// Cluster tests assume `_clust_base (id INT, col INT)` exists; the
+/// per-rule cluster runner creates it before iteration. Setup/cleanup
+/// fields are for objects beyond `_clust_base` (sequences, indexes,
+/// dropped objects that need pre-existing).
 #[allow(dead_code)]
-pub fn cluster_test_for_rule(rule: LintRule) -> Option<(&'static str, &'static str)> {
+#[derive(Debug, Clone, Copy)]
+pub struct RuleFixture {
+    pub sql: &'static str,
+    pub expected_msg_substr: &'static str,
+    pub setup_sql: &'static str,
+    pub cleanup_sql: &'static str,
+}
+
+#[allow(dead_code)]
+const fn fix(sql: &'static str, msg: &'static str) -> Option<RuleFixture> {
+    Some(RuleFixture {
+        sql,
+        expected_msg_substr: msg,
+        setup_sql: "",
+        cleanup_sql: "",
+    })
+}
+
+#[allow(dead_code)]
+const fn fix_with(
+    sql: &'static str,
+    msg: &'static str,
+    setup: &'static str,
+    cleanup: &'static str,
+) -> Option<RuleFixture> {
+    Some(RuleFixture {
+        sql,
+        expected_msg_substr: msg,
+        setup_sql: setup,
+        cleanup_sql: cleanup,
+    })
+}
+
+#[allow(dead_code)]
+pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
     match rule {
-        LintRule::SerialType => Some(("CREATE TABLE _r (id SERIAL PRIMARY KEY);", "SERIAL")),
-        LintRule::JsonType => Some(("CREATE TABLE _r (id INT, data JSONB);", "JSONB")),
-        LintRule::ArrayType => Some(("CREATE TABLE _r (id INT, tags TEXT[]);", "array")),
-        LintRule::ForeignKey => Some((
+        // ─── Single-purpose rules ─────────────────────────────────────────
+        LintRule::SerialType => fix("CREATE TABLE _r (id SERIAL PRIMARY KEY);", "SERIAL"),
+        LintRule::JsonType => fix("CREATE TABLE _r (id INT, data JSONB);", "JSONB"),
+        LintRule::ArrayType => fix("CREATE TABLE _r (id INT, tags TEXT[]);", "array"),
+        LintRule::ForeignKey => fix(
             "CREATE TABLE _r (id INT, cid INT REFERENCES _clust_base(id));",
             "FOREIGN KEY",
-        )),
-        LintRule::TempTable => Some(("CREATE TEMP TABLE _r (id INT);", "TEMPORARY")),
-        LintRule::PartitionBy => Some((
+        ),
+        LintRule::TempTable => fix("CREATE TEMP TABLE _r (id INT);", "TEMPORARY"),
+        LintRule::PartitionBy => fix(
             "CREATE TABLE _r (id INT, d DATE) PARTITION BY RANGE (d);",
             "PARTITION",
-        )),
-        LintRule::Inherits => Some((
+        ),
+        LintRule::Inherits => fix(
             "CREATE TABLE _r (extra INT) INHERITS (_clust_base);",
             "INHERITS",
-        )),
-        LintRule::CreateTableAs => Some(("CREATE TABLE _r AS SELECT 1 AS id;", "CREATE TABLE AS")),
-        LintRule::Tablespace => Some((
+        ),
+        LintRule::CreateTableAs => fix("CREATE TABLE _r AS SELECT 1 AS id;", "CREATE TABLE AS"),
+        LintRule::Tablespace => fix(
             "CREATE TABLE _r (id INT) TABLESPACE my_space;",
             "TABLESPACE",
-        )),
-        LintRule::IdentityType => Some((
+        ),
+        LintRule::IdentityType => fix(
             "CREATE TABLE _r (id INTEGER GENERATED ALWAYS AS IDENTITY);",
             "Identity column",
-        )),
-        LintRule::IdentityCache => Some((
+        ),
+        LintRule::IdentityCache => fix(
             "CREATE TABLE _r (id BIGINT GENERATED ALWAYS AS IDENTITY (CACHE 100));",
             "CACHE value",
-        )),
-        LintRule::IdentityCacheMissing => Some((
+        ),
+        LintRule::IdentityCacheMissing => fix(
             "CREATE TABLE _r (id BIGINT GENERATED ALWAYS AS IDENTITY);",
             "CACHE",
-        )),
-        LintRule::IndexAsync => Some(("CREATE INDEX _r_idx ON _clust_base(col);", "ASYNC")),
-        LintRule::IndexConcurrently => Some((
+        ),
+        LintRule::IndexAsync => fix("CREATE INDEX _r_idx ON _clust_base(col);", "ASYNC"),
+        LintRule::IndexConcurrently => fix(
             "CREATE INDEX CONCURRENTLY _r_idx ON _clust_base(col);",
             "CONCURRENTLY",
-        )),
-        LintRule::IndexUsing => Some((
+        ),
+        LintRule::IndexUsing => fix(
             "CREATE INDEX ASYNC _r_idx ON _clust_base USING btree(col);",
             "USING",
-        )),
-        LintRule::IndexExpression => Some((
+        ),
+        LintRule::IndexExpression => fix(
             "CREATE INDEX ASYNC _r_idx ON _clust_base(lower(col));",
             "Expression",
-        )),
-        LintRule::IndexPartial => Some((
+        ),
+        LintRule::IndexPartial => fix(
             "CREATE INDEX ASYNC _r_idx ON _clust_base(col) WHERE col > 0;",
             "Partial",
-        )),
-        LintRule::Truncate => Some(("TRUNCATE TABLE _clust_base;", "TRUNCATE")),
-        LintRule::SequenceType => Some((
+        ),
+        LintRule::Truncate => fix("TRUNCATE TABLE _clust_base;", "TRUNCATE"),
+        LintRule::SequenceType => fix(
             "CREATE SEQUENCE _r_seq AS INTEGER CACHE 1;",
             "CREATE SEQUENCE with type",
-        )),
-        LintRule::SequenceCache => Some(("CREATE SEQUENCE _r_seq CACHE 100;", "CACHE value")),
-        LintRule::SequenceCacheMissing => Some(("CREATE SEQUENCE _r_seq;", "CACHE")),
-        LintRule::AddColumnConstraint => Some((
+        ),
+        LintRule::SequenceCache => fix("CREATE SEQUENCE _r_seq CACHE 100;", "CACHE value"),
+        LintRule::SequenceCacheMissing => fix("CREATE SEQUENCE _r_seq;", "CACHE"),
+        LintRule::AddColumnConstraint => fix(
             "ALTER TABLE _clust_base ADD COLUMN status VARCHAR(50) DEFAULT 'pending';",
             "ADD COLUMN",
-        )),
+        ),
         LintRule::TransactionIsolation => {
-            Some(("BEGIN ISOLATION LEVEL SERIALIZABLE;", "isolation level"))
+            fix("BEGIN ISOLATION LEVEL SERIALIZABLE;", "isolation level")
         }
-        LintRule::SetTransaction => Some((
+        LintRule::SetTransaction => fix(
             "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;",
             "SET TRANSACTION",
-        )),
-        LintRule::UnsupportedAlterTableOp => {
-            Some(("ALTER TABLE _clust_base DROP COLUMN col;", "DROP COLUMN"))
-        }
-        LintRule::UnsupportedStatement => Some((
-            "CREATE TRIGGER trg AFTER INSERT ON _clust_base FOR EACH ROW EXECUTE FUNCTION f();",
-            "TRIGGER",
-        )),
-        LintRule::MultiDdlTransaction => Some((
+        ),
+        LintRule::MultiDdlTransaction => fix(
             "BEGIN;\nCREATE TABLE _r_a (id INT);\nCREATE TABLE _r_b (id INT);\nCOMMIT;",
             "DDL statements",
-        )),
+        ),
+        LintRule::MixedDdlDmlTransaction => fix_with(
+            "BEGIN;\nCREATE TABLE _r_a (id INT);\nINSERT INTO _r_a VALUES (1);\nCOMMIT;",
+            "DDL and DML",
+            "",
+            "DROP TABLE IF EXISTS _r_a;",
+        ),
+
+        // ─── ALTER TABLE per-arm rules ────────────────────────────────────
+        LintRule::AtUnsupportedDropColumn => {
+            fix("ALTER TABLE _clust_base DROP COLUMN col;", "DROP COLUMN")
+        }
+        LintRule::AtUnsupportedAlterColumnSetType => fix(
+            "ALTER TABLE _clust_base ALTER COLUMN col TYPE TEXT;",
+            "TYPE is not supported",
+        ),
+        LintRule::AtUnsupportedAlterColumnSetNotNull => fix(
+            "ALTER TABLE _clust_base ALTER COLUMN col SET NOT NULL;",
+            "SET NOT NULL",
+        ),
+        LintRule::AtUnsupportedAlterColumnDropNotNull => fix(
+            "ALTER TABLE _clust_base ALTER COLUMN col DROP NOT NULL;",
+            "DROP NOT NULL",
+        ),
+        LintRule::AtUnsupportedAlterColumnSetDefault => fix(
+            "ALTER TABLE _clust_base ALTER COLUMN col SET DEFAULT 1;",
+            "SET DEFAULT",
+        ),
+        LintRule::AtUnsupportedAlterColumnDropDefault => fix(
+            "ALTER TABLE _clust_base ALTER COLUMN col DROP DEFAULT;",
+            "DROP DEFAULT",
+        ),
+        LintRule::AtUnsupportedAlterColumnAddGenerated => fix(
+            "ALTER TABLE _clust_base ALTER COLUMN col ADD GENERATED ALWAYS AS IDENTITY;",
+            "ADD GENERATED AS IDENTITY",
+        ),
+        LintRule::AtUnsupportedAddCheck => fix(
+            "ALTER TABLE _clust_base ADD CONSTRAINT _rej_chk CHECK (id > 0);",
+            "ADD CHECK",
+        ),
+        LintRule::AtUnsupportedAddUnique => fix(
+            "ALTER TABLE _clust_base ADD CONSTRAINT _rej_uq UNIQUE (id);",
+            "ADD UNIQUE",
+        ),
+        LintRule::AtUnsupportedDropConstraint => fix(
+            "ALTER TABLE _clust_base DROP CONSTRAINT _rej_c;",
+            "DROP CONSTRAINT",
+        ),
+        LintRule::AtUnsupportedPrimaryKeyUsingIndex => fix(
+            "ALTER TABLE _clust_base ADD CONSTRAINT _rej_pk PRIMARY KEY USING INDEX _clust_base_pkey;",
+            "PRIMARY KEY USING INDEX",
+        ),
+        LintRule::AtUnsupportedUniqueUsingIndex => fix(
+            "ALTER TABLE _clust_base ADD CONSTRAINT _rej_u UNIQUE USING INDEX _clust_base_idx;",
+            "UNIQUE USING INDEX",
+        ),
+        LintRule::AtUnsupportedRowLevelSecurity => fix(
+            "ALTER TABLE _clust_base ENABLE ROW LEVEL SECURITY;",
+            "ROW LEVEL SECURITY",
+        ),
+        LintRule::AtUnsupportedTrigger => fix(
+            "ALTER TABLE _clust_base DISABLE TRIGGER ALL;",
+            "TRIGGER",
+        ),
+        LintRule::AtUnsupportedReplicaIdentity => fix(
+            "ALTER TABLE _clust_base REPLICA IDENTITY FULL;",
+            "REPLICA IDENTITY",
+        ),
+        LintRule::AtUnsupportedValidateConstraint => fix(
+            "ALTER TABLE _clust_base VALIDATE CONSTRAINT _rej_c;",
+            "VALIDATE CONSTRAINT",
+        ),
+        LintRule::AtUnsupportedRewriteRule => fix(
+            "ALTER TABLE _clust_base DISABLE RULE _rej_rule;",
+            "RULE",
+        ),
+
+        // ─── Unsupported top-level statements ─────────────────────────────
+        LintRule::UnsupportedTempView => fix("CREATE TEMP VIEW _r AS SELECT 1;", "TEMPORARY"),
+        LintRule::UnsupportedMaterializedView => fix_with(
+            "CREATE MATERIALIZED VIEW _rej_mv AS SELECT 1 AS id;",
+            "MATERIALIZED VIEW",
+            "",
+            "DROP MATERIALIZED VIEW IF EXISTS _rej_mv;",
+        ),
+        LintRule::UnsupportedCreateTrigger => fix(
+            "CREATE TRIGGER _rej_trg AFTER INSERT ON _clust_base FOR EACH ROW EXECUTE FUNCTION f();",
+            "TRIGGER",
+        ),
+        LintRule::UnsupportedCreateExtension => {
+            fix("CREATE EXTENSION IF NOT EXISTS pgcrypto;", "EXTENSION")
+        }
+        LintRule::UnsupportedCreateFunctionNonSql => fix_with(
+            "CREATE FUNCTION _rej_fn() RETURNS INT LANGUAGE plpgsql AS $$ BEGIN RETURN 1; END $$;",
+            "LANGUAGE SQL",
+            "",
+            "DROP FUNCTION IF EXISTS _rej_fn();",
+        ),
+        LintRule::UnsupportedCreateProcedure => fix_with(
+            "CREATE PROCEDURE _rej_proc() AS BEGIN END;",
+            "PROCEDURE",
+            "",
+            "DROP PROCEDURE IF EXISTS _rej_proc();",
+        ),
+        LintRule::UnsupportedCreateDatabase => fix("CREATE DATABASE _rej_db;", "DATABASE"),
+        LintRule::UnsupportedCreatePolicy => fix(
+            "CREATE POLICY _rej_pol ON _clust_base USING (true);",
+            "POLICY",
+        ),
+        LintRule::UnsupportedSavepoint => fix("SAVEPOINT sp1;", "SAVEPOINT"),
+        LintRule::UnsupportedReleaseSavepoint => {
+            fix("RELEASE SAVEPOINT sp1;", "RELEASE SAVEPOINT")
+        }
+        LintRule::UnsupportedRollbackToSavepoint => {
+            fix("ROLLBACK TO SAVEPOINT sp1;", "ROLLBACK TO SAVEPOINT")
+        }
+        LintRule::UnsupportedDeclareCursor => {
+            fix("DECLARE _rej_cur CURSOR FOR SELECT 1;", "CURSOR")
+        }
+        LintRule::UnsupportedCreateType => fix_with(
+            "CREATE TYPE _rej_mood AS ENUM ('happy', 'sad');",
+            "CREATE TYPE",
+            "",
+            "DROP TYPE IF EXISTS _rej_mood;",
+        ),
+        LintRule::UnsupportedCreateServer => fix(
+            "CREATE SERVER _rej_srv FOREIGN DATA WRAPPER _rej_fdw;",
+            "SERVER",
+        ),
+        LintRule::UnsupportedVacuum => fix("VACUUM;", "VACUUM"),
+        LintRule::UnsupportedAlterIndex => {
+            fix("ALTER INDEX _rej_idx RENAME TO _rej_idx2;", "ALTER INDEX")
+        }
+        LintRule::UnsupportedCopyFromFile => {
+            fix("COPY _clust_base FROM '/tmp/x.csv';", "COPY")
+        }
+        LintRule::UnsupportedLockTable => fix(
+            "LOCK TABLE _clust_base IN ACCESS EXCLUSIVE MODE;",
+            "LOCK TABLE",
+        ),
+        LintRule::UnsupportedAlterAggregate => fix(
+            "ALTER AGGREGATE _rej_agg(integer) RENAME TO _rej_agg2;",
+            "ALTER AGGREGATE",
+        ),
+        LintRule::UnsupportedAlterFunctionProperty => {
+            fix("ALTER FUNCTION _rej_fn() IMMUTABLE;", "ALTER FUNCTION")
+        }
+        LintRule::UnsupportedAlterPolicy => fix(
+            "ALTER POLICY _rej_pol ON _clust_base USING (true);",
+            "ALTER POLICY",
+        ),
+        LintRule::UnsupportedAlterType => fix(
+            "ALTER TYPE _rej_mood ADD VALUE 'neutral';",
+            "ALTER TYPE",
+        ),
+        LintRule::UnsupportedAlterRoleProperty => fix(
+            "ALTER ROLE _rej_role WITH PASSWORD 'pw';",
+            "ALTER ROLE",
+        ),
+        LintRule::UnsupportedAlterRoleSet => fix(
+            "ALTER ROLE _rej_role SET work_mem = '64MB';",
+            "ALTER ROLE",
+        ),
+        LintRule::UnsupportedAlterUser => fix(
+            "ALTER USER _rej_user WITH PASSWORD 'pw';",
+            "ALTER USER",
+        ),
+        LintRule::UnsupportedDropMaterializedView => {
+            fix("DROP MATERIALIZED VIEW _rej_mv;", "MATERIALIZED VIEW")
+        }
+        LintRule::UnsupportedDropType => fix("DROP TYPE _rej_t;", "DROP TYPE"),
+        LintRule::UnsupportedDropTrigger => fix(
+            "DROP TRIGGER _rej_trg ON _clust_base;",
+            "DROP TRIGGER",
+        ),
+        LintRule::UnsupportedDropPolicy => fix(
+            "DROP POLICY _rej_pol ON _clust_base;",
+            "DROP POLICY",
+        ),
+
         LintRule::ParseError => None,
-        // `LintRule` is `#[non_exhaustive]`; this match lives in an
-        // integration-test crate, so a wildcard is required even though
-        // every variant defined today is enumerated above.
-        _ => None,
     }
 }
 
@@ -442,8 +671,8 @@ pub const CLEAN_MULTI_STATEMENT_CASES: &[(&str, &str, &str)] = &[
     ),
     (
         "ddl-plus-dml-in-txn",
-        "CREATE TABLE _clust_txn_e (id INT);\nBEGIN;\nCREATE TABLE _clust_txn_f (id INT);\nINSERT INTO _clust_txn_e VALUES (1);\nCOMMIT;",
-        "DROP TABLE IF EXISTS _clust_txn_e; DROP TABLE IF EXISTS _clust_txn_f;",
+        "CREATE TABLE _clust_txn_e (id INT);\nBEGIN;\nINSERT INTO _clust_txn_e VALUES (1);\nCOMMIT;",
+        "DROP TABLE IF EXISTS _clust_txn_e;",
     ),
     (
         "empty-txn",

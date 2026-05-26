@@ -19,7 +19,7 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-use dsql_lint::{fix_sql, LintRule};
+use dsql_lint::{fix_sql, lint_sql, FixResult, LintRule};
 use strum::IntoEnumIterator;
 
 const MAX_RETRIES: usize = 5;
@@ -87,7 +87,7 @@ fn run_sql(endpoint: &str, token: &str, sql: &str) -> Result<String, String> {
             Err(err) => return Err(err),
         }
     }
-    unreachable!()
+    Err("run_sql: retry loop exited without result (MAX_RETRIES=0?)".into())
 }
 
 fn run_sql_file(endpoint: &str, token: &str, sql: &str) -> Result<String, String> {
@@ -95,8 +95,11 @@ fn run_sql_file(endpoint: &str, token: &str, sql: &str) -> Result<String, String
     let path = dir.path().join("test.sql");
     std::fs::write(&path, sql).unwrap();
     for attempt in 0..MAX_RETRIES {
+        // ON_ERROR_STOP=1 makes psql exit non-zero on the first SQL error;
+        // without it, multi-statement scripts always exit 0, causing
+        // false-positive "succeeded" verdicts for cluster validation.
         let output = psql_cmd(endpoint, token)
-            .args(["-f", path.to_str().unwrap()])
+            .args(["-v", "ON_ERROR_STOP=1", "-f", path.to_str().unwrap()])
             .output()
             .expect("failed to run `psql`");
         if output.status.success() {
@@ -109,7 +112,7 @@ fn run_sql_file(endpoint: &str, token: &str, sql: &str) -> Result<String, String
         }
         return Err(err);
     }
-    unreachable!()
+    Err("run_sql_file: retry loop exited without result (MAX_RETRIES=0?)".into())
 }
 
 fn cleanup(endpoint: &str, token: &str, sql: &str) {
@@ -317,12 +320,6 @@ const FIX_MATRIX: &[(&str, &str, &str)] = &[
         "BEGIN ISOLATION LEVEL READ COMMITTED;",
         "ROLLBACK;",
     ),
-    // Unfixable — identity in ALTER TABLE ADD COLUMN
-    (
-        "alter-add-col-identity",
-        "ALTER TABLE _clust_base ADD COLUMN ident_col BIGINT GENERATED ALWAYS AS IDENTITY;",
-        "ALTER TABLE _clust_base DROP COLUMN IF EXISTS ident_col;",
-    ),
 ];
 
 #[test]
@@ -345,6 +342,25 @@ fn fix_matrix_against_cluster() {
         let fixed = &result.sql;
 
         if fixed.is_empty() {
+            continue;
+        }
+
+        // FIX_MATRIX is the "fixable → executes clean" matrix. An Unfixable
+        // diagnostic means fix_sql returned the input unchanged, which would
+        // be (correctly) rejected by the cluster — covered elsewhere by
+        // `lint_rule_fixtures_validated_on_cluster`. Such entries don't
+        // belong here.
+        let has_unfixable = result
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.fix_result, FixResult::Unfixable));
+        if has_unfixable {
+            failures.push(format!(
+                "[{label}] entry produced Unfixable diagnostics — does not belong in FIX_MATRIX\n  Input: {input_sql}"
+            ));
+            if !cleanup_sql.is_empty() {
+                cleanup(&ep, &token, cleanup_sql);
+            }
             continue;
         }
 
@@ -621,16 +637,13 @@ fn clean_multi_statement_cases_accepted_by_cluster() {
 // ═══════════════════════════════════════════════════════════════════════
 // 8. LINT RULE COVERAGE — compiler-enforced via LintRule enum
 // ═══════════════════════════════════════════════════════════════════════
-// Iterates every LintRule variant via cluster_test_for_rule (exhaustive
-// match — new variant without arm = compile error). For fixable rules,
-// runs fix_sql and executes the result on the cluster. Unfixable rules
-// are validated by the unit test in integration_test.rs.
+// Iterates every LintRule variant via fixture_for_rule (exhaustive match —
+// new variant without arm = compile error). For each rule:
+//   • The unfixed input must be rejected by DSQL (proves the rule is needed)
+//   • If fix_sql produces non-Unfixable output, the fixed SQL must run clean
 
 #[test]
-#[ignore = "requires DSQL cluster — run via `cargo test --ignored` with DSQL_ENDPOINT set"]
-fn lint_rule_fixes_execute_on_cluster() {
-    use dsql_lint::FixResult;
-
+fn lint_rule_fixtures_validated_on_cluster() {
     let ep = endpoint();
     let region = region();
     let token = generate_token(&ep, &region);
@@ -638,15 +651,67 @@ fn lint_rule_fixes_execute_on_cluster() {
     cleanup(&ep, &token, "DROP TABLE IF EXISTS _clust_base CASCADE;");
     ensure_base_table(&ep, &token);
 
+    let scratch_cleanup = |ep: &str, token: &str| {
+        cleanup(ep, token, "DROP TABLE IF EXISTS _r CASCADE;");
+        cleanup(ep, token, "DROP TABLE IF EXISTS _r_a CASCADE;");
+        cleanup(ep, token, "DROP TABLE IF EXISTS _r_b CASCADE;");
+        cleanup(ep, token, "DROP SEQUENCE IF EXISTS _r_seq;");
+        cleanup(ep, token, "DROP INDEX IF EXISTS _r_idx;");
+    };
+
+    let exec = |ep: &str, token: &str, sql: &str| {
+        if sql.contains(";\n") {
+            run_sql_file(ep, token, sql)
+        } else {
+            run_sql(ep, token, sql)
+        }
+    };
+
     let mut failures = Vec::new();
 
     for rule in LintRule::iter() {
-        let Some((sql, _expected_msg)) = common::cluster_test_for_rule(rule) else {
+        let Some(fix) = common::fixture_for_rule(rule) else {
             continue;
         };
 
-        let result = fix_sql(sql);
+        let diags = lint_sql(fix.sql);
+        if !diags.iter().any(|d| d.rule == rule) {
+            failures.push(format!(
+                "[{rule:?}] fixture does not produce a `{rule:?}` diagnostic\n  Input: {}\n  Got: {diags:?}",
+                fix.sql
+            ));
+            continue;
+        }
 
+        scratch_cleanup(&ep, &token);
+        if !fix.setup_sql.is_empty() {
+            run_cleanup_stmts(&ep, &token, fix.cleanup_sql);
+            if let Err(err) = run_sql(&ep, &token, fix.setup_sql) {
+                failures.push(format!(
+                    "[{rule:?}] setup failed\n  Setup: {}\n  Error: {err}",
+                    fix.setup_sql
+                ));
+                run_cleanup_stmts(&ep, &token, fix.cleanup_sql);
+                continue;
+            }
+        }
+
+        // Unfixed SQL is expected to be rejected by DSQL today. If this ever
+        // succeeds, revisit the rule's justification rather than silencing the test.
+        if exec(&ep, &token, fix.sql).is_ok() {
+            failures.push(format!(
+                "[{rule:?}] expected DSQL to reject unfixed input, but it succeeded. \
+                 Check if DSQL now supports this feature — if so, remove the rule. \
+                 Otherwise the fixture's setup may have masked the rejection (e.g. the \
+                 referenced object exists when it shouldn't, or vice versa).\n  Input: {}",
+                fix.sql
+            ));
+        }
+        run_cleanup_stmts(&ep, &token, fix.cleanup_sql);
+        scratch_cleanup(&ep, &token);
+
+        // For fixable rules, the fixed SQL must succeed on DSQL.
+        let result = fix_sql(fix.sql);
         let has_unfixable = result
             .diagnostics
             .iter()
@@ -655,39 +720,34 @@ fn lint_rule_fixes_execute_on_cluster() {
             continue;
         }
 
-        // Clean up objects that might exist from a previous run
-        cleanup(&ep, &token, "DROP TABLE IF EXISTS _r CASCADE;");
-        cleanup(&ep, &token, "DROP TABLE IF EXISTS _r_a CASCADE;");
-        cleanup(&ep, &token, "DROP TABLE IF EXISTS _r_b CASCADE;");
-        cleanup(&ep, &token, "DROP SEQUENCE IF EXISTS _r_seq;");
-        cleanup(&ep, &token, "DROP INDEX IF EXISTS _r_idx;");
+        if !fix.setup_sql.is_empty() {
+            run_cleanup_stmts(&ep, &token, fix.cleanup_sql);
+            if let Err(err) = run_sql(&ep, &token, fix.setup_sql) {
+                failures.push(format!(
+                    "[{rule:?}] fix-path setup failed\n  Setup: {}\n  Error: {err}",
+                    fix.setup_sql
+                ));
+                run_cleanup_stmts(&ep, &token, fix.cleanup_sql);
+                continue;
+            }
+        }
 
-        let exec_result = if result.sql.contains(";\n") {
-            run_sql_file(&ep, &token, &result.sql)
-        } else {
-            run_sql(&ep, &token, &result.sql)
-        };
-
-        if let Err(err) = exec_result {
+        if let Err(err) = exec(&ep, &token, &result.sql) {
             failures.push(format!(
-                "[{rule:?}]\n  Input: {sql}\n  Fixed: {}\n  Error: {err}",
-                result.sql
+                "[{rule:?}]\n  Input: {}\n  Fixed: {}\n  Error: {err}",
+                fix.sql, result.sql
             ));
         }
 
-        // Clean up
-        cleanup(&ep, &token, "DROP TABLE IF EXISTS _r CASCADE;");
-        cleanup(&ep, &token, "DROP TABLE IF EXISTS _r_a CASCADE;");
-        cleanup(&ep, &token, "DROP TABLE IF EXISTS _r_b CASCADE;");
-        cleanup(&ep, &token, "DROP SEQUENCE IF EXISTS _r_seq;");
-        cleanup(&ep, &token, "DROP INDEX IF EXISTS _r_idx;");
+        run_cleanup_stmts(&ep, &token, fix.cleanup_sql);
+        scratch_cleanup(&ep, &token);
     }
 
     cleanup(&ep, &token, "DROP TABLE IF EXISTS _clust_base CASCADE;");
 
     assert!(
         failures.is_empty(),
-        "LintRule fix-and-execute failures against DSQL cluster:\n\n{}",
+        "LintRule fixture failures against DSQL cluster:\n\n{}",
         failures.join("\n\n")
     );
 }
