@@ -38,12 +38,17 @@ use std::time::Duration;
 use dsql_lint::{fix_sql, lint_sql, FixResult, LintRule};
 use strum::IntoEnumIterator;
 
-const OC001_MAX_RETRIES: usize = 5;
-const OC001_BASE_DELAY_MS: u64 = 100;
+// 8 cluster #[test] fns now run in parallel (was: serialized). Each does
+// DDL on its own schema, but OC001 is cluster-global, so contention is
+// significantly higher than the original serialized run. Sized to keep the
+// p99 retry budget under ~10s while leaving headroom for storms; CI runs
+// have shown this to be enough without dampening parallelism.
+const OC001_MAX_RETRIES: usize = 8;
+const OC001_BASE_DELAY_MS: u64 = 200;
 // Per-fixture retry cap for the multi-DDL fix path in
 // `lint_rule_fixtures_validated_on_cluster`. Each retry resets the schema and
 // re-runs setup, so the worst-case wall time per fixture grows linearly.
-const FIXTURE_FIX_PATH_MAX_RETRIES: usize = 3;
+const FIXTURE_FIX_PATH_MAX_RETRIES: usize = 5;
 // Token lifetime in seconds requested from `aws dsql generate-db-connect-admin-auth-token`.
 // The CLI default is 900s (15 min); the parallelized cluster suite can outrun
 // that, so request a 1h token and reuse it via `cluster_creds()`.
@@ -93,7 +98,7 @@ fn generate_token(endpoint: &str, region: &str) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
-/// Runs `op` and retries on OC001 with linear backoff (100/200/300/400ms).
+/// Runs `op` and retries on OC001 with linear backoff (200ms × attempt).
 /// All other errors propagate immediately. The final OC001 returns the error
 /// to the caller rather than retrying again.
 fn with_oc001_retry<F, T>(mut op: F) -> Result<T, String>
