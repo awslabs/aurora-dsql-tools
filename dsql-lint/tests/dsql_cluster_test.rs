@@ -791,7 +791,13 @@ fn lint_rule_fixtures_validated_on_cluster() {
                 // OC001 retries can otherwise silently leave objects behind and fail
                 // the next iteration with "relation already exists".
                 let reset = |schema: &str| -> Result<(), String> {
-                    cleanup(ep, token, &format!("DROP SCHEMA IF EXISTS {schema} CASCADE;"));
+                    // DROP via run_sql, not cleanup: cleanup is intentionally
+                    // fire-and-forget, so a terminal OC001 on DROP SCHEMA leaves
+                    // the schema in place and the next CREATE fails with
+                    // "already exists". DROP SCHEMA IF EXISTS is idempotent, so
+                    // run_sql's OC001 retry loop is safe and surfaces real
+                    // errors instead of cascading.
+                    run_sql(ep, token, &format!("DROP SCHEMA IF EXISTS {schema} CASCADE;"))?;
                     run_sql(ep, token, &format!("CREATE SCHEMA {schema};"))?;
                     run_sql_in_schema(ep, token, schema, "CREATE TABLE _clust_base (id INT, col INT);")?;
                     Ok(())
