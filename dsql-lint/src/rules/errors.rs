@@ -315,8 +315,7 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
                 "CREATE TABLE ... ON COMMIT is not supported in DSQL.",
                 "Remove the ON COMMIT clause.",
                 FixResult::FixedWithWarning(
-                    "Removed ON COMMIT clause — temporary-table semantics are not preserved"
-                        .into(),
+                    "Removed ON COMMIT clause — temporary-table semantics are not preserved".into(),
                 ),
             ));
         }
