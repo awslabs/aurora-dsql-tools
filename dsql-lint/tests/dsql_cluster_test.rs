@@ -226,14 +226,34 @@ impl ClusterScope {
         exec_file(&self.ep, &self.token, &self.schema, sql)
     }
 
+    /// Run a multi-statement file with OC001 retries, applying `cleanup_sql`
+    /// between attempts to wipe partial state from a half-applied file.
+    fn exec_file_retry(&self, sql: &str, cleanup_sql: &str) -> Result<String, String> {
+        for attempt in 0..OC001_MAX_RETRIES {
+            match exec_file(&self.ep, &self.token, &self.schema, sql) {
+                Ok(v) => return Ok(v),
+                Err(e) if e.contains("OC001") && attempt < OC001_MAX_RETRIES - 1 => {
+                    thread::sleep(Duration::from_millis(
+                        OC001_BASE_DELAY_MS * (attempt as u64 + 1),
+                    ));
+                    if !cleanup_sql.is_empty() {
+                        run_cleanup_stmts(self, cleanup_sql);
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!("loop returns on every iteration when attempts > 0")
+    }
+
     /// Execute SQL whose statement count isn't known at the call site.
     /// `fix_sql` may turn a single-statement input into multi-statement output
     /// (e.g. SERIAL fix splits into CREATE TABLE + companion DDL), so the
-    /// caller can't pick `exec` vs `exec_file_once` upfront. Dispatches via
+    /// caller can't pick `exec` vs `exec_file_retry` upfront. Dispatches via
     /// `;\n` substring — the same heuristic the original code used.
-    fn exec_auto(&self, sql: &str) -> Result<String, String> {
+    fn exec_auto(&self, sql: &str, cleanup_sql: &str) -> Result<String, String> {
         if sql.contains(";\n") {
-            self.exec_file_once(sql)
+            self.exec_file_retry(sql, cleanup_sql)
         } else {
             self.exec(sql)
         }
@@ -489,7 +509,7 @@ fn fix_matrix_against_cluster() {
             continue;
         }
 
-        if let Err(err) = cx.exec_auto(fixed) {
+        if let Err(err) = cx.exec_auto(fixed, cleanup_sql) {
             failures.push(format!(
                 "[{label}]\n  Input:  {input_sql}\n  Fixed:  {fixed}\n  Error:  {err}"
             ));
@@ -518,7 +538,8 @@ fn fix_multi_statement_against_cluster() {
     let input = "CREATE TABLE _clust_multi (id SERIAL PRIMARY KEY);\nCREATE INDEX _clust_multi_idx ON _clust_multi(id);";
     let result = fix_sql(input);
 
-    let exec_result = cx.exec_file_once(&result.sql);
+    let cleanup = "DROP INDEX IF EXISTS _clust_multi_idx; DROP TABLE IF EXISTS _clust_multi;";
+    let exec_result = cx.exec_file_retry(&result.sql, cleanup);
 
     assert!(
         exec_result.is_ok(),
@@ -709,7 +730,7 @@ fn clean_multi_statement_cases_accepted_by_cluster() {
     for (label, sql, cleanup_sql) in common::CLEAN_MULTI_STATEMENT_CASES {
         run_cleanup_stmts(&cx, cleanup_sql);
 
-        if let Err(err) = cx.exec_file_once(sql) {
+        if let Err(err) = cx.exec_file_retry(sql, cleanup_sql) {
             failures.push(format!("[{label}]\n  SQL: {sql}\n  Error: {err}"));
         }
 
@@ -745,12 +766,15 @@ fn lint_rule_fixtures_validated_on_cluster() {
 
     let mut failures = Vec::new();
 
-    // Reset to an empty schema and apply the fixture's setup SQL. Returns
-    // a formatted error string on failure so the caller can attribute it
-    // to the right phase ("setup", "fix-path setup", "retry N setup", …).
+    // Reset to an empty schema, recreate the shared `_clust_base` table that
+    // most fixtures reference, then apply the fixture's own setup SQL. Returns
+    // a formatted error string on failure so the caller can attribute it to
+    // the right phase ("setup", "fix-path setup", "retry N setup", …).
     let reset_with_setup = |fix: &common::RuleFixture, phase: &str| -> Result<(), String> {
         cx.reset()
             .map_err(|e| format!("{phase} reset failed: {e}"))?;
+        cx.exec("CREATE TABLE _clust_base (id INT, col INT);")
+            .map_err(|e| format!("{phase} _clust_base setup failed: {e}"))?;
         if !fix.setup_sql.is_empty() {
             cx.exec(fix.setup_sql).map_err(|e| {
                 format!(
@@ -780,7 +804,12 @@ fn lint_rule_fixtures_validated_on_cluster() {
             failures.push(format!("[{rule:?}] {err}"));
             continue;
         }
-        if cx.exec_auto(fix.sql).is_ok() {
+        let reject_result = if fix.sql.contains(";\n") {
+            cx.exec_file_once(fix.sql)
+        } else {
+            cx.exec(fix.sql)
+        };
+        if reject_result.is_ok() {
             failures.push(format!(
                 "[{rule:?}] expected DSQL to reject unfixed input, but it succeeded. \
                  Check if DSQL now supports this feature — if so, remove the rule. \
@@ -819,7 +848,12 @@ fn lint_rule_fixtures_validated_on_cluster() {
                     break;
                 }
             }
-            match cx.exec_auto(&result.sql) {
+            let attempt = if result.sql.contains(";\n") {
+                cx.exec_file_once(&result.sql)
+            } else {
+                cx.exec(&result.sql)
+            };
+            match attempt {
                 Ok(_) => {
                     last_err = None;
                     break;
@@ -894,7 +928,7 @@ fn ddl_transaction_fix_against_cluster() {
 
         let result = fix_sql(input_sql);
 
-        if let Err(err) = cx.exec_file_once(&result.sql) {
+        if let Err(err) = cx.exec_file_retry(&result.sql, cleanup_sql) {
             failures.push(format!(
                 "[{label}]\n  Input:  {input_sql}\n  Fixed:  {}\n  Error:  {err}",
                 result.sql
