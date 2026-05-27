@@ -50,6 +50,8 @@ jobs:
 
       - name: Run cargo audit
         uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   build-wheel:
     name: Build and Smoke-test Python Wheel
