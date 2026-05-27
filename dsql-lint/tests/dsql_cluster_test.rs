@@ -766,15 +766,15 @@ fn clean_multi_statement_cases_accepted_by_cluster() {
 
 /// Number of parallel workers in `lint_rule_fixtures_validated_on_cluster`.
 ///
-/// Each iteration uses a *fresh* schema (never re-used) holding its own
-/// `_clust_base`; per-rule fixture text resolves against that schema via
-/// `search_path`. Tuned to balance wall-clock against DSQL OC001 retries.
+/// Each worker holds its own DSQL schema reused across iterations. DSQL caps
+/// total schemas at 10, so unique-per-iteration is not viable and the pool
+/// must stay small. Reset between iterations is serialized via `reset_lock`
+/// to keep `DROP SCHEMA CASCADE` (multi-row catalog mutation, the dominant
+/// OC001 source) from contending with itself across workers.
 const RULE_FIXTURE_WORKERS: usize = 3;
 
 #[test]
 fn lint_rule_fixtures_validated_on_cluster() {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
     let (ep, token) = cluster_creds();
 
     let rules: Vec<LintRule> = LintRule::iter()
@@ -783,41 +783,42 @@ fn lint_rule_fixtures_validated_on_cluster() {
 
     let queue: Mutex<Vec<LintRule>> = Mutex::new(rules);
     let failures: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    // Track every schema we create so the cleanup phase can drop them
-    // serially after the parallel workers finish. We never drop mid-test —
-    // unique-per-iteration names mean stale state can't poison the next run,
-    // and DROP SCHEMA CASCADE is the worst metadata-contention offender.
-    let created: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    // PID prefix protects against collisions if two CI runs share a cluster.
+    // Serializes the reset step (DROP + CREATE schema + CREATE base table)
+    // across workers. Reset is the only metadata-mutating step in the loop;
+    // the rest (fixture setup, lint, fix, exec) stays parallel.
+    let reset_lock: Mutex<()> = Mutex::new(());
     let pid = std::process::id();
-    let counter = AtomicU64::new(0);
 
     thread::scope(|s| {
-        for _ in 0..RULE_FIXTURE_WORKERS {
+        for wid in 0..RULE_FIXTURE_WORKERS {
             let ep = ep.as_str();
             let token = token.as_str();
             let queue = &queue;
             let failures = &failures;
-            let created = &created;
-            let counter = &counter;
+            let reset_lock = &reset_lock;
             s.spawn(move || {
-                // Allocate a fresh schema with a base table. Returns the schema
-                // name on success; the schema is registered in `created` for
-                // end-of-test cleanup regardless of whether the base-table
-                // CREATE later succeeds.
-                let new_schema = || -> Result<String, String> {
-                    let n = counter.fetch_add(1, Ordering::Relaxed);
-                    let schema = format!("rule_{pid}_{n}");
+                let schema = format!("rule_{pid}_w{wid}");
+
+                let reset = || -> Result<(), String> {
+                    let _g = reset_lock.lock().unwrap_or_else(|e| e.into_inner());
+                    run_sql(ep, token, &format!("DROP SCHEMA IF EXISTS {schema} CASCADE;"))?;
                     run_sql(ep, token, &format!("CREATE SCHEMA {schema};"))?;
-                    created.lock().unwrap().push(schema.clone());
                     run_sql_in_schema(
                         ep,
                         token,
                         &schema,
                         "CREATE TABLE _clust_base (id INT, col INT);",
                     )?;
-                    Ok(schema)
+                    Ok(())
                 };
+
+                if let Err(err) = reset() {
+                    failures
+                        .lock()
+                        .unwrap()
+                        .push(format!("[worker {wid}] schema setup failed: {err}"));
+                    return;
+                }
 
                 let exec = |schema: &str, sql: &str| {
                     if sql.contains(";\n") {
@@ -843,15 +844,13 @@ fn lint_rule_fixtures_validated_on_cluster() {
                         continue;
                     }
 
-                    let schema = match new_schema() {
-                        Ok(s) => s,
-                        Err(err) => {
-                            failures.lock().unwrap().push(format!(
-                                "[{rule:?}] schema allocation failed: {err}"
-                            ));
-                            continue;
-                        }
-                    };
+                    if let Err(err) = reset() {
+                        failures
+                            .lock()
+                            .unwrap()
+                            .push(format!("[{rule:?}] reset failed: {err}"));
+                        continue;
+                    }
                     if !fix.setup_sql.is_empty() {
                         if let Err(err) = run_sql_in_schema(ep, token, &schema, fix.setup_sql) {
                             failures.lock().unwrap().push(format!(
@@ -889,27 +888,46 @@ fn lint_rule_fixtures_validated_on_cluster() {
                         continue;
                     }
 
-                    // Each fix retry uses a fresh schema, so a multi-statement
-                    // fix that partially commits before an OC001 doesn't poison
-                    // the next attempt with "relation already exists".
+                    if let Err(err) = reset() {
+                        failures
+                            .lock()
+                            .unwrap()
+                            .push(format!("[{rule:?}] fix-path reset failed: {err}"));
+                        continue;
+                    }
+                    if !fix.setup_sql.is_empty() {
+                        if let Err(err) = run_sql_in_schema(ep, token, &schema, fix.setup_sql) {
+                            failures.lock().unwrap().push(format!(
+                                "[{rule:?}] fix-path setup failed\n  Setup: {}\n  Error: {err}",
+                                fix.setup_sql
+                            ));
+                            continue;
+                        }
+                    }
+
+                    // Multi-statement fix paths can leave partial state when an
+                    // OC001 hits mid-file; reset between retries so each attempt
+                    // starts clean.
                     let mut last_err = None;
-                    for _ in 0..FIXTURE_MAX_RETRIES {
-                        let fix_schema = match new_schema() {
-                            Ok(s) => s,
-                            Err(e) => {
-                                last_err = Some(format!("schema allocation failed: {e}"));
+                    for retry in 0..FIXTURE_MAX_RETRIES {
+                        if retry > 0 {
+                            if let Err(e) = reset() {
+                                last_err =
+                                    Some(format!("reset before retry {retry} failed: {e}"));
                                 break;
                             }
-                        };
-                        if !fix.setup_sql.is_empty() {
-                            if let Err(e) =
-                                run_sql_in_schema(ep, token, &fix_schema, fix.setup_sql)
-                            {
-                                last_err = Some(format!("fix-path setup failed: {e}"));
-                                break;
+                            if !fix.setup_sql.is_empty() {
+                                if let Err(e) =
+                                    run_sql_in_schema(ep, token, &schema, fix.setup_sql)
+                                {
+                                    last_err = Some(format!(
+                                        "setup before retry {retry} failed: {e}"
+                                    ));
+                                    break;
+                                }
                             }
                         }
-                        match exec(&fix_schema, &result.sql) {
+                        match exec(&schema, &result.sql) {
                             Ok(_) => {
                                 last_err = None;
                                 break;
@@ -931,20 +949,17 @@ fn lint_rule_fixtures_validated_on_cluster() {
                         ));
                     }
                 }
+
+                // Best-effort cleanup; cluster gets torn down after CI anyway.
+                let _g = reset_lock.lock().unwrap_or_else(|e| e.into_inner());
+                if let Err(err) =
+                    run_sql(ep, token, &format!("DROP SCHEMA IF EXISTS {schema} CASCADE;"))
+                {
+                    eprintln!("WARN: post-test DROP SCHEMA {schema} failed: {err}");
+                }
             });
         }
     });
-
-    // Best-effort serial cleanup. The cluster gets torn down after CI anyway;
-    // a leaked schema here is cosmetic, not a correctness issue. Running
-    // serially (no contention with other tests, no contention with workers)
-    // avoids reintroducing the OC001 storm we built this whole strategy to
-    // dodge.
-    for schema in created.into_inner().unwrap() {
-        if let Err(err) = run_sql(&ep, &token, &format!("DROP SCHEMA {schema} CASCADE;")) {
-            eprintln!("WARN: post-test DROP SCHEMA {schema} failed: {err}");
-        }
-    }
 
     let mut failures = failures.into_inner().unwrap();
     // Workers process the rule queue in nondeterministic order; sort so the
