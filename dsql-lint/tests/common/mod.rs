@@ -305,6 +305,10 @@ pub const ADDITIONAL_ERROR_CASES: &[(&str, &str)] = &[
         "ALTER TABLE t ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (CACHE 1);",
         "ADD GENERATED AS IDENTITY",
     ),
+    // Pin the named-PREPARE form so a future sqlparser-dsql parse-shape change
+    // (e.g. stashing the name elsewhere when `prepare: true`) doesn't silently
+    // drop coverage. The no-PREPARE form is exercised by the rule fixture.
+    ("DEALLOCATE PREPARE _foo;", "DEALLOCATE"),
 ];
 
 /// Additional false-positive guards. Mirror in
@@ -336,6 +340,20 @@ pub const ADDITIONAL_FALSE_POSITIVES: &[(&str, &str)] = &[
     (
         "ALTER TABLE t ADD COLUMN id BIGINT GENERATED ALWAYS AS IDENTITY (CACHE 1);",
         "CACHE clause",
+    ),
+    // DEALLOCATE ALL is the one form DSQL accepts. The PREPARE-keyword variant
+    // parses as `Deallocate { name: "ALL", prepare: true }`; the rule guard
+    // checks only the name, so it must also pass.
+    ("DEALLOCATE ALL;", "DEALLOCATE"),
+    ("deallocate all;", "DEALLOCATE"),
+    ("DEALLOCATE PREPARE ALL;", "DEALLOCATE"),
+    // TABLESPACE-only CREATE TABLE must not double-fire as a storage-parameter
+    // diagnostic — the CREATE TABLE rule in `rules/errors.rs` strips the
+    // TABLESPACE option before the storage-parameter check, leaving an empty
+    // opts list.
+    (
+        "CREATE TABLE t (id INT) TABLESPACE my_space;",
+        "storage parameters",
     ),
 ];
 
@@ -640,6 +658,27 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
         LintRule::UnsupportedDropPolicy => fix(
             "DROP POLICY _rej_pol ON _clust_base;",
             "DROP POLICY",
+        ),
+        LintRule::UnsupportedListen => fix("LISTEN _rej_ch;", "LISTEN"),
+        LintRule::UnsupportedUnlisten => fix("UNLISTEN _rej_ch;", "UNLISTEN"),
+        LintRule::UnsupportedNotify => fix("NOTIFY _rej_ch;", "NOTIFY"),
+        LintRule::UnsupportedLoad => fix("LOAD 'auto_explain';", "LOAD"),
+        LintRule::UnsupportedPrepare => {
+            fix("PREPARE _rej_p AS SELECT 1;", "PREPARE")
+        }
+        LintRule::UnsupportedDeallocate => fix("DEALLOCATE _rej_p;", "DEALLOCATE"),
+        LintRule::UnsupportedDiscard => fix("DISCARD ALL;", "DISCARD"),
+        LintRule::UnsupportedPartitionOf => fix(
+            "CREATE TABLE _rej_part PARTITION OF _clust_base FOR VALUES FROM (1) TO (100);",
+            "PARTITION OF",
+        ),
+        LintRule::UnsupportedOnCommit => fix(
+            "CREATE TABLE _rej_oc (id INT) ON COMMIT DROP;",
+            "ON COMMIT",
+        ),
+        LintRule::UnsupportedCreateTableWithStorageParameters => fix(
+            "CREATE TABLE _rej_wo (id INT) WITH (autovacuum_enabled = false);",
+            "WITH",
         ),
 
         LintRule::ParseError => None,

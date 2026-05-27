@@ -268,6 +268,57 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
             }
             CreateTableOptions::None => {}
         }
+
+        // Reported after Tablespace removal above so a TABLESPACE-only
+        // CREATE TABLE doesn't double-flag. Storage parameters are PG-internal
+        // tuning hints (autovacuum_enabled, fillfactor, …) that DSQL doesn't
+        // honor — stripping them is the same shape as stripping TABLESPACE.
+        let storage_params_remaining = match &ct.table_options {
+            CreateTableOptions::With(opts)
+            | CreateTableOptions::Options(opts)
+            | CreateTableOptions::Plain(opts)
+            | CreateTableOptions::TableProperties(opts) => !opts.is_empty(),
+            CreateTableOptions::None => false,
+        };
+        if storage_params_remaining {
+            ct.table_options = CreateTableOptions::None;
+            diagnostics.push(error(
+                LintRule::UnsupportedCreateTableWithStorageParameters,
+                find_line(raw_sql, "with"),
+                "CREATE TABLE WITH (...) storage parameters are not supported in DSQL.",
+                "Remove the WITH clause. DSQL manages storage parameters automatically.",
+                FixResult::FixedWithWarning(
+                    "Removed WITH (...) storage parameters — DSQL manages storage automatically"
+                        .into(),
+                ),
+            ));
+        }
+
+        if ct.partition_of.is_some() {
+            diagnostics.push(error(
+                LintRule::UnsupportedPartitionOf,
+                find_line(raw_sql, "partition of"),
+                "CREATE TABLE ... PARTITION OF is not supported in DSQL.",
+                "DSQL manages distribution automatically; create the table without PARTITION OF.",
+                FixResult::Unfixable,
+            ));
+        }
+
+        // ON COMMIT is only meaningful on TEMP tables in PostgreSQL. The
+        // TempTable rule above strips TEMPORARY, so leaving ON COMMIT in
+        // place would produce invalid SQL (ON COMMIT on a persistent table).
+        if ct.on_commit.is_some() {
+            ct.on_commit = None;
+            diagnostics.push(error(
+                LintRule::UnsupportedOnCommit,
+                find_line(raw_sql, "on commit"),
+                "CREATE TABLE ... ON COMMIT is not supported in DSQL.",
+                "Remove the ON COMMIT clause.",
+                FixResult::FixedWithWarning(
+                    "Removed ON COMMIT clause — temporary-table semantics are not preserved".into(),
+                ),
+            ));
+        }
     }
 
     check_alter_table(stmt, raw_sql, diagnostics);
@@ -1134,6 +1185,79 @@ fn check_unsupported_statements(
                 find_line(raw_sql, "drop type"),
                 format!("DROP TYPE{label} is not supported in DSQL."),
                 "User-defined types are not supported in DSQL.",
+                FixResult::Unfixable,
+            ));
+        }
+
+        Statement::LISTEN { .. } => {
+            diagnostics.push(error(
+                LintRule::UnsupportedListen,
+                find_line(raw_sql, "listen"),
+                "LISTEN is not supported in DSQL.",
+                "DSQL does not support the LISTEN/NOTIFY subsystem; use an external message bus.",
+                FixResult::Unfixable,
+            ));
+        }
+        Statement::UNLISTEN { .. } => {
+            diagnostics.push(error(
+                LintRule::UnsupportedUnlisten,
+                find_line(raw_sql, "unlisten"),
+                "UNLISTEN is not supported in DSQL.",
+                "DSQL does not support the LISTEN/NOTIFY subsystem; use an external message bus.",
+                FixResult::Unfixable,
+            ));
+        }
+        Statement::NOTIFY { .. } => {
+            diagnostics.push(error(
+                LintRule::UnsupportedNotify,
+                find_line(raw_sql, "notify"),
+                "NOTIFY is not supported in DSQL.",
+                "DSQL does not support the LISTEN/NOTIFY subsystem; use an external message bus.",
+                FixResult::Unfixable,
+            ));
+        }
+
+        Statement::Load { .. } => {
+            diagnostics.push(error(
+                LintRule::UnsupportedLoad,
+                find_line(raw_sql, "load"),
+                "LOAD is not supported in DSQL.",
+                "DSQL does not allow loading extensions; remove LOAD statements.",
+                FixResult::Unfixable,
+            ));
+        }
+
+        // SQL-level PREPARE is rejected; driver-level prepared statements
+        // over the wire still work.
+        Statement::Prepare { .. } => {
+            diagnostics.push(error(
+                LintRule::UnsupportedPrepare,
+                find_line(raw_sql, "prepare"),
+                "PREPARE is not supported in DSQL.",
+                "Use driver-level prepared statements instead of SQL-level PREPARE/EXECUTE.",
+                FixResult::Unfixable,
+            ));
+        }
+
+        // DEALLOCATE ALL is accepted by DSQL; named DEALLOCATE is not.
+        Statement::Deallocate { name, .. } if !name.value.eq_ignore_ascii_case("ALL") => {
+            diagnostics.push(error(
+                LintRule::UnsupportedDeallocate,
+                find_line(raw_sql, "deallocate"),
+                format!(
+                    "DEALLOCATE '{name}' is not supported in DSQL. Only DEALLOCATE ALL is allowed."
+                ),
+                "Use DEALLOCATE ALL, or rely on driver-level prepared statement management.",
+                FixResult::Unfixable,
+            ));
+        }
+
+        Statement::Discard { .. } => {
+            diagnostics.push(error(
+                LintRule::UnsupportedDiscard,
+                find_line(raw_sql, "discard"),
+                "DISCARD is not supported in DSQL.",
+                "Open a fresh connection if you need a clean session state.",
                 FixResult::Unfixable,
             ));
         }
