@@ -40,11 +40,13 @@ use strum::IntoEnumIterator;
 
 // 8 cluster #[test] fns now run in parallel (was: serialized). Each does
 // DDL on its own schema, but OC001 is cluster-global, so contention is
-// significantly higher than the original serialized run. Sized to keep the
-// p99 retry budget under ~10s while leaving headroom for storms; CI runs
-// have shown this to be enough without dampening parallelism.
-const OC001_MAX_RETRIES: usize = 8;
-const OC001_BASE_DELAY_MS: u64 = 200;
+// significantly higher than the original serialized run. The fixture test
+// alone does ~70 rules × ~3 resets each with multiple OC001-prone DDLs per
+// reset, giving the tail many chances to catch a storm. Generous budget
+// here is far cheaper than a flaky CI; even at p99 we hit only a few retries
+// per DDL, so suite wall time is dominated by happy-path latency.
+const OC001_MAX_RETRIES: usize = 12;
+const OC001_BASE_DELAY_MS: u64 = 300;
 // Per-fixture retry cap for the multi-DDL fix path in
 // `lint_rule_fixtures_validated_on_cluster`. Each retry resets the schema and
 // re-runs setup, so the worst-case wall time per fixture grows linearly.
@@ -98,7 +100,7 @@ fn generate_token(endpoint: &str, region: &str) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
-/// Runs `op` and retries on OC001 with linear backoff (200ms × attempt).
+/// Runs `op` and retries on OC001 with linear backoff (300ms × attempt).
 /// All other errors propagate immediately. The final OC001 returns the error
 /// to the caller rather than retrying again.
 fn with_oc001_retry<F, T>(mut op: F) -> Result<T, String>
