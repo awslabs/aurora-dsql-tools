@@ -271,14 +271,14 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
 
         // Reported after Tablespace removal above so a TABLESPACE-only
         // CREATE TABLE doesn't double-flag.
-        let with_opts_remaining = match &ct.table_options {
+        let storage_params_remaining = match &ct.table_options {
             CreateTableOptions::With(opts)
             | CreateTableOptions::Options(opts)
             | CreateTableOptions::Plain(opts)
             | CreateTableOptions::TableProperties(opts) => !opts.is_empty(),
             CreateTableOptions::None => false,
         };
-        if with_opts_remaining {
+        if storage_params_remaining {
             diagnostics.push(error(
                 LintRule::UnsupportedCreateTableWithStorageParameters,
                 find_line(raw_sql, "with"),

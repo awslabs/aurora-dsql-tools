@@ -24,6 +24,10 @@ use dsql_lint::{fix_sql, lint_sql, FixResult, LintRule};
 use strum::IntoEnumIterator;
 
 const MAX_RETRIES: usize = 5;
+// Per-fixture retry cap for `lint_rule_fixtures_validated_on_cluster`. Bounded
+// tighter than `MAX_RETRIES` because each retry resets and re-runs setup, so
+// the worst-case wall time per fixture grows linearly with this number.
+const FIXTURE_MAX_RETRIES: usize = 3;
 const RETRY_BASE_MS: u64 = 2000;
 // Token lifetime in seconds requested from `aws dsql generate-db-connect-admin-auth-token`.
 // The CLI default is 900s (15 min); the parallelized fixture loop plus the other tests can
@@ -881,7 +885,7 @@ fn lint_rule_fixtures_validated_on_cluster() {
                     // OC001 hits mid-file; reset between retries so each attempt
                     // starts clean.
                     let mut last_err = None;
-                    for retry in 0..MAX_RETRIES {
+                    for retry in 0..FIXTURE_MAX_RETRIES {
                         if retry > 0 {
                             if let Err(e) = reset(&schema) {
                                 last_err = Some(format!("reset before retry {retry} failed: {e}"));

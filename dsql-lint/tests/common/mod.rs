@@ -337,11 +337,16 @@ pub const ADDITIONAL_FALSE_POSITIVES: &[(&str, &str)] = &[
         "ALTER TABLE t ADD COLUMN id BIGINT GENERATED ALWAYS AS IDENTITY (CACHE 1);",
         "CACHE clause",
     ),
-    // DEALLOCATE ALL is the one form DSQL accepts.
+    // DEALLOCATE ALL is the one form DSQL accepts. The PREPARE-keyword variant
+    // parses as `Deallocate { name: "ALL", prepare: true }`; the rule guard
+    // checks only the name, so it must also pass.
     ("DEALLOCATE ALL;", "DEALLOCATE"),
     ("deallocate all;", "DEALLOCATE"),
+    ("DEALLOCATE PREPARE ALL;", "DEALLOCATE"),
     // TABLESPACE-only CREATE TABLE must not double-fire as a storage-parameter
-    // diagnostic — Tablespace removal above empties the opts list.
+    // diagnostic — the CREATE TABLE rule in `rules/errors.rs` strips the
+    // TABLESPACE option before the storage-parameter check, leaving an empty
+    // opts list.
     (
         "CREATE TABLE t (id INT) TABLESPACE my_space;",
         "storage parameters",
