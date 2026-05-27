@@ -270,7 +270,9 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
         }
 
         // Reported after Tablespace removal above so a TABLESPACE-only
-        // CREATE TABLE doesn't double-flag.
+        // CREATE TABLE doesn't double-flag. Storage parameters are PG-internal
+        // tuning hints (autovacuum_enabled, fillfactor, …) that DSQL doesn't
+        // honor — stripping them is the same shape as stripping TABLESPACE.
         let storage_params_remaining = match &ct.table_options {
             CreateTableOptions::With(opts)
             | CreateTableOptions::Options(opts)
@@ -279,12 +281,16 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
             CreateTableOptions::None => false,
         };
         if storage_params_remaining {
+            ct.table_options = CreateTableOptions::None;
             diagnostics.push(error(
                 LintRule::UnsupportedCreateTableWithStorageParameters,
                 find_line(raw_sql, "with"),
                 "CREATE TABLE WITH (...) storage parameters are not supported in DSQL.",
                 "Remove the WITH clause. DSQL manages storage parameters automatically.",
-                FixResult::Unfixable,
+                FixResult::FixedWithWarning(
+                    "Removed WITH (...) storage parameters — DSQL manages storage automatically"
+                        .into(),
+                ),
             ));
         }
 
@@ -298,15 +304,20 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
             ));
         }
 
-        // ON COMMIT in PostgreSQL is only meaningful on TEMP tables, which DSQL
-        // also does not support — flagging ON COMMIT covers both.
+        // ON COMMIT is only meaningful on TEMP tables in PostgreSQL. The
+        // TempTable rule above strips TEMPORARY, so leaving ON COMMIT in
+        // place would produce invalid SQL (ON COMMIT on a persistent table).
         if ct.on_commit.is_some() {
+            ct.on_commit = None;
             diagnostics.push(error(
                 LintRule::UnsupportedOnCommit,
                 find_line(raw_sql, "on commit"),
                 "CREATE TABLE ... ON COMMIT is not supported in DSQL.",
                 "Remove the ON COMMIT clause.",
-                FixResult::Unfixable,
+                FixResult::FixedWithWarning(
+                    "Removed ON COMMIT clause — temporary-table semantics are not preserved"
+                        .into(),
+                ),
             ));
         }
     }
