@@ -45,6 +45,14 @@ fn region() -> String {
 /// Returns `(endpoint, token)` reused across all tests in this binary, so we don't pay
 /// the AWS-CLI roundtrip per `#[test]`. Returned as owned `String`s so existing call
 /// sites that take `&ep`/`&token` keep working without auto-deref noise.
+///
+/// **Use [`locked_creds`] instead** unless your test provides its own isolation
+/// (e.g. a per-test schema). Tests that touch unqualified `public` objects
+/// (`_clust_base`, `_clean_base`, …) must run serially; calling bare
+/// `cluster_creds` from such a test would race against other tests and trigger
+/// OC001 storms. `lint_rule_fixtures_validated_on_cluster` is the sole intended
+/// caller — it runs its own per-worker schemas and deliberately bypasses the
+/// shared lock.
 fn cluster_creds() -> (String, String) {
     static CREDS: OnceLock<(String, String)> = OnceLock::new();
     CREDS
@@ -863,9 +871,16 @@ fn lint_rule_fixtures_validated_on_cluster() {
                     }
 
                     let result = fix_sql(fix.sql);
+                    // Filter to the rule under test so an unrelated `Unfixable`
+                    // diagnostic (e.g. a fixture that incidentally trips another
+                    // rule) doesn't silently skip fix-path validation for *this*
+                    // rule. Without the filter, broadening any fixture in a way
+                    // that adds a secondary Unfixable would disable cluster
+                    // verification for the rule the fixture is meant to test.
                     let has_unfixable = result
                         .diagnostics
                         .iter()
+                        .filter(|d| d.rule == rule)
                         .any(|d| matches!(d.fix_result, FixResult::Unfixable));
                     if has_unfixable || result.sql.is_empty() {
                         continue;

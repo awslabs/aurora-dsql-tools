@@ -305,6 +305,10 @@ pub const ADDITIONAL_ERROR_CASES: &[(&str, &str)] = &[
         "ALTER TABLE t ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (CACHE 1);",
         "ADD GENERATED AS IDENTITY",
     ),
+    // Pin the named-PREPARE form so a future sqlparser-dsql parse-shape change
+    // (e.g. stashing the name elsewhere when `prepare: true`) doesn't silently
+    // drop coverage. The no-PREPARE form is exercised by the rule fixture.
+    ("DEALLOCATE PREPARE _foo;", "DEALLOCATE"),
 ];
 
 /// Additional false-positive guards. Mirror in
