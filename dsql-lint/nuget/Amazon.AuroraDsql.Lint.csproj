@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Amazon.AuroraDsql.Lint</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <!-- .NET Global Tool -->
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>dsql-lint</ToolCommandName>
+
+    <!-- NuGet package metadata -->
+    <PackageId>Amazon.AuroraDsql.Lint</PackageId>
+    <Version>0.0.0</Version>
+    <Authors>Amazon Web Services</Authors>
+    <Description>Lint SQL files for Aurora DSQL compatibility</Description>
+    <PackageLicenseExpression>MIT-0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/awslabs/aurora-dsql-tools/tree/main/dsql-lint</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/awslabs/aurora-dsql-tools</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>aws;aurora;dsql;sql;lint;postgresql</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="" />
+  </ItemGroup>
+
+  <!-- Native binaries per RID — .gitkeep placeholders excluded -->
+  <ItemGroup>
+    <Content Include="runtimes\**\native\*" Exclude="**\.gitkeep" Pack="false" CopyToOutputDirectory="PreserveNewest" Link="runtimes\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

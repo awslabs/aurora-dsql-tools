@@ -1,9 +1,9 @@
 name: Release dsql-lint
 
 # Consolidated release workflow: builds platform binaries once and fans out
-# to crates.io, npm (wrapper + 5 platform packages), and PyPI (5 platform
-# wheels) so one tag push produces an aligned release across all three
-# registries.
+# to crates.io, npm (wrapper + 5 platform packages), PyPI (5 platform
+# wheels), and NuGet (.NET global tool) so one tag push produces an aligned
+# release across all four registries.
 
 permissions: {}
 
@@ -16,7 +16,7 @@ jobs:
   verify-version:
     # Guard against tag/Cargo.toml drift before anything builds. Catches the
     # "tagged 0.1.4 but forgot to bump Cargo.toml" class of mistakes early,
-    # when the fix is just retagging rather than yanking from three registries.
+    # when the fix is just retagging rather than yanking from four registries.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -189,7 +189,7 @@ jobs:
   publish-npm:
     # Gated on publish-pypi so a PyPI failure doesn't leave us with an
     # asymmetric release. PyPI is yank-only (no true delete), so it has the
-    # hardest recovery story of the three registries — publish it first.
+    # hardest recovery story of the four registries — publish it first.
     needs: [build-binaries, publish-pypi]
     runs-on: ubuntu-latest
     permissions:
@@ -286,6 +286,65 @@ jobs:
 
       - name: Publish wheels to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-nuget:
+    # Gated on publish-pypi so a PyPI failure doesn't leave us with an
+    # asymmetric release (same rationale as publish-npm and publish-crates).
+    needs: [build-binaries, publish-pypi]
+    runs-on: ubuntu-latest
+    environment: nuget
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#dsql-lint/v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Publishing NuGet package version $VERSION"
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          pattern: dsql-lint-*
+
+      - name: Stage binaries into runtimes layout
+        run: |
+          declare -A RID_MAP=(
+            ["darwin-arm64"]="osx-arm64"
+            ["darwin-x64"]="osx-x64"
+            ["linux-arm64"]="linux-arm64"
+            ["linux-x64"]="linux-x64"
+            ["win32-x64"]="win-x64"
+          )
+          for platform in "${!RID_MAP[@]}"; do
+            rid="${RID_MAP[$platform]}"
+            dest="dsql-lint/nuget/runtimes/$rid/native"
+            rm -f "$dest/.gitkeep"
+            if [ "$platform" = "win32-x64" ]; then
+              cp "artifacts/dsql-lint-$platform/bin/dsql-lint.exe" "$dest/"
+            else
+              cp "artifacts/dsql-lint-$platform/bin/dsql-lint" "$dest/"
+              chmod +x "$dest/dsql-lint"
+            fi
+          done
+
+      - name: Pack NuGet package
+        run: dotnet pack --configuration Release -p:Version="$VERSION"
+        working-directory: dsql-lint/nuget
+
+      - name: Push to NuGet.org
+        run: |
+          dotnet nuget push dsql-lint/nuget/bin/Release/*.nupkg \
+            --api-key "${{ secrets.NUGET_API_KEY }}" \
+            --source https://api.nuget.org/v3/index.json
 
   publish-crates:
     # Gated on publish-pypi for the same reason as publish-npm: crates.io
