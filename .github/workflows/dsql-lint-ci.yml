@@ -48,11 +48,11 @@ jobs:
       - name: Run unit and integration tests
         run: cargo test
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
-
       - name: Run cargo audit
-        run: cargo audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: dsql-lint
 
   build-wheel:
     name: Build and Smoke-test Python Wheel
@@ -87,7 +87,9 @@ jobs:
           dsql-lint --version
 
   create-cluster:
-    needs: build
+    # Runs in parallel with `build` — cluster spin-up wait time overlaps with
+    # compile/lint/test. A failed build still consumes a cluster, but cluster
+    # cost is negligible and `delete-cluster` always runs.
     uses: ./.github/workflows/dsql-cluster-create.yml
     with:
       workflow_name: dsql-lint
@@ -98,7 +100,7 @@ jobs:
 
   cluster-tests:
     name: DSQL Cluster Tests
-    needs: create-cluster
+    needs: [build, create-cluster]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -125,7 +127,9 @@ jobs:
         working-directory: dsql-lint
         env:
           DSQL_ENDPOINT: ${{ needs.create-cluster.outputs.cluster-endpoint }}
-        run: RUSTFLAGS='--cfg dsql_cluster' cargo test -- --test-threads=1
+        # Each #[test] uses an isolated DSQL schema, so cargo's default
+        # parallelism is safe.
+        run: RUSTFLAGS='--cfg dsql_cluster' cargo test
 
   delete-cluster:
     if: always() && needs.create-cluster.result == 'success'
