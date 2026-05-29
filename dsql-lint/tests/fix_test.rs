@@ -42,6 +42,11 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "ALTER TABLE t ADD COLUMN data JSONB;",
         "Fixed",
     ),
+    (
+        "collate-c",
+        "CREATE TABLE t (name VARCHAR(100) COLLATE \"C\");",
+        "Fixed",
+    ),
     // ── Tier 2: FixedWithWarning ──────────────────────────────────────
     (
         "serial",
@@ -156,6 +161,11 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
     (
         "alter-add-col-fk",
         "ALTER TABLE t ADD COLUMN cid INT REFERENCES c(id);",
+        "FixedWithWarning",
+    ),
+    (
+        "collate-en-us",
+        "CREATE TABLE t (name VARCHAR(100) COLLATE \"en_US\");",
         "FixedWithWarning",
     ),
     // ── Unfixable ─────────────────────────────────────────────────────

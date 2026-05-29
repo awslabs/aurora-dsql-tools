@@ -180,6 +180,40 @@ fn check_column(
             true
         }
     });
+
+    // COLLATE clause — DSQL rejects per-column COLLATE entirely (the database
+    // default is already C). Strip the clause; flag non-C collations with a
+    // warning since locale-aware ordering can't be preserved.
+    col.options.retain(|opt_def| {
+        if let ColumnOption::Collation(name) = &opt_def.option {
+            let collation = name.to_string();
+            let trimmed = collation.trim_matches('"');
+            let is_c_equivalent = trimmed.eq_ignore_ascii_case("C")
+                || trimmed.eq_ignore_ascii_case("POSIX")
+                || trimmed.eq_ignore_ascii_case("default");
+            let fix_result = if is_c_equivalent {
+                FixResult::Fixed(format!(
+                    "Removed COLLATE {collation} from column `{col_name}` (DSQL's default collation is already C)"
+                ))
+            } else {
+                FixResult::FixedWithWarning(format!(
+                    "Removed COLLATE {collation} from column `{col_name}` — DSQL uses C collation; ORDER BY and LIKE semantics may differ from the source database"
+                ))
+            };
+            diagnostics.push(error(
+                LintRule::Collation,
+                find_line(raw_sql, &col_name_lower),
+                format!(
+                    "Column `{col_name}` uses a COLLATE clause, which is not supported in DSQL."
+                ),
+                "Remove the COLLATE clause. DSQL's database collation is C; for case-insensitive ordering use lower(col).",
+                fix_result,
+            ));
+            false
+        } else {
+            true
+        }
+    });
 }
 
 pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
