@@ -12,7 +12,7 @@
     <ToolCommandName>dsql-lint</ToolCommandName>
 
     <!-- NuGet package metadata -->
-    <PackageId>Amazon.AuroraDsql.Lint</PackageId>
+    <PackageId>amazon.AuroraDsql.Lint</PackageId>
     <Version>0.0.0</Version>
     <Authors>Amazon Web Services</Authors>
     <Description>Lint SQL files for Aurora DSQL compatibility</Description>
