@@ -37,6 +37,7 @@ jobs:
   build-binaries:
     needs: verify-version
     strategy:
+      fail-fast: false
       matrix:
         # `cross: true` marks rows where the target arch differs from the
         # runner's arch (GitHub's `macos-latest` is arm64, so darwin-x64 is a
@@ -94,7 +95,7 @@ jobs:
       - name: Stage binary (windows)
         if: matrix.os == 'windows-latest'
         run: |
-          mkdir -p dsql-lint/npm/dsql-lint-${{ matrix.platform }}/bin
+          New-Item -ItemType Directory -Force -Path dsql-lint/npm/dsql-lint-${{ matrix.platform }}/bin | Out-Null
           cp dsql-lint/target/${{ matrix.target }}/release/dsql-lint.exe `
              dsql-lint/npm/dsql-lint-${{ matrix.platform }}/bin/dsql-lint.exe
         shell: pwsh
