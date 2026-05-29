@@ -47,6 +47,21 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "CREATE TABLE t (name VARCHAR(100) COLLATE \"C\");",
         "Fixed",
     ),
+    (
+        "collate-c-lowercase",
+        "CREATE TABLE t (name VARCHAR(100) COLLATE \"c\");",
+        "Fixed",
+    ),
+    (
+        "collate-posix",
+        "CREATE TABLE t (name VARCHAR(100) COLLATE \"POSIX\");",
+        "Fixed",
+    ),
+    (
+        "collate-pg-catalog-c",
+        "CREATE TABLE t (name VARCHAR(100) COLLATE pg_catalog.\"C\");",
+        "Fixed",
+    ),
     // ── Tier 2: FixedWithWarning ──────────────────────────────────────
     (
         "serial",
@@ -166,6 +181,21 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
     (
         "collate-en-us",
         "CREATE TABLE t (name VARCHAR(100) COLLATE \"en_US\");",
+        "FixedWithWarning",
+    ),
+    (
+        "collate-default",
+        "CREATE TABLE t (name VARCHAR(100) COLLATE \"default\");",
+        "FixedWithWarning",
+    ),
+    (
+        "alter-add-col-collate-c",
+        "ALTER TABLE t ADD COLUMN name VARCHAR(100) COLLATE \"C\";",
+        "Fixed",
+    ),
+    (
+        "alter-add-col-collate-en-us",
+        "ALTER TABLE t ADD COLUMN name VARCHAR(100) COLLATE \"en_US\";",
         "FixedWithWarning",
     ),
     // ── Unfixable ─────────────────────────────────────────────────────
@@ -405,6 +435,32 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
         "alter-add-col-fk",
         "ALTER TABLE t ADD COLUMN cid INT REFERENCES c(id);",
         "ALTER TABLE t ADD COLUMN cid INT;\n",
+    ),
+    (
+        "alter-add-col-collate",
+        "ALTER TABLE t ADD COLUMN name VARCHAR(100) COLLATE \"en_US\";",
+        "ALTER TABLE t ADD COLUMN name VARCHAR(100);\n",
+    ),
+    // COLLATE clause removal
+    (
+        "collate-c",
+        "CREATE TABLE t (name VARCHAR(100) COLLATE \"C\");",
+        "CREATE TABLE t (\n  name VARCHAR(100)  \n);\n",
+    ),
+    (
+        "collate-en-us",
+        "CREATE TABLE t (name VARCHAR(100) COLLATE \"en_US\");",
+        "CREATE TABLE t (\n  name VARCHAR(100)  \n);\n",
+    ),
+    (
+        "collate-pg-catalog-c",
+        "CREATE TABLE t (name VARCHAR(100) COLLATE pg_catalog.\"C\");",
+        "CREATE TABLE t (\n  name VARCHAR(100)  \n);\n",
+    ),
+    (
+        "collate-multi-column",
+        "CREATE TABLE t (\n  name VARCHAR(100) COLLATE \"C\",\n  city VARCHAR(50) COLLATE \"en_US\",\n  notes TEXT COLLATE \"en_US.utf8\"\n);",
+        "CREATE TABLE t (\n  name VARCHAR(100),\n  city VARCHAR(50),\n  notes TEXT  \n);\n",
     ),
     // Mixed ALTER TABLE: FK removed, other ops kept
     (
@@ -698,6 +754,48 @@ fn fix_clean_statement_verbatim() {
     let result = fix_sql(sql);
     assert_eq!(result.sql.trim(), format!("{sql};"));
     assert!(result.diagnostics.is_empty());
+}
+
+#[test]
+fn fix_collate_multi_column_tiers_and_line_numbers() {
+    // Three COLLATE columns on three separate source lines exercise:
+    //   - per-column line attribution (each diagnostic points at its column)
+    //   - tier classification per column (`C` -> Fixed, others -> FixedWithWarning)
+    //   - the multi-segment ObjectName path (`pg_catalog."C"` is C-equivalent)
+    let sql = "CREATE TABLE t (\n  \
+               name VARCHAR(100) COLLATE \"C\",\n  \
+               city VARCHAR(50) COLLATE pg_catalog.\"C\",\n  \
+               notes TEXT COLLATE \"en_US\"\n\
+               );";
+    let result = fix_sql(sql);
+    let collate_diags: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.rule == LintRule::Collation)
+        .collect();
+    assert_eq!(
+        collate_diags.len(),
+        3,
+        "expected 3 Collation diagnostics, got: {:?}",
+        result.diagnostics
+    );
+    assert_eq!(
+        collate_diags.iter().map(|d| d.line).collect::<Vec<_>>(),
+        vec![2, 3, 4],
+        "expected per-column line attribution"
+    );
+    assert!(matches!(
+        collate_diags[0].fix_result,
+        FixResult::Fixed(_)
+    ));
+    assert!(matches!(
+        collate_diags[1].fix_result,
+        FixResult::Fixed(_)
+    ));
+    assert!(matches!(
+        collate_diags[2].fix_result,
+        FixResult::FixedWithWarning(_)
+    ));
 }
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -182,18 +182,29 @@ fn check_column(
     });
 
     // COLLATE clause — DSQL rejects per-column COLLATE entirely (the database
-    // default is already C). Strip the clause; flag non-C collations with a
-    // warning since locale-aware ordering can't be preserved.
+    // collation is C). Strip the clause. C/POSIX are byte-order equivalents
+    // of the database default, so removal is a pure no-op (`Fixed`); every
+    // other collation (including `"default"`, which on the source DB is
+    // typically locale-aware) loses ordering semantics on DSQL, so we
+    // surface a `FixedWithWarning`.
     col.options.retain(|opt_def| {
         if let ColumnOption::Collation(name) = &opt_def.option {
             let collation = name.to_string();
-            let trimmed = collation.trim_matches('"');
-            let is_c_equivalent = trimmed.eq_ignore_ascii_case("C")
-                || trimmed.eq_ignore_ascii_case("POSIX")
-                || trimmed.eq_ignore_ascii_case("default");
+            // Compare the last identifier part (handles `pg_catalog."C"` from
+            // pg_dump as well as plain `"C"` / unquoted `C`).
+            let is_c_equivalent = name
+                .0
+                .last()
+                .and_then(|p| p.as_ident())
+                .is_some_and(|ident| {
+                    matches!(
+                        ident.value.to_ascii_uppercase().as_str(),
+                        "C" | "POSIX"
+                    )
+                });
             let fix_result = if is_c_equivalent {
                 FixResult::Fixed(format!(
-                    "Removed COLLATE {collation} from column `{col_name}` (DSQL's default collation is already C)"
+                    "Removed COLLATE {collation} from column `{col_name}`"
                 ))
             } else {
                 FixResult::FixedWithWarning(format!(
@@ -206,7 +217,7 @@ fn check_column(
                 format!(
                     "Column `{col_name}` uses a COLLATE clause, which is not supported in DSQL."
                 ),
-                "Remove the COLLATE clause. DSQL's database collation is C; for case-insensitive ordering use lower(col).",
+                "Remove the COLLATE clause. DSQL's database collation is C (byte-order); locale-aware ordering and comparison are not available.",
                 fix_result,
             ));
             false
