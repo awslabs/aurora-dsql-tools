@@ -287,6 +287,8 @@ jobs:
 
       - name: Publish wheels to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
 
   publish-nuget:
     # Gated on publish-pypi so a PyPI failure doesn't leave us with an
