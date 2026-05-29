@@ -784,14 +784,8 @@ fn fix_collate_multi_column_tiers_and_line_numbers() {
         vec![2, 3, 4],
         "expected per-column line attribution"
     );
-    assert!(matches!(
-        collate_diags[0].fix_result,
-        FixResult::Fixed(_)
-    ));
-    assert!(matches!(
-        collate_diags[1].fix_result,
-        FixResult::Fixed(_)
-    ));
+    assert!(matches!(collate_diags[0].fix_result, FixResult::Fixed(_)));
+    assert!(matches!(collate_diags[1].fix_result, FixResult::Fixed(_)));
     assert!(matches!(
         collate_diags[2].fix_result,
         FixResult::FixedWithWarning(_)
