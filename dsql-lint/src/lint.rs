@@ -62,6 +62,7 @@ pub enum LintRule {
     SequenceCache,
     SequenceCacheMissing,
     AddColumnConstraint,
+    Collation,
     TransactionIsolation,
     SetTransaction,
     // ALTER TABLE operations — one variant per rejected operation arm.

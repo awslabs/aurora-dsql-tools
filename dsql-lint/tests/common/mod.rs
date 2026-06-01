@@ -470,6 +470,10 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
             "ALTER TABLE _clust_base ADD COLUMN status VARCHAR(50) DEFAULT 'pending';",
             "ADD COLUMN",
         ),
+        LintRule::Collation => fix(
+            "CREATE TABLE _r (id INT, name VARCHAR(100) COLLATE \"en_US\");",
+            "COLLATE",
+        ),
         LintRule::TransactionIsolation => {
             fix("BEGIN ISOLATION LEVEL SERIALIZABLE;", "isolation level")
         }

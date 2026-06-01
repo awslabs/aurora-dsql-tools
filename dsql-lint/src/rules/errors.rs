@@ -180,6 +180,51 @@ fn check_column(
             true
         }
     });
+
+    // COLLATE clause — DSQL rejects per-column COLLATE entirely (the database
+    // collation is C). Strip the clause. C/POSIX are byte-order equivalents
+    // of the database default, so removal is a pure no-op (`Fixed`); every
+    // other collation (including `"default"`, which on the source DB is
+    // typically locale-aware) loses ordering semantics on DSQL, so we
+    // surface a `FixedWithWarning`.
+    col.options.retain(|opt_def| {
+        if let ColumnOption::Collation(name) = &opt_def.option {
+            let collation = name.to_string();
+            // Compare the last identifier part (handles `pg_catalog."C"` from
+            // pg_dump as well as plain `"C"` / unquoted `C`).
+            let is_c_equivalent = name
+                .0
+                .last()
+                .and_then(|p| p.as_ident())
+                .is_some_and(|ident| {
+                    matches!(
+                        ident.value.to_ascii_uppercase().as_str(),
+                        "C" | "POSIX"
+                    )
+                });
+            let fix_result = if is_c_equivalent {
+                FixResult::Fixed(format!(
+                    "Removed COLLATE {collation} from column `{col_name}`"
+                ))
+            } else {
+                FixResult::FixedWithWarning(format!(
+                    "Removed COLLATE {collation} from column `{col_name}` — DSQL uses C collation; ORDER BY and LIKE semantics may differ from the source database"
+                ))
+            };
+            diagnostics.push(error(
+                LintRule::Collation,
+                find_line(raw_sql, &col_name_lower),
+                format!(
+                    "Column `{col_name}` uses a COLLATE clause, which is not supported in DSQL."
+                ),
+                "Remove the COLLATE clause. DSQL's database collation is C (byte-order); locale-aware ordering and comparison are not available.",
+                fix_result,
+            ));
+            false
+        } else {
+            true
+        }
+    });
 }
 
 pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
