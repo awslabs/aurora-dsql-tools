@@ -719,6 +719,20 @@ mod tests {
     }
 
     #[test]
+    fn test_pgdump_create_sequence_parses() {
+        // pg_dump emits CREATE SEQUENCE with options in an order the old parser
+        // (sqlparser-dsql 0.61.0) rejected. After bumping to 0.62.0 it must parse,
+        // so no ParseError diagnostic is produced.
+        let sql = "CREATE SEQUENCE public.t_id_seq AS integer \
+                   START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;";
+        let diags = lint_sql(sql);
+        assert!(
+            !diags.iter().any(|d| matches!(d.rule, LintRule::ParseError)),
+            "expected no ParseError after parser bump, got: {diags:?}"
+        );
+    }
+
+    #[test]
     fn test_split_preserves_newlines() {
         let sql = "CREATE TABLE t (\n    id INT\n);\nSELECT 1;";
         let stmts = split_statements(sql).unwrap();

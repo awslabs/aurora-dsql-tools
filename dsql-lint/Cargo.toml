@@ -23,7 +23,7 @@ serde = ["dep:serde", "dep:serde_json"]
 grammar-diff = ["serde", "dep:earlgrey", "dep:indexmap"]
 
 [dependencies]
-sqlparser = { package = "sqlparser-dsql", version = "0.61.0" }
+sqlparser = { package = "sqlparser-dsql", version = "0.62.0" }
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 strum = { version = "0.26", features = ["derive"] }
