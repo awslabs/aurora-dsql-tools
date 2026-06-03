@@ -1192,4 +1192,26 @@ ALTER TABLE ONLY public.t ALTER COLUMN id SET DEFAULT nextval('public.t_id_seq':
             "warning must tell the user to reset the identity counter, got: {warning}"
         );
     }
+
+    /// `make_identity_column` drops pre-existing IDENTITY column options to avoid
+    /// a doubled clause, but must NOT drop `GENERATED ... AS (expr) STORED`
+    /// computed-column expressions (those carry a non-None generation_expr).
+    /// This input is contrived (no realistic dump combines a STORED computed
+    /// column with a SET DEFAULT nextval pointing at it) but pins the contract
+    /// so a future broadening of the retain pattern would fail loudly.
+    #[test]
+    fn test_fix_sql_serial_idiom_preserves_stored_computed_column() {
+        let sql = "\
+CREATE TABLE public.t (id integer NOT NULL GENERATED ALWAYS AS (1 + 1) STORED);
+CREATE SEQUENCE public.t_id_seq CACHE 1;
+ALTER SEQUENCE public.t_id_seq OWNED BY public.t.id;
+ALTER TABLE ONLY public.t ALTER COLUMN id SET DEFAULT nextval('public.t_id_seq'::regclass);
+";
+        let result = fix_sql(sql);
+        assert!(
+            result.sql.to_uppercase().contains("STORED"),
+            "STORED computed-column expression must survive the rewrite, got:\n{}",
+            result.sql
+        );
+    }
 }

@@ -397,15 +397,21 @@ pub(crate) fn fix_serial_idioms(
 /// any pre-existing `DEFAULT` (the sequence default is what we are replacing)
 /// or `GENERATED { ALWAYS | BY DEFAULT } AS IDENTITY` (avoids a doubled identity
 /// clause when the column already had one and a stray `SET DEFAULT nextval` was
-/// also pointing at it). Reuses the shared `identity_by_default_cache_1()`
-/// helper in `errors.rs` so the inline-`SERIAL` rule and the SERIAL-idiom
-/// collapse always emit the same shape.
+/// also pointing at it). `GENERATED ... AS (expr) STORED` computed columns are
+/// identified by a non-None `generation_expr` and are NOT dropped — silently
+/// removing a user's STORED expression would be data loss. Reuses the shared
+/// `identity_by_default_cache_1()` helper in `errors.rs` so the inline-`SERIAL`
+/// rule and the SERIAL-idiom collapse always emit the same shape.
 fn make_identity_column(col: &mut sqlparser::ast::ColumnDef) {
     col.data_type = DataType::BigInt(None);
     col.options.retain(|opt| {
         !matches!(
             opt.option,
-            ColumnOption::Default(_) | ColumnOption::Generated { .. }
+            ColumnOption::Default(_)
+                | ColumnOption::Generated {
+                    generation_expr: None,
+                    ..
+                }
         )
     });
     col.options.push(identity_by_default_cache_1());
