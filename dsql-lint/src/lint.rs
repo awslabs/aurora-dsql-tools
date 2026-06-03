@@ -828,9 +828,10 @@ ALTER TABLE ONLY public.t ALTER COLUMN id SET DEFAULT nextval('public.t_id_seq':
             out.contains("x text") || out.to_uppercase().contains("X TEXT"),
             "non-SERIAL column `x text` should be preserved, got:\n{out}"
         );
-        assert!(
-            out.matches("NOT NULL").count() >= 2,
-            "both NOT NULLs should be preserved (id + x), got:\n{out}"
+        assert_eq!(
+            out.matches("NOT NULL").count(),
+            2,
+            "exactly 2 NOT NULLs should be preserved (id + x), got:\n{out}"
         );
 
         assert!(
