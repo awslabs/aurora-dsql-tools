@@ -198,6 +198,14 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "ALTER TABLE t ADD COLUMN name VARCHAR(100) COLLATE \"en_US\";",
         "FixedWithWarning",
     ),
+    (
+        "serial-idiom",
+        "CREATE TABLE public.t (id integer NOT NULL);\
+         CREATE SEQUENCE public.t_id_seq CACHE 1;\
+         ALTER SEQUENCE public.t_id_seq OWNED BY public.t.id;\
+         ALTER TABLE ONLY public.t ALTER COLUMN id SET DEFAULT nextval('public.t_id_seq'::regclass);",
+        "FixedWithWarning",
+    ),
     // ── Unfixable ─────────────────────────────────────────────────────
     (
         "alter-add-col-serial",

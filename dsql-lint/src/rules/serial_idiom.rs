@@ -21,13 +21,15 @@
 //!   `ALTER SEQUENCE ... OWNED BY` line, matched by text).
 //!
 //! ## Index space
-//! Detection operates only on the PARSEABLE statements. With sqlparser-dsql
-//! 0.62.0, `ALTER SEQUENCE ... OWNED BY` does NOT parse, so the detection
-//! function receives only the successfully-parsed statements. Every index in
-//! [`SerialIdiom`] (`create_table_index`, `redundant_indices`) is an index into
-//! the `stmts` slice handed to [`detect_serial_idioms`]; the lint and fix
-//! passes here translate those back to indices into the original `parts` list
-//! via a `parsed_to_part` mapping built by [`parse_parts`].
+//! Detection operates only on the PARSEABLE statements. sqlparser-dsql 0.62.0
+//! does not support `ALTER SEQUENCE` at all (the keyword is rejected before any
+//! arm — `OWNED BY`, `RESTART`, etc. — is considered), so the detection function
+//! receives only the successfully-parsed statements (CREATE TABLE, CREATE
+//! SEQUENCE, ALTER TABLE). Every index in [`SerialIdiom`]
+//! (`create_table_index`, `redundant_indices`) is an index into the `stmts`
+//! slice handed to [`detect_serial_idioms`]; the lint and fix passes here
+//! translate those back to indices into the original `parts` list via a
+//! `parsed_to_part` mapping built by [`parse_parts`].
 
 use sqlparser::ast::{
     AlterColumnOperation, AlterTableOperation, ColumnOption, DataType, Expr, FunctionArg,
@@ -82,15 +84,6 @@ fn normalize_object_name(name: &ObjectName) -> Option<NameRef> {
     }
 }
 
-/// Normalize a `schema.name` string (the unwrapped `nextval('...')` argument)
-/// into `(Option<schema>, name)`.
-fn normalize_dotted_str(s: &str) -> NameRef {
-    match s.rsplit_once('.') {
-        Some((schema, name)) => (Some(schema.to_string()), name.to_string()),
-        None => (None, s.to_string()),
-    }
-}
-
 /// Two normalized references match if their names are equal AND their schemas
 /// agree where both are present. A missing schema on either side is treated as
 /// a wildcard (pg_dump emits `public.t` in one place and `t` in another).
@@ -136,7 +129,7 @@ fn extract_nextval_sequence(expr: &Expr) -> Option<NameRef> {
         ..
     }) = str_expr
     {
-        Some(normalize_dotted_str(s))
+        Some(normalize_dotted_identifier(s))
     } else {
         None
     }
@@ -174,20 +167,21 @@ pub(crate) fn detect_serial_idioms(stmts: &[Statement]) -> Vec<SerialIdiom> {
                 let Some(table_ref) = normalize_object_name(&alter.name) else {
                     continue;
                 };
-                for op in &alter.operations {
-                    if let AlterTableOperation::AlterColumn {
-                        column_name,
-                        op: AlterColumnOperation::SetDefault { value },
-                    } = op
-                    {
-                        if let Some(seq_ref) = extract_nextval_sequence(value) {
-                            set_defaults.push((
-                                table_ref.clone(),
-                                column_name.value.clone(),
-                                seq_ref,
-                                idx,
-                            ));
-                        }
+                // Only consider ALTER TABLEs whose sole operation is the SET DEFAULT
+                // we are about to remove. With multiple operations the part can't be
+                // dropped wholesale (we'd lose siblings like ADD CONSTRAINT or
+                // SET NOT NULL); the existing per-statement
+                // `AtUnsupportedAlterColumnSetDefault` rule still flags it Unfixable.
+                if alter.operations.len() != 1 {
+                    continue;
+                }
+                if let AlterTableOperation::AlterColumn {
+                    column_name,
+                    op: AlterColumnOperation::SetDefault { value },
+                } = &alter.operations[0]
+                {
+                    if let Some(seq_ref) = extract_nextval_sequence(value) {
+                        set_defaults.push((table_ref, column_name.value.clone(), seq_ref, idx));
                     }
                 }
             }
@@ -240,12 +234,23 @@ fn parse_parts(parts: &[(usize, String)]) -> (Vec<Statement>, Vec<usize>) {
     (parsed, parsed_to_part)
 }
 
-/// Lint-only pass: surface a `SerialSequenceIdiom` diagnostic for each
-/// detected idiom, without touching the input. Called from `lint_sql` so that
-/// users running `--lint` (no `--fix`) see the same finding `fix_sql` would
-/// report; runs BEFORE the per-statement loop suppresses any of the
-/// constituent statements' diagnostics, so the fix-mode and lint-mode
-/// diagnostic sets stay consistent.
+/// User-facing message text for the SerialSequenceIdiom diagnostic. Shared
+/// between the lint and fix entry points so the wording can't drift.
+fn idiom_message(column: &str) -> String {
+    format!(
+        "Column `{column}` is populated by a sequence via `SET DEFAULT nextval(...)`, \
+         which is not supported in DSQL."
+    )
+}
+
+/// Lint-only pass: surface a `SerialSequenceIdiom` diagnostic for each detected
+/// idiom, without touching the input. The per-statement loop in `lint_sql` still
+/// runs over the original (unmodified) statements, so users see this high-level
+/// finding ALONGSIDE the lower-level rule violations on the constituent
+/// statements (the unparseable `ALTER SEQUENCE … OWNED BY` line surfaces as a
+/// `ParseError`, the `SET DEFAULT nextval` as `AtUnsupportedAlterColumnSetDefault`).
+/// `fix_sql` emits ONLY this finding because `fix_serial_idioms` removes the
+/// constituent statements before the per-statement loop runs.
 pub(crate) fn check_serial_idioms(parts: &[(usize, String)], diagnostics: &mut Vec<Diagnostic>) {
     let (parsed, parsed_to_part) = parse_parts(parts);
 
@@ -259,11 +264,7 @@ pub(crate) fn check_serial_idioms(parts: &[(usize, String)], diagnostics: &mut V
             rule: LintRule::SerialSequenceIdiom,
             line,
             statement,
-            message: format!(
-                "Column `{}` is populated by a sequence via `SET DEFAULT nextval(...)`, \
-                 which is not supported in DSQL.",
-                idiom.column
-            ),
+            message: idiom_message(&idiom.column),
             suggestion: "Replace the CREATE SEQUENCE + SET DEFAULT pair with an inline \
                  `BIGINT GENERATED BY DEFAULT AS IDENTITY (CACHE 1)` column on the CREATE TABLE."
                 .to_string(),
@@ -311,10 +312,19 @@ pub(crate) fn fix_serial_idioms(
     for idiom in &idioms {
         let create_table_part = parsed_to_part[idiom.create_table_index];
 
-        // 1. Rewrite the CREATE TABLE column to an inline identity column.
-        //    Re-parse the part (rather than mutate the shared `parsed` copy) so
-        //    we emit exactly that statement's canonical text.
+        // Re-parse the CREATE TABLE part (rather than mutate the shared `parsed`
+        // copy) so we emit exactly that statement's canonical text. Both arms
+        // below should be unreachable — `parse_parts` already proved this text
+        // parses, and `detect_serial_idioms` proved the column is in the table.
+        // If they ever fire, the silent `continue` would mask a real regression
+        // (we'd skip the diagnostic AND keep the redundant statements), so guard
+        // with `debug_assert!` so test runs catch the drift loudly.
         let Ok(mut stmts) = Parser::parse_sql(&dialect, parts[create_table_part].1.trim()) else {
+            debug_assert!(
+                false,
+                "re-parse of CREATE TABLE for `{}` failed after parse_parts succeeded",
+                idiom.column
+            );
             continue;
         };
         let mut rewrote = false;
@@ -329,6 +339,11 @@ pub(crate) fn fix_serial_idioms(
             }
         }
         if !rewrote {
+            debug_assert!(
+                false,
+                "column `{}` not found in CREATE TABLE after detect_serial_idioms confirmed it",
+                idiom.column
+            );
             continue;
         }
         parts[create_table_part].1 = stmts
@@ -337,13 +352,13 @@ pub(crate) fn fix_serial_idioms(
             .collect::<Vec<_>>()
             .join(";\n");
 
-        // 2. Remove the parseable redundant statements (CREATE SEQUENCE, SET DEFAULT).
+        // Drop the parseable redundant statements (CREATE SEQUENCE, SET DEFAULT).
         for parsed_idx in &idiom.redundant_indices {
             parts_to_remove.push(parsed_to_part[*parsed_idx]);
         }
 
-        // 3. Remove the unparseable `ALTER SEQUENCE <seq> OWNED BY ...` part,
-        //    scoped to this idiom's sequence name.
+        // Drop the unparseable `ALTER SEQUENCE <seq> OWNED BY ...` part, scoped
+        // to this idiom's sequence name (multi-table dumps must not bleed over).
         for (part_idx, (_, text)) in parts.iter().enumerate() {
             if is_alter_sequence_owned_by(text, &idiom.sequence) {
                 parts_to_remove.push(part_idx);
@@ -355,11 +370,7 @@ pub(crate) fn fix_serial_idioms(
             rule: LintRule::SerialSequenceIdiom,
             line,
             statement: parts[create_table_part].1.clone(),
-            message: format!(
-                "Column `{}` is populated by a sequence via `SET DEFAULT nextval(...)`, \
-                 which is not supported in DSQL.",
-                idiom.column
-            ),
+            message: idiom_message(&idiom.column),
             suggestion: "Collapsed pg_dump's CREATE SEQUENCE + SET DEFAULT into an inline \
                  `BIGINT GENERATED BY DEFAULT AS IDENTITY (CACHE 1)` column."
                 .to_string(),
@@ -382,30 +393,38 @@ pub(crate) fn fix_serial_idioms(
 }
 
 /// Mutate a column definition into `BIGINT GENERATED BY DEFAULT AS IDENTITY
-/// (CACHE 1)`, preserving its other options (e.g. `NOT NULL`). Reuses the
-/// shared `identity_by_default_cache_1()` helper in `errors.rs` so the
-/// inline-`SERIAL` rule and the SERIAL-idiom collapse always emit the same shape.
+/// (CACHE 1)`, preserving options like `NOT NULL` / `PRIMARY KEY` while dropping
+/// any pre-existing `DEFAULT` (the sequence default is what we are replacing)
+/// or `GENERATED { ALWAYS | BY DEFAULT } AS IDENTITY` (avoids a doubled identity
+/// clause when the column already had one and a stray `SET DEFAULT nextval` was
+/// also pointing at it). Reuses the shared `identity_by_default_cache_1()`
+/// helper in `errors.rs` so the inline-`SERIAL` rule and the SERIAL-idiom
+/// collapse always emit the same shape.
 fn make_identity_column(col: &mut sqlparser::ast::ColumnDef) {
     col.data_type = DataType::BigInt(None);
-    // Drop any pre-existing DEFAULT option (the sequence default is what we are
-    // replacing) before adding the identity option.
-    col.options
-        .retain(|opt| !matches!(opt.option, ColumnOption::Default(_)));
+    col.options.retain(|opt| {
+        !matches!(
+            opt.option,
+            ColumnOption::Default(_) | ColumnOption::Generated { .. }
+        )
+    });
     col.options.push(identity_by_default_cache_1());
 }
 
 /// Whether a statement's text is `ALTER SEQUENCE <seq> OWNED BY ...` referencing
 /// the given (normalized) sequence. Used to drop the unparseable OWNED BY line
-/// that belongs to a collapsed idiom. The `ALTER SEQUENCE [IF EXISTS]` and
-/// `OWNED BY` keywords are matched case-insensitively; the sequence name itself
-/// is compared with original case (to honor quoted identifiers like `"MySeq"`),
-/// matching how `detect_serial_idioms` derives sequence names from the AST.
+/// that belongs to a collapsed idiom. Keywords (`ALTER SEQUENCE [IF EXISTS]`,
+/// `OWNED BY`) are matched case-insensitively; the sequence name is compared
+/// after stripping enclosing quotes from each segment, mirroring how
+/// `normalize_object_name` produces NameRefs from the AST. So `"MySeq"` in the
+/// OWNED BY text matches a CREATE SEQUENCE whose AST identifier value is `MySeq`.
 fn is_alter_sequence_owned_by(text: &str, sequence: &NameRef) -> bool {
     let trimmed = text.trim().trim_end_matches(';').trim();
+    // `to_ascii_lowercase` preserves byte length for ASCII, so byte offsets
+    // computed against `lower` are valid indices into `trimmed` too. We use
+    // `lower` for keyword matching and slice `trimmed` for the name to keep its
+    // original case (quoted identifiers can be case-sensitive).
     let lower = trimmed.to_ascii_lowercase();
-    // Match the `ALTER SEQUENCE [IF EXISTS] ` prefix on the lowercased copy,
-    // then slice the same byte offset out of the original-case `trimmed` so
-    // the extracted sequence name keeps its case.
     let mut prefix_len = match lower.strip_prefix("alter sequence ") {
         Some(_) => "alter sequence ".len(),
         None => return false,
@@ -413,11 +432,10 @@ fn is_alter_sequence_owned_by(text: &str, sequence: &NameRef) -> bool {
     if lower[prefix_len..].starts_with("if exists ") {
         prefix_len += "if exists ".len();
     }
-    let after_kw = &trimmed[prefix_len..];
-    let Some(owned_pos) = after_kw.to_ascii_lowercase().find(" owned by ") else {
+    let Some(owned_offset) = lower[prefix_len..].find(" owned by ") else {
         return false;
     };
-    let name_ref = normalize_dotted_identifier(after_kw[..owned_pos].trim());
+    let name_ref = normalize_dotted_identifier(trimmed[prefix_len..][..owned_offset].trim());
     refs_match(&name_ref, sequence)
 }
 
@@ -589,5 +607,54 @@ mod tests {
             "CREATE SEQUENCE public.t_id_seq",
             &seq
         ));
+    }
+
+    /// `pg_dump` (rarely) and hand-edited dumps can use the schema-qualified
+    /// `pg_catalog.nextval(...)` instead of the bare `nextval(...)`. The detector
+    /// should still recognize these as the SERIAL idiom.
+    #[test]
+    fn extract_nextval_accepts_pg_catalog_qualified_name() {
+        let stmts = parse_ok(&[
+            "CREATE TABLE public.t (id integer NOT NULL)",
+            "CREATE SEQUENCE public.t_id_seq CACHE 1",
+            "ALTER TABLE ONLY public.t ALTER COLUMN id \
+             SET DEFAULT pg_catalog.nextval('public.t_id_seq'::regclass)",
+        ]);
+        let idioms = detect_serial_idioms(&stmts);
+        assert_eq!(idioms.len(), 1, "expected exactly 1 idiom: {idioms:?}");
+        assert_eq!(idioms[0].column, "id");
+    }
+
+    /// Multi-op ALTER TABLE: detector must NOT mark this idiom as collapsible —
+    /// removing the whole statement would silently drop the unrelated `ADD
+    /// CONSTRAINT`. The user gets the per-statement
+    /// `AtUnsupportedAlterColumnSetDefault` Unfixable instead.
+    #[test]
+    fn multi_op_alter_table_skipped() {
+        let stmts = parse_ok(&[
+            "CREATE TABLE public.t (id integer NOT NULL)",
+            "CREATE SEQUENCE public.t_id_seq CACHE 1",
+            "ALTER TABLE ONLY public.t \
+             ALTER COLUMN id SET DEFAULT nextval('public.t_id_seq'::regclass), \
+             ADD CONSTRAINT t_pkey PRIMARY KEY (id)",
+        ]);
+        assert_eq!(detect_serial_idioms(&stmts).len(), 0);
+    }
+
+    /// Quoted mixed-case sequence inside `nextval('public."T_Id_seq"'::regclass)`
+    /// must correlate with `CREATE SEQUENCE public."T_Id_seq"` (whose AST
+    /// identifier value is the unquoted `T_Id_seq`).
+    #[test]
+    fn quoted_mixed_case_sequence_correlates() {
+        let stmts = parse_ok(&[
+            "CREATE TABLE public.\"T\" (\"Id\" integer NOT NULL)",
+            "CREATE SEQUENCE public.\"T_Id_seq\" CACHE 1",
+            "ALTER TABLE ONLY public.\"T\" ALTER COLUMN \"Id\" \
+             SET DEFAULT nextval('public.\"T_Id_seq\"'::regclass)",
+        ]);
+        let idioms = detect_serial_idioms(&stmts);
+        assert_eq!(idioms.len(), 1, "expected 1 idiom: {idioms:?}");
+        assert_eq!(idioms[0].column, "Id");
+        assert_eq!(idioms[0].sequence.1, "T_Id_seq");
     }
 }
