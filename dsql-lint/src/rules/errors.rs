@@ -12,7 +12,7 @@ use crate::lint::{Diagnostic, FixResult, LintRule};
 use super::{find_line, find_line_any};
 
 /// Construct a `CACHE 1` sequence option — the safe default for DSQL.
-fn cache_1_option() -> SequenceOptions {
+pub(crate) fn cache_1_option() -> SequenceOptions {
     SequenceOptions::Cache(Expr::Value(ValueWithSpan {
         value: Value::Number("1".to_string(), false),
         span: Span::empty(),
