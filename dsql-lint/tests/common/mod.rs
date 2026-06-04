@@ -692,6 +692,11 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
              ALTER TABLE ONLY _r ALTER COLUMN id SET DEFAULT nextval('_r_id_seq'::regclass);",
             "is populated by a sequence",
         ),
+        LintRule::AlterAddUniqueCollapse => fix(
+            "CREATE TABLE _r (id integer NOT NULL, email text NOT NULL);\n\
+             ALTER TABLE ONLY _r ADD CONSTRAINT _r_email_key UNIQUE (email);",
+            "ALTER TABLE ADD CONSTRAINT",
+        ),
         LintRule::ParseError => None,
     }
 }

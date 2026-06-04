@@ -206,6 +206,11 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
          ALTER TABLE ONLY public.t ALTER COLUMN id SET DEFAULT nextval('public.t_id_seq'::regclass);",
         "FixedWithWarning",
     ),
+    (
+        "unique-collapse",
+        "CREATE TABLE t (id integer NOT NULL, email text NOT NULL);\nALTER TABLE ONLY t ADD CONSTRAINT t_email_key UNIQUE (email);",
+        "Fixed",
+    ),
     // ── Unfixable ─────────────────────────────────────────────────────
     (
         "alter-add-col-serial",

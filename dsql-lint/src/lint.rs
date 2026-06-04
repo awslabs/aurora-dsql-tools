@@ -126,6 +126,7 @@ pub enum LintRule {
     MultiDdlTransaction,
     MixedDdlDmlTransaction,
     SerialSequenceIdiom,
+    AlterAddUniqueCollapse,
     ParseError,
 }
 
@@ -565,6 +566,13 @@ pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
     // constituent statements.
     rules::serial_idiom::check_serial_idioms(&stmts, &mut diagnostics);
 
+    // Pre-pass: report fold-able `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE`
+    // statements as `AlterAddUniqueCollapse`. Same fix-vs-lint symmetry as
+    // serial_idiom: the per-statement `AtUnsupportedAddUnique` rule still
+    // fires on lint mode below, so users see both the high-level
+    // collapse-able diagnostic AND the lower-level rejection.
+    rules::unique_collapse::check_alter_add_unique(&stmts, &mut diagnostics);
+
     for (line_num, stmt_text) in &stmts {
         if stmt_text.trim().is_empty() {
             continue;
@@ -639,6 +647,13 @@ pub fn fix_sql(sql: &str) -> FixOutput {
     // spurious diagnostics (an unfixable SET DEFAULT, a ParseError on the
     // unparseable OWNED BY line) for statements we are about to remove.
     rules::serial_idiom::fix_serial_idioms(&mut stmts, &mut all_diagnostics);
+
+    // Pre-pass: fold standalone `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE`
+    // back onto its CREATE TABLE so DSQL accepts the result. Runs BEFORE
+    // the per-statement loop for the same reason as the SERIAL idiom:
+    // otherwise the per-statement `AtUnsupportedAddUnique` rule would
+    // emit an Unfixable on the very ALTER we just folded away.
+    rules::unique_collapse::fix_alter_add_unique(&mut stmts, &mut all_diagnostics);
 
     for (line_num, stmt_text) in &stmts {
         if stmt_text.trim().is_empty() {
