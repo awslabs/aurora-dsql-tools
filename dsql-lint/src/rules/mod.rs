@@ -3,6 +3,7 @@ use sqlparser::ast::Statement;
 
 pub mod errors;
 pub(crate) mod serial_idiom;
+pub(crate) mod unique_collapse;
 
 /// Find the 1-based line number of `needle` (case-insensitive, word-boundary-aware).
 /// Returns `None` when no word-bounded match exists.
