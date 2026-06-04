@@ -106,6 +106,34 @@ fn refs_match(a: &NameRef, b: &NameRef) -> bool {
     }
 }
 
+/// Find the best `refs_match`-compatible candidate for `target` in `items`,
+/// preferring an exact-schema match (both sides present and equal) over a
+/// wildcard match (one side missing a schema). Mirrors the helper in
+/// `serial_idiom`. Without this preference an `ALTER TABLE ONLY public.t`
+/// could fold into an unqualified `CREATE TABLE t` that happened to appear
+/// first in source order, attaching the constraint to the wrong table.
+fn pick_best_match<'a, T>(
+    items: &'a [T],
+    target: &NameRef,
+    key: impl Fn(&'a T) -> &'a NameRef,
+    extra: impl Fn(&'a T) -> bool,
+) -> Option<&'a T> {
+    let mut wildcard: Option<&'a T> = None;
+    for item in items {
+        let candidate = key(item);
+        if !refs_match(candidate, target) || !extra(item) {
+            continue;
+        }
+        if candidate.0.is_some() && target.0.is_some() {
+            return Some(item);
+        }
+        if wildcard.is_none() {
+            wildcard = Some(item);
+        }
+    }
+    wildcard
+}
+
 /// A fold-able `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE (...)`. Carries
 /// indices into the *parsed* statement slice (NOT into the raw `parts`
 /// list); the lint/fix passes translate via `parsed_to_part`.
@@ -164,10 +192,15 @@ pub(crate) fn detect_alter_add_unique(stmts: &[Statement]) -> Vec<UniqueAddIdiom
         // Find the CREATE TABLE for this table — and require it to
         // appear BEFORE the ALTER in source order (an ALTER before its
         // CREATE TABLE is malformed, even if technically in the slice).
-        let Some((_, create_idx)) = creates
-            .iter()
-            .find(|(n, idx)| *idx < alter_index && refs_match(n, &table_ref))
-        else {
+        // `pick_best_match` prefers an exact-schema match over a wildcard
+        // one, so a qualified ALTER does not steal an unqualified CREATE
+        // that happened to appear first.
+        let Some((_, create_idx)) = pick_best_match(
+            &creates,
+            &table_ref,
+            |(n, _)| n,
+            |(_, idx)| *idx < alter_index,
+        ) else {
             continue;
         };
 
@@ -426,5 +459,23 @@ mod tests {
             idioms.is_empty(),
             "multi-op ALTER must not fold: {idioms:?}"
         );
+    }
+
+    #[test]
+    fn exact_schema_match_preferred_over_wildcard() {
+        // When both an unqualified `t` and a schema-qualified `public.t`
+        // exist, a qualified ALTER must correlate with the qualified CREATE
+        // — not the wildcard match that happens to appear earlier in
+        // source order.
+        let stmts = parse_ok(&[
+            "CREATE TABLE t (id integer)",
+            "CREATE TABLE public.t (id integer)",
+            "ALTER TABLE ONLY public.t ADD CONSTRAINT u UNIQUE (id)",
+        ]);
+        let idioms = detect_alter_add_unique(&stmts);
+        assert_eq!(idioms.len(), 1, "expected 1 idiom: {idioms:?}");
+        // create_table_index 1 is `public.t`, NOT 0 (the unqualified `t`).
+        assert_eq!(idioms[0].create_table_index, 1);
+        assert_eq!(idioms[0].table, (Some("public".into()), "t".into()));
     }
 }
