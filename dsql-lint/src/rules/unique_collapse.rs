@@ -234,9 +234,10 @@ fn parse_parts(parts: &[(usize, String)]) -> (Vec<Statement>, Vec<usize>) {
 
 /// Lint-mode pass: surface a `AlterAddUniqueCollapse` diagnostic per
 /// fold-able idiom so users running `--lint` (no `--fix`) see what
-/// `--fix` would do. Runs BEFORE the per-statement loop in `lint_sql`,
-/// so the existing `AtUnsupportedAddUnique` Unfixable diagnostic stays
-/// suppressed for cases the collapse handles.
+/// `--fix` would do. Runs BEFORE the per-statement loop in `lint_sql`;
+/// the per-statement `AtUnsupportedAddUnique` rule still fires in lint
+/// mode (suppression only happens in fix mode, where the ALTER is
+/// removed from `parts` before the per-statement loop sees it).
 pub(crate) fn check_alter_add_unique(parts: &[(usize, String)], diagnostics: &mut Vec<Diagnostic>) {
     let (parsed, parsed_to_part) = parse_parts(parts);
     for idiom in detect_alter_add_unique(&parsed) {
@@ -282,11 +283,24 @@ pub(crate) fn fix_alter_add_unique(
 
     for idiom in &idioms {
         let create_table_part = parsed_to_part[idiom.create_table_index];
+        let alter_part = parsed_to_part[idiom.alter_index];
 
         // Re-parse the CREATE TABLE part (rather than mutate the shared
         // parsed copy) so we emit exactly that statement's canonical
-        // text.
+        // text. Both arms below should be unreachable — `parse_parts`
+        // already proved this text parses, and `detect_alter_add_unique`
+        // already proved the CREATE TABLE matches the idiom's table. If
+        // they ever fire, the silent `continue` would mask a real
+        // regression (constraint dropped from output, ALTER kept and
+        // flagged Unfixable by the per-statement rule), so guard with
+        // `debug_assert!` so test runs catch the drift loudly. Mirrors
+        // the safety guards in `serial_idiom::fix_serial_idioms`.
         let Ok(mut stmts) = Parser::parse_sql(&dialect, parts[create_table_part].1.trim()) else {
+            debug_assert!(
+                false,
+                "re-parse of CREATE TABLE for `{}` failed after parse_parts succeeded",
+                idiom.table.1
+            );
             continue;
         };
         let mut folded = false;
@@ -301,6 +315,11 @@ pub(crate) fn fix_alter_add_unique(
             }
         }
         if !folded {
+            debug_assert!(
+                false,
+                "CREATE TABLE for `{}` not found after detect_alter_add_unique confirmed it",
+                idiom.table.1
+            );
             continue;
         }
         parts[create_table_part].1 = stmts
@@ -309,9 +328,8 @@ pub(crate) fn fix_alter_add_unique(
             .collect::<Vec<_>>()
             .join(";\n");
 
-        parts_to_remove.push(parsed_to_part[idiom.alter_index]);
+        parts_to_remove.push(alter_part);
 
-        let alter_part = parsed_to_part[idiom.alter_index];
         diagnostics.push(Diagnostic {
             rule: LintRule::AlterAddUniqueCollapse,
             line: parts[alter_part].0,
