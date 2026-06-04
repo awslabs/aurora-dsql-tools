@@ -137,7 +137,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "dsql-lint"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "clap",
  "earlgrey",
@@ -444,9 +444,9 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "sqlparser-dsql"
-version = "0.61.0"
+version = "0.62.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60540f3f1b8eaf0b6cf4660db0196cac66f318dce3de60da53bcd41f997a5f04"
+checksum = "320a5d28aebc9438fb6b2bc3e5a80f4398df93f596ea10ebd51dbabe7d964529"
 dependencies = [
  "log",
  "recursive",

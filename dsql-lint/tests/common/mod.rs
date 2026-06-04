@@ -685,6 +685,13 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
             "WITH",
         ),
 
+        LintRule::SerialSequenceIdiom => fix(
+            "CREATE TABLE _r (id integer NOT NULL);\n\
+             CREATE SEQUENCE _r_id_seq AS integer START WITH 1 INCREMENT BY 1 CACHE 1;\n\
+             ALTER SEQUENCE _r_id_seq OWNED BY _r.id;\n\
+             ALTER TABLE ONLY _r ALTER COLUMN id SET DEFAULT nextval('_r_id_seq'::regclass);",
+            "is populated by a sequence",
+        ),
         LintRule::ParseError => None,
     }
 }
