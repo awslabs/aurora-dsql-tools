@@ -61,7 +61,7 @@ use sqlparser::parser::Parser;
 
 use crate::lint::{Diagnostic, FixResult, LintRule};
 use crate::rules::name_match::{
-    normalize_object_name, parse_parts, pick_best_match, refs_match, NameRef,
+    drop_parts, normalize_object_name, parse_parts, pick_best_match, refs_match, NameRef,
 };
 
 /// A fold-able `ALTER TABLE ... ADD CONSTRAINT ... PRIMARY KEY (...)`.
@@ -266,11 +266,7 @@ pub(crate) fn fix_alter_add_primary_key(
         });
     }
 
-    parts_to_remove.sort_unstable();
-    parts_to_remove.dedup();
-    for part_idx in parts_to_remove.into_iter().rev() {
-        parts.remove(part_idx);
-    }
+    drop_parts(parts, parts_to_remove);
 }
 
 #[cfg(test)]

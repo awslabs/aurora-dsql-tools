@@ -6,12 +6,7 @@
 //! - `ObjectName` → `(Option<schema>, name)` normalization (`normalize_object_name`)
 //! - schema-wildcard match with exact-match preference (`refs_match` + `pick_best_match`)
 //! - per-`parts` re-parse with origin tracking (`parse_parts`)
-//!
-//! These were originally duplicated per-rule with a "kept local to insulate
-//! each rule" rationale. In practice the helpers stayed byte-identical, so the
-//! drift hazard the duplication was meant to prevent was a copy-paste hazard
-//! instead. Centralizing here means a future rule cannot quietly inherit a
-//! stale, divergent copy.
+//! - removal of folded-away parts (`drop_parts`)
 
 use sqlparser::ast::{Ident, ObjectName, Statement};
 use sqlparser::dialect::PostgreSqlDialect;
@@ -115,4 +110,16 @@ pub(crate) fn parse_parts(parts: &[(usize, String)]) -> (Vec<Statement>, Vec<usi
         }
     }
     (parsed, parsed_to_part)
+}
+
+/// Drop `indices` from `parts`. Sorts and dedups first, then removes in
+/// reverse so earlier removals don't shift later indices. Used by every
+/// whole-list fix pass to drop folded-away ALTER statements once their
+/// constraint has been moved onto the CREATE TABLE.
+pub(crate) fn drop_parts(parts: &mut Vec<(usize, String)>, mut indices: Vec<usize>) {
+    indices.sort_unstable();
+    indices.dedup();
+    for idx in indices.into_iter().rev() {
+        parts.remove(idx);
+    }
 }
