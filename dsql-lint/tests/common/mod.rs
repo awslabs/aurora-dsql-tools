@@ -528,6 +528,10 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
             "ALTER TABLE _clust_base ADD CONSTRAINT _rej_uq UNIQUE (id);",
             "ADD UNIQUE",
         ),
+        LintRule::AtUnsupportedAddPrimaryKey => fix(
+            "ALTER TABLE _clust_base ADD CONSTRAINT _rej_pk PRIMARY KEY (id);",
+            "ADD PRIMARY KEY",
+        ),
         LintRule::AtUnsupportedDropConstraint => fix(
             "ALTER TABLE _clust_base DROP CONSTRAINT _rej_c;",
             "DROP CONSTRAINT",
@@ -695,6 +699,11 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
         LintRule::AlterAddUniqueCollapse => fix(
             "CREATE TABLE _r (id integer NOT NULL, email text NOT NULL);\n\
              ALTER TABLE ONLY _r ADD CONSTRAINT _r_email_key UNIQUE (email);",
+            "ALTER TABLE ADD CONSTRAINT",
+        ),
+        LintRule::AlterAddPrimaryKeyCollapse => fix(
+            "CREATE TABLE _r (id integer NOT NULL, email text NOT NULL);\n\
+             ALTER TABLE ONLY _r ADD CONSTRAINT _r_pkey PRIMARY KEY (id);",
             "ALTER TABLE ADD CONSTRAINT",
         ),
         LintRule::ParseError => None,

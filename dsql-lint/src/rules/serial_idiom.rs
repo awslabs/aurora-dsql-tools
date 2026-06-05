@@ -43,31 +43,16 @@
 
 use sqlparser::ast::{
     AlterColumnOperation, AlterTableOperation, ColumnOption, DataType, Expr, FunctionArg,
-    FunctionArgExpr, FunctionArguments, Ident, ObjectName, Statement, Value, ValueWithSpan,
+    FunctionArgExpr, FunctionArguments, Statement, Value, ValueWithSpan,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 
 use super::errors::identity_by_default_cache_1;
 use crate::lint::{Diagnostic, FixResult, LintRule};
-
-/// A normalized object reference: `(optional schema, name)` with quoting and
-/// `::regclass` casts stripped, used to correlate the idiom's pieces. Names are
-/// PG-folded — unquoted segments are lowercased; quoted segments keep their
-/// original case — so a `NameRef` can be compared with byte-equal `==` and
-/// still respect PostgreSQL's identifier-case rules.
-type NameRef = (Option<String>, String);
-
-/// PG case-folding for an `Ident` parsed by sqlparser. Unquoted identifiers
-/// fold to lowercase (PostgreSQL's documented rule); quoted identifiers keep
-/// their case verbatim. Mirrors what the server does at parse time.
-fn fold_ident(ident: &Ident) -> String {
-    if ident.quote_style.is_some() {
-        ident.value.clone()
-    } else {
-        ident.value.to_ascii_lowercase()
-    }
-}
+use crate::rules::name_match::{
+    drop_parts, normalize_object_name, parse_parts, pick_best_match, refs_match, NameRef,
+};
 
 /// PG case-folding for a single textual identifier segment (no dots). If the
 /// segment is wrapped in `"..."` the inner value is preserved verbatim;
@@ -116,74 +101,6 @@ pub(crate) struct SerialIdiom {
     /// the rest of the idiom and will later be removed: the CREATE SEQUENCE and
     /// the ALTER COLUMN SET DEFAULT.
     pub redundant_indices: Vec<usize>,
-}
-
-/// Normalize an `ObjectName` to `(Option<schema>, name)`, stripping quoting.
-///
-/// - 1 part  -> `(None, name)`
-/// - 2 parts -> `(Some(schema), name)`
-/// - 3+ parts -> the last two parts are treated as `(schema, name)` (handles
-///   `db.schema.table` by keeping the trailing schema-qualified pair).
-fn normalize_object_name(name: &ObjectName) -> Option<NameRef> {
-    let folded: Vec<String> = name
-        .0
-        .iter()
-        .filter_map(|part| part.as_ident())
-        .map(fold_ident)
-        .collect();
-    match folded.as_slice() {
-        [] => None,
-        [n] => Some((None, n.clone())),
-        [.., schema, n] => Some((Some(schema.clone()), n.clone())),
-    }
-}
-
-/// Two normalized references match if their names are equal AND their schemas
-/// agree where both are present. A missing schema on either side is treated as
-/// a wildcard (pg_dump emits `public.t` in one place and `t` in another).
-fn refs_match(a: &NameRef, b: &NameRef) -> bool {
-    if a.1 != b.1 {
-        return false;
-    }
-    match (&a.0, &b.0) {
-        (Some(s1), Some(s2)) => s1 == s2,
-        _ => true,
-    }
-}
-
-/// Find the best `refs_match`-compatible candidate for `target` in `items`,
-/// preferring an exact-schema match (both sides present and equal) over a
-/// wildcard match (one side missing a schema). `key` projects each candidate
-/// to its `NameRef`; `extra` is an additional predicate the candidate must
-/// also satisfy (e.g. "the table's columns include the one we're wiring").
-///
-/// Why preference matters: if a hand-edited dump has both `CREATE TABLE t` and
-/// `CREATE TABLE other.t`, a SET DEFAULT naming `other.t.id` should correlate
-/// with the qualified one, not the first wildcard hit (the unqualified `t`).
-fn pick_best_match<'a, T>(
-    items: &'a [T],
-    target: &NameRef,
-    key: impl Fn(&'a T) -> &'a NameRef,
-    extra: impl Fn(&'a T) -> bool,
-) -> Option<&'a T> {
-    let mut wildcard: Option<&'a T> = None;
-    for item in items {
-        let candidate = key(item);
-        if !refs_match(candidate, target) || !extra(item) {
-            continue;
-        }
-        // Exact: both sides have schemas and they agree (schemas already
-        // proven equal by refs_match).
-        if candidate.0.is_some() && target.0.is_some() {
-            return Some(item);
-        }
-        // Wildcard: one side is missing a schema. Remember the FIRST hit and
-        // keep scanning for an exact match that may appear later in the list.
-        if wildcard.is_none() {
-            wildcard = Some(item);
-        }
-    }
-    wildcard
 }
 
 /// Extract the referenced sequence name from a `nextval('seq'::regclass)` /
@@ -308,24 +225,6 @@ pub(crate) fn detect_serial_idioms(stmts: &[Statement]) -> Vec<SerialIdiom> {
         });
     }
     idioms
-}
-
-/// Re-parse each part into statements, returning the parsed statements alongside
-/// a `parsed_to_part` map (parsed-index -> originating-part-index). Parts that
-/// fail to parse (e.g. `ALTER SEQUENCE ... OWNED BY`) are simply skipped.
-fn parse_parts(parts: &[(usize, String)]) -> (Vec<Statement>, Vec<usize>) {
-    let dialect = PostgreSqlDialect {};
-    let mut parsed: Vec<Statement> = Vec::new();
-    let mut parsed_to_part: Vec<usize> = Vec::new();
-    for (part_idx, (_, text)) in parts.iter().enumerate() {
-        if let Ok(stmts) = Parser::parse_sql(&dialect, text.trim()) {
-            for stmt in stmts {
-                parsed.push(stmt);
-                parsed_to_part.push(part_idx);
-            }
-        }
-    }
-    (parsed, parsed_to_part)
 }
 
 /// User-facing message text for the SerialSequenceIdiom diagnostic. Shared
@@ -483,13 +382,7 @@ pub(crate) fn fix_serial_idioms(
         });
     }
 
-    // Remove marked parts in descending order so earlier removals don't shift
-    // the indices of later ones. Dedup first (a part is only removed once).
-    parts_to_remove.sort_unstable();
-    parts_to_remove.dedup();
-    for part_idx in parts_to_remove.into_iter().rev() {
-        parts.remove(part_idx);
-    }
+    drop_parts(parts, parts_to_remove);
 }
 
 /// Mutate a column definition into `BIGINT GENERATED BY DEFAULT AS IDENTITY
@@ -555,20 +448,7 @@ fn normalize_dotted_identifier(s: &str) -> NameRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlparser::dialect::PostgreSqlDialect;
-    use sqlparser::parser::Parser;
-
-    /// Parse each statement individually and collect the successfully-parsed
-    /// ones, mirroring how the caller will skip the unparseable
-    /// `ALTER SEQUENCE ... OWNED BY` line.
-    fn parse_ok(stmts: &[&str]) -> Vec<Statement> {
-        let dialect = PostgreSqlDialect {};
-        stmts
-            .iter()
-            .filter_map(|s| Parser::parse_sql(&dialect, s).ok())
-            .flatten()
-            .collect()
-    }
+    use crate::rules::name_match::parse_ok;
 
     #[test]
     fn happy_path_detects_single_idiom() {
