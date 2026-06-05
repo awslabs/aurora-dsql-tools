@@ -216,6 +216,16 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "CREATE TABLE t (id integer NOT NULL, email text NOT NULL);\nALTER TABLE ONLY t ADD CONSTRAINT t_pkey PRIMARY KEY (id);",
         "Fixed",
     ),
+    (
+        "primary-key-collapse-with-include",
+        "CREATE TABLE t (id integer NOT NULL, payload text);\nALTER TABLE ONLY t ADD CONSTRAINT t_pkey PRIMARY KEY (id) INCLUDE (payload);",
+        "Fixed",
+    ),
+    (
+        "unique-collapse-with-include",
+        "CREATE TABLE t (id integer NOT NULL, email text NOT NULL, payload text);\nALTER TABLE ONLY t ADD CONSTRAINT t_uk UNIQUE (email) INCLUDE (payload);",
+        "Fixed",
+    ),
     // ── Unfixable ─────────────────────────────────────────────────────
     (
         "alter-add-col-serial",

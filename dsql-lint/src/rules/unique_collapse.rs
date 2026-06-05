@@ -407,4 +407,23 @@ mod tests {
         assert_eq!(idioms[0].create_table_index, 1);
         assert_eq!(idioms[0].table, (Some("public".into()), "t".into()));
     }
+
+    #[test]
+    fn include_columns_round_trip() {
+        // pg_dump can emit `INCLUDE (col)` covering columns on a UNIQUE
+        // constraint. The fold must carry the INCLUDE through verbatim.
+        let stmts = parse_ok(&[
+            "CREATE TABLE t (id integer, email text NOT NULL, payload text)",
+            "ALTER TABLE ONLY t ADD CONSTRAINT t_uk UNIQUE (email) INCLUDE (payload)",
+        ]);
+        let idioms = detect_alter_add_unique(&stmts);
+        assert_eq!(idioms.len(), 1, "got: {idioms:?}");
+        let include: Vec<String> = idioms[0]
+            .constraint
+            .include
+            .iter()
+            .map(|i| i.value.clone())
+            .collect();
+        assert_eq!(include, vec!["payload".to_string()]);
+    }
 }
