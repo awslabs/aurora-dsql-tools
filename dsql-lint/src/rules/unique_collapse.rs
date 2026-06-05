@@ -54,85 +54,14 @@
 //! the per-statement rule so the user is told to bring the CREATE TABLE
 //! into scope or rewrite the dump.
 
-use sqlparser::ast::{
-    AlterTableOperation, Ident, ObjectName, Statement, TableConstraint, UniqueConstraint,
-};
+use sqlparser::ast::{AlterTableOperation, Statement, TableConstraint, UniqueConstraint};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 
 use crate::lint::{Diagnostic, FixResult, LintRule};
-
-/// A normalized `(optional schema, name)` reference, PG-folded so byte-
-/// equal `==` respects PostgreSQL's case rules. Mirrors the helper in
-/// `serial_idiom` rather than sharing it: keeping each whole-list rule's
-/// helper local prevents one rule's normalization choices from quietly
-/// changing another rule's semantics.
-type NameRef = (Option<String>, String);
-
-/// PG case-folding for an `Ident` parsed by sqlparser. Unquoted segments
-/// fold to lowercase; quoted segments keep their case. Mirrors what the
-/// PostgreSQL server does at parse time.
-fn fold_ident(ident: &Ident) -> String {
-    if ident.quote_style.is_some() {
-        ident.value.clone()
-    } else {
-        ident.value.to_ascii_lowercase()
-    }
-}
-
-/// Normalize an `ObjectName` to `(Option<schema>, name)` with PG case
-/// folding applied. 1-part → unqualified; 2+ parts → take the trailing
-/// pair as `(schema, table)`.
-fn normalize_object_name(name: &ObjectName) -> Option<NameRef> {
-    let idents: Vec<&Ident> = name.0.iter().filter_map(|p| p.as_ident()).collect();
-    match idents.as_slice() {
-        [] => None,
-        [n] => Some((None, fold_ident(n))),
-        [.., schema, n] => Some((Some(fold_ident(schema)), fold_ident(n))),
-    }
-}
-
-/// Two normalized refs match if names are equal AND schemas agree where
-/// both are present. Missing schema on either side is a wildcard
-/// (pg_dump may emit `public.t` in one statement and bare `t` in
-/// another).
-fn refs_match(a: &NameRef, b: &NameRef) -> bool {
-    if a.1 != b.1 {
-        return false;
-    }
-    match (&a.0, &b.0) {
-        (Some(s1), Some(s2)) => s1 == s2,
-        _ => true,
-    }
-}
-
-/// Find the best `refs_match`-compatible candidate for `target` in `items`,
-/// preferring an exact-schema match (both sides present and equal) over a
-/// wildcard match (one side missing a schema). Mirrors the helper in
-/// `serial_idiom`. Without this preference an `ALTER TABLE ONLY public.t`
-/// could fold into an unqualified `CREATE TABLE t` that happened to appear
-/// first in source order, attaching the constraint to the wrong table.
-fn pick_best_match<'a, T>(
-    items: &'a [T],
-    target: &NameRef,
-    key: impl Fn(&'a T) -> &'a NameRef,
-    extra: impl Fn(&'a T) -> bool,
-) -> Option<&'a T> {
-    let mut wildcard: Option<&'a T> = None;
-    for item in items {
-        let candidate = key(item);
-        if !refs_match(candidate, target) || !extra(item) {
-            continue;
-        }
-        if candidate.0.is_some() && target.0.is_some() {
-            return Some(item);
-        }
-        if wildcard.is_none() {
-            wildcard = Some(item);
-        }
-    }
-    wildcard
-}
+use crate::rules::name_match::{
+    normalize_object_name, parse_parts, pick_best_match, refs_match, NameRef,
+};
 
 /// A fold-able `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE (...)`. Carries
 /// indices into the *parsed* statement slice (NOT into the raw `parts`
@@ -212,24 +141,6 @@ pub(crate) fn detect_alter_add_unique(stmts: &[Statement]) -> Vec<UniqueAddIdiom
         });
     }
     idioms
-}
-
-/// Re-parse each part into statements, tracking origin. Mirrors the
-/// helper in `serial_idiom`; kept local to insulate this rule from
-/// future changes to that one's parsing strategy.
-fn parse_parts(parts: &[(usize, String)]) -> (Vec<Statement>, Vec<usize>) {
-    let dialect = PostgreSqlDialect {};
-    let mut parsed: Vec<Statement> = Vec::new();
-    let mut parsed_to_part: Vec<usize> = Vec::new();
-    for (part_idx, (_, text)) in parts.iter().enumerate() {
-        if let Ok(stmts) = Parser::parse_sql(&dialect, text.trim()) {
-            for stmt in stmts {
-                parsed.push(stmt);
-                parsed_to_part.push(part_idx);
-            }
-        }
-    }
-    (parsed, parsed_to_part)
 }
 
 /// Lint-mode pass: surface a `AlterAddUniqueCollapse` diagnostic per
