@@ -540,7 +540,12 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
     }
 }
 
-/// Rules take `&mut` and may mutate the AST — kept intentionally so each rule is a single code path for both lint and fix, avoiding duplicated logic that can drift.
+/// Per-statement rules in `errors.rs` take `&mut Statement` and may
+/// mutate the AST — one code path for both lint and fix, so the two
+/// modes can't drift. Multi-statement idiom rules (`serial_idiom`,
+/// `constraint_collapse`) expose paired `check_*` / `fix_*` entry
+/// points instead, since their fix mode rewrites and removes parts
+/// rather than mutating a single AST.
 pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
     let dialect = PostgreSqlDialect {};
     let mut diagnostics = Vec::new();

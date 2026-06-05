@@ -124,16 +124,16 @@ pub(crate) fn drop_parts(parts: &mut Vec<(usize, String)>, mut indices: Vec<usiz
     }
 }
 
-/// Parse each input string as PG SQL and collect the statements that
-/// parse, dropping the rest. Shared between rule-module test suites
-/// that exercise multi-statement detection.
+/// Parse each input string as PG SQL and concatenate the statements.
+/// Panics on parse failure so a typo in test SQL surfaces instead of
+/// silently yielding an empty Vec. Shared between rule-module test
+/// suites that exercise multi-statement detection.
 #[cfg(test)]
 pub(crate) fn parse_ok(stmts: &[&str]) -> Vec<Statement> {
     let dialect = PostgreSqlDialect {};
     stmts
         .iter()
-        .filter_map(|s| Parser::parse_sql(&dialect, s).ok())
-        .flatten()
+        .flat_map(|s| Parser::parse_sql(&dialect, s).expect("test SQL must parse"))
         .collect()
 }
 
