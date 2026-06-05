@@ -123,3 +123,15 @@ pub(crate) fn drop_parts(parts: &mut Vec<(usize, String)>, mut indices: Vec<usiz
         parts.remove(idx);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drop_parts_sorts_dedups_and_removes_in_reverse() {
+        let mut parts = vec![(1, "a".into()), (2, "b".into()), (3, "c".into())];
+        drop_parts(&mut parts, vec![2, 0, 0]);
+        assert_eq!(parts, vec![(2, "b".into())]);
+    }
+}
