@@ -412,4 +412,25 @@ mod tests {
         assert_eq!(idioms[0].create_table_index, 1);
         assert_eq!(idioms[0].table, (Some("public".into()), "t".into()));
     }
+
+    #[test]
+    fn include_columns_round_trip() {
+        // pg_dump can emit `INCLUDE (col)` covering columns on a PK constraint.
+        // The fold must carry the INCLUDE through verbatim — DSQL accepts the
+        // inline form, and dropping the clause would silently change the
+        // declared schema.
+        let stmts = parse_ok(&[
+            "CREATE TABLE t (id integer NOT NULL, payload text)",
+            "ALTER TABLE ONLY t ADD CONSTRAINT t_pk PRIMARY KEY (id) INCLUDE (payload)",
+        ]);
+        let idioms = detect_alter_add_primary_key(&stmts);
+        assert_eq!(idioms.len(), 1, "got: {idioms:?}");
+        let include: Vec<String> = idioms[0]
+            .constraint
+            .include
+            .iter()
+            .map(|i| i.value.clone())
+            .collect();
+        assert_eq!(include, vec!["payload".to_string()]);
+    }
 }
