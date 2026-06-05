@@ -448,20 +448,7 @@ fn normalize_dotted_identifier(s: &str) -> NameRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlparser::dialect::PostgreSqlDialect;
-    use sqlparser::parser::Parser;
-
-    /// Parse each statement individually and collect the successfully-parsed
-    /// ones, mirroring how the caller will skip the unparseable
-    /// `ALTER SEQUENCE ... OWNED BY` line.
-    fn parse_ok(stmts: &[&str]) -> Vec<Statement> {
-        let dialect = PostgreSqlDialect {};
-        stmts
-            .iter()
-            .filter_map(|s| Parser::parse_sql(&dialect, s).ok())
-            .flatten()
-            .collect()
-    }
+    use crate::rules::name_match::parse_ok;
 
     #[test]
     fn happy_path_detects_single_idiom() {

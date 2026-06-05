@@ -75,7 +75,7 @@ fn detect<C: Clone>(stmts: &[Statement], kind: &Kind<C>) -> Vec<Idiom<C>> {
         })
         .collect();
 
-    let mut idioms = Vec::with_capacity(stmts.len());
+    let mut idioms = Vec::new();
     for (alter_index, stmt) in stmts.iter().enumerate() {
         let Statement::AlterTable(alter) = stmt else {
             continue;
@@ -165,10 +165,6 @@ fn fix<C: Clone>(
 
     let (parsed, parsed_to_part) = parse_parts(parts);
     let idioms = detect(&parsed, kind);
-    if idioms.is_empty() {
-        return;
-    }
-
     let mut parts_to_remove = Vec::with_capacity(idioms.len());
 
     for idiom in &idioms {
@@ -256,15 +252,7 @@ pub(crate) fn fix_alter_add_unique(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn parse_ok(stmts: &[&str]) -> Vec<Statement> {
-        let dialect = PostgreSqlDialect {};
-        stmts
-            .iter()
-            .filter_map(|s| Parser::parse_sql(&dialect, s).ok())
-            .flatten()
-            .collect()
-    }
+    use crate::rules::name_match::parse_ok;
 
     // Engine tests use PK as the canonical case; PK and UNIQUE share
     // the engine, and per-rule end-to-end coverage lives in
