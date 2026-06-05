@@ -641,6 +641,13 @@ fn check_alter_table_operations(
                     suggestion: "Add UNIQUE constraints at table creation time.",
                     needle: "add constraint",
                 },
+                TableConstraint::PrimaryKey(_) => UnsupportedOp {
+                    rule: LintRule::AtUnsupportedAddPrimaryKey,
+                    msg: "ALTER TABLE ADD PRIMARY KEY constraint is not supported in DSQL."
+                        .to_string(),
+                    suggestion: "Add PRIMARY KEY constraints at table creation time.",
+                    needle: "add constraint",
+                },
                 // ForeignKey handled by check_alter_table; other variants skipped.
                 _ => continue,
             },

@@ -74,6 +74,7 @@ pub enum LintRule {
     AtUnsupportedAlterColumnDropDefault,
     AtUnsupportedAlterColumnAddGenerated,
     AtUnsupportedAddCheck,
+    AtUnsupportedAddPrimaryKey,
     AtUnsupportedAddUnique,
     AtUnsupportedDropConstraint,
     AtUnsupportedPrimaryKeyUsingIndex,
@@ -127,6 +128,7 @@ pub enum LintRule {
     MixedDdlDmlTransaction,
     SerialSequenceIdiom,
     AlterAddUniqueCollapse,
+    AlterAddPrimaryKeyCollapse,
     ParseError,
 }
 
@@ -573,6 +575,13 @@ pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
     // collapse-able diagnostic AND the lower-level rejection.
     rules::unique_collapse::check_alter_add_unique(&stmts, &mut diagnostics);
 
+    // Pre-pass: report fold-able `ALTER TABLE ... ADD CONSTRAINT ... PRIMARY KEY`
+    // statements as `AlterAddPrimaryKeyCollapse`. Same fix-vs-lint symmetry
+    // as `unique_collapse`: the per-statement `AtUnsupportedAddPrimaryKey`
+    // rule still fires on lint mode below, so users see both the high-level
+    // collapse-able diagnostic AND the lower-level rejection.
+    rules::pk_collapse::check_alter_add_primary_key(&stmts, &mut diagnostics);
+
     for (line_num, stmt_text) in &stmts {
         if stmt_text.trim().is_empty() {
             continue;
@@ -654,6 +663,13 @@ pub fn fix_sql(sql: &str) -> FixOutput {
     // otherwise the per-statement `AtUnsupportedAddUnique` rule would
     // emit an Unfixable on the very ALTER we just folded away.
     rules::unique_collapse::fix_alter_add_unique(&mut stmts, &mut all_diagnostics);
+
+    // Pre-pass: fold standalone `ALTER TABLE ... ADD CONSTRAINT ... PRIMARY KEY`
+    // back onto its CREATE TABLE so DSQL accepts the result. Runs BEFORE
+    // the per-statement loop for the same reason as `unique_collapse`:
+    // otherwise the per-statement `AtUnsupportedAddPrimaryKey` rule would
+    // emit an Unfixable on the very ALTER we just folded away.
+    rules::pk_collapse::fix_alter_add_primary_key(&mut stmts, &mut all_diagnostics);
 
     for (line_num, stmt_text) in &stmts {
         if stmt_text.trim().is_empty() {

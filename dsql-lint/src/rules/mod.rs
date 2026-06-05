@@ -2,6 +2,7 @@ use crate::lint::Diagnostic;
 use sqlparser::ast::Statement;
 
 pub mod errors;
+pub(crate) mod pk_collapse;
 pub(crate) mod serial_idiom;
 pub(crate) mod unique_collapse;
 
