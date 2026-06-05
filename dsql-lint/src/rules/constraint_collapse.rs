@@ -27,33 +27,23 @@ struct Kind<C> {
     wrap: fn(C) -> TableConstraint,
 }
 
-fn pk_extract(c: &TableConstraint) -> Option<&PrimaryKeyConstraint> {
-    if let TableConstraint::PrimaryKey(pk) = c {
-        Some(pk)
-    } else {
-        None
-    }
-}
-
-fn unique_extract(c: &TableConstraint) -> Option<&UniqueConstraint> {
-    if let TableConstraint::Unique(u) = c {
-        Some(u)
-    } else {
-        None
-    }
-}
-
 const PK_KIND: Kind<PrimaryKeyConstraint> = Kind {
     rule: LintRule::AlterAddPrimaryKeyCollapse,
     keyword: "PRIMARY KEY",
-    extract: pk_extract,
+    extract: |c| match c {
+        TableConstraint::PrimaryKey(pk) => Some(pk),
+        _ => None,
+    },
     wrap: TableConstraint::PrimaryKey,
 };
 
 const UNIQUE_KIND: Kind<UniqueConstraint> = Kind {
     rule: LintRule::AlterAddUniqueCollapse,
     keyword: "UNIQUE",
-    extract: unique_extract,
+    extract: |c| match c {
+        TableConstraint::Unique(u) => Some(u),
+        _ => None,
+    },
     wrap: TableConstraint::Unique,
 };
 
@@ -61,7 +51,6 @@ const UNIQUE_KIND: Kind<UniqueConstraint> = Kind {
 /// target CREATE TABLE is present earlier in the same input. Indices
 /// point into the *parsed* statement slice, not the raw `parts` list;
 /// callers translate via `parse_parts`'s `parsed_to_part` mapping.
-#[derive(Debug, Clone)]
 struct Idiom<C> {
     table: NameRef,
     constraint: C,
@@ -238,8 +227,6 @@ fn fix<C: Clone>(
 }
 
 // ── Per-rule public wrappers ────────────────────────────────────────
-// Same names as the old per-rule modules so `lint.rs` callers stay
-// stable; only the module path changes.
 
 pub(crate) fn check_alter_add_primary_key(
     parts: &[(usize, String)],
@@ -279,10 +266,9 @@ mod tests {
             .collect()
     }
 
-    // Engine tests use PK as the canonical case. Both PK_KIND and
-    // UNIQUE_KIND share the same `detect`/`check`/`fix`, so behaviors
-    // proven against one specialization apply to the other; per-rule
-    // end-to-end coverage lives in `tests/fix_test.rs` SNAPSHOT_CASES.
+    // Engine tests use PK as the canonical case; PK and UNIQUE share
+    // the engine, and per-rule end-to-end coverage lives in
+    // `tests/fix_test.rs` SNAPSHOT_CASES.
 
     #[test]
     fn detects_simple_add_after_create_table() {

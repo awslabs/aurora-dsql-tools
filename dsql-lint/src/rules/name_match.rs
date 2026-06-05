@@ -1,7 +1,7 @@
 //! Shared helpers for whole-list rules that correlate statements by table /
-//! sequence name (`serial_idiom`, `unique_collapse`, `pk_collapse`).
+//! sequence name (`serial_idiom`, `constraint_collapse`).
 //!
-//! All three rules need the same primitives:
+//! Both rules need the same primitives:
 //! - PG case-folded identifier comparison (`fold_ident`)
 //! - `ObjectName` → `(Option<schema>, name)` normalization (`normalize_object_name`)
 //! - schema-wildcard match with exact-match preference (`refs_match` + `pick_best_match`)
