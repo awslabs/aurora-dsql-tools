@@ -1,11 +1,10 @@
 use crate::lint::Diagnostic;
 use sqlparser::ast::Statement;
 
+pub(crate) mod constraint_collapse;
 pub mod errors;
 pub(crate) mod name_match;
-pub(crate) mod pk_collapse;
 pub(crate) mod serial_idiom;
-pub(crate) mod unique_collapse;
 
 /// Find the 1-based line number of `needle` (case-insensitive, word-boundary-aware).
 /// Returns `None` when no word-bounded match exists.

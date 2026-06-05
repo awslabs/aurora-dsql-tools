@@ -560,27 +560,13 @@ pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
         }
     };
 
-    // Pre-pass: report any pg_dump SERIAL idioms as a single
-    // SerialSequenceIdiom diagnostic so lint-mode and fix-mode surface the
-    // same finding. The per-statement loop still runs over the original
-    // statements (this is lint, not fix), so users see both the high-level
-    // idiom diagnostic and the lower-level rule violations on the
-    // constituent statements.
+    // Pre-passes: surface multi-statement idioms (SERIAL expansion,
+    // standalone PK/UNIQUE ALTERs) as a single high-level diagnostic.
+    // The per-statement loop still runs (this is lint, not fix), so
+    // the lower-level Unfixable rules also fire alongside.
     rules::serial_idiom::check_serial_idioms(&stmts, &mut diagnostics);
-
-    // Pre-pass: report fold-able `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE`
-    // statements as `AlterAddUniqueCollapse`. Same fix-vs-lint symmetry as
-    // serial_idiom: the per-statement `AtUnsupportedAddUnique` rule still
-    // fires on lint mode below, so users see both the high-level
-    // collapse-able diagnostic AND the lower-level rejection.
-    rules::unique_collapse::check_alter_add_unique(&stmts, &mut diagnostics);
-
-    // Pre-pass: report fold-able `ALTER TABLE ... ADD CONSTRAINT ... PRIMARY KEY`
-    // statements as `AlterAddPrimaryKeyCollapse`. Same fix-vs-lint symmetry
-    // as `unique_collapse`: the per-statement `AtUnsupportedAddPrimaryKey`
-    // rule still fires on lint mode below, so users see both the high-level
-    // collapse-able diagnostic AND the lower-level rejection.
-    rules::pk_collapse::check_alter_add_primary_key(&stmts, &mut diagnostics);
+    rules::constraint_collapse::check_alter_add_unique(&stmts, &mut diagnostics);
+    rules::constraint_collapse::check_alter_add_primary_key(&stmts, &mut diagnostics);
 
     for (line_num, stmt_text) in &stmts {
         if stmt_text.trim().is_empty() {
@@ -649,27 +635,13 @@ pub fn fix_sql(sql: &str) -> FixOutput {
         }
     };
 
-    // Pre-pass: collapse pg_dump's multi-statement SERIAL idiom (CREATE SEQUENCE
-    // + ALTER SEQUENCE OWNED BY + ALTER COLUMN SET DEFAULT nextval) into an
-    // inline identity column on the CREATE TABLE, removing the redundant
-    // statements. Runs BEFORE the per-statement loop so that loop never emits
-    // spurious diagnostics (an unfixable SET DEFAULT, a ParseError on the
-    // unparseable OWNED BY line) for statements we are about to remove.
+    // Pre-passes: collapse multi-statement idioms BEFORE the per-statement
+    // loop, so the loop never emits Unfixable diagnostics on statements
+    // we just folded away (or ParseError on the unparseable
+    // `ALTER SEQUENCE ... OWNED BY` line that the SERIAL idiom drops).
     rules::serial_idiom::fix_serial_idioms(&mut stmts, &mut all_diagnostics);
-
-    // Pre-pass: fold standalone `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE`
-    // back onto its CREATE TABLE so DSQL accepts the result. Runs BEFORE
-    // the per-statement loop for the same reason as the SERIAL idiom:
-    // otherwise the per-statement `AtUnsupportedAddUnique` rule would
-    // emit an Unfixable on the very ALTER we just folded away.
-    rules::unique_collapse::fix_alter_add_unique(&mut stmts, &mut all_diagnostics);
-
-    // Pre-pass: fold standalone `ALTER TABLE ... ADD CONSTRAINT ... PRIMARY KEY`
-    // back onto its CREATE TABLE so DSQL accepts the result. Runs BEFORE
-    // the per-statement loop for the same reason as `unique_collapse`:
-    // otherwise the per-statement `AtUnsupportedAddPrimaryKey` rule would
-    // emit an Unfixable on the very ALTER we just folded away.
-    rules::pk_collapse::fix_alter_add_primary_key(&mut stmts, &mut all_diagnostics);
+    rules::constraint_collapse::fix_alter_add_unique(&mut stmts, &mut all_diagnostics);
+    rules::constraint_collapse::fix_alter_add_primary_key(&mut stmts, &mut all_diagnostics);
 
     for (line_num, stmt_text) in &stmts {
         if stmt_text.trim().is_empty() {
