@@ -70,8 +70,6 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "CREATE TABLE t (id SERIAL2 PRIMARY KEY);",
         "SERIAL2",
     ),
-    // JSONB
-    ("json", "CREATE TABLE t (id INT, data JSONB);", "JSONB"),
     // Foreign keys — column-level and table-level
     (
         "fk",
@@ -162,11 +160,6 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "alter-serial",
         "ALTER TABLE t ADD COLUMN id SERIAL;",
         "SERIAL",
-    ),
-    (
-        "alter-json",
-        "ALTER TABLE t ADD COLUMN data JSONB;",
-        "JSONB",
     ),
     (
         "alter-array",
@@ -761,7 +754,6 @@ fn fixture_sample_migration() {
     let expected = &[
         "SERIAL",
         "FOREIGN KEY",
-        "JSONB",
         "TRUNCATE",
         "TEMPORARY",
         "array",

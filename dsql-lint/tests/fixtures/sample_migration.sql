@@ -20,7 +20,7 @@ CREATE TABLE orders (
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
--- JSONB column (error)
+-- JSONB is supported in DSQL — should NOT produce an error
 CREATE TABLE events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     payload JSONB

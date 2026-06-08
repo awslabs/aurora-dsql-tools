@@ -100,21 +100,6 @@ fn check_column(
         }
     }
 
-    // JSONB → json
-    if matches!(&col.data_type, DataType::JSONB) {
-        col.data_type = DataType::JSON;
-        diagnostics.push(error(
-            LintRule::JsonType,
-            find_line(raw_sql, "jsonb"),
-            format!(
-                "Column `{}` uses JSONB, which is not supported as a storage type in DSQL.",
-                col.name
-            ),
-            "Use JSON instead. Cast to ::jsonb at query time for JSONB operators.",
-            FixResult::Fixed(format!("Replaced JSONB with JSON on column `{}`", col.name)),
-        ));
-    }
-
     // Array types
     if matches!(&col.data_type, DataType::Array(_)) {
         diagnostics.push(error(
