@@ -41,7 +41,6 @@ pub enum FixResult {
 )]
 pub enum LintRule {
     SerialType,
-    JsonType,
     ArrayType,
     ForeignKey,
     TempTable,

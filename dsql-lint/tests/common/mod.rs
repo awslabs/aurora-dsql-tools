@@ -38,6 +38,8 @@ pub const SUPPORTED_TYPES: &[(&str, &str)] = &[
     ("bool", "BOOL"),
     ("bytea", "BYTEA"),
     ("uuid", "UUID"),
+    ("json", "JSON"),
+    ("jsonb", "JSONB"),
     // Identity columns
     (
         "identity-always",
@@ -410,7 +412,6 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
     match rule {
         // ─── Single-purpose rules ─────────────────────────────────────────
         LintRule::SerialType => fix("CREATE TABLE _r (id SERIAL PRIMARY KEY);", "SERIAL"),
-        LintRule::JsonType => fix("CREATE TABLE _r (id INT, data JSONB);", "JSONB"),
         LintRule::ArrayType => fix("CREATE TABLE _r (id INT, tags TEXT[]);", "array"),
         LintRule::ForeignKey => fix(
             "CREATE TABLE _r (id INT, cid INT REFERENCES _clust_base(id));",
