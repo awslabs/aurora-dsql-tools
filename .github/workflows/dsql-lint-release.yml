@@ -297,6 +297,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: nuget
     permissions:
+      id-token: write
       contents: read
 
     steps:
@@ -305,6 +306,23 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.NUGET_PUBLISH_IAM_ROLE }}
+          role-session-name: dsql-lint-nuget-publish
+          aws-region: us-west-2
+
+      - name: Get NuGet API Key
+        run: |
+          SECRET_JSON=$(aws secretsmanager get-secret-value \
+            --secret-id "production/build/AuroraDsql-nuget-api-key" \
+            --query 'SecretString' \
+            --output text)
+          NUGET_API_KEY=$(echo "$SECRET_JSON" | jq -r '.Key')
+          echo "::add-mask::$NUGET_API_KEY"
+          echo "NUGET_API_KEY=$NUGET_API_KEY" >> "$GITHUB_ENV"
 
       - name: Set version from tag
         run: |
@@ -346,7 +364,7 @@ jobs:
       - name: Push to NuGet.org
         run: |
           dotnet nuget push dsql-lint/nuget/bin/Release/*.nupkg \
-            --api-key "${{ secrets.NUGET_API_KEY }}" \
+            --api-key "${{ env.NUGET_API_KEY }}" \
             --source https://api.nuget.org/v3/index.json
 
   publish-crates:
