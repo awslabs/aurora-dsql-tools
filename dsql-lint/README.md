@@ -24,6 +24,12 @@ pip install dsql-lint
 uvx dsql-lint migration.sql
 ```
 
+Via .NET (prebuilt native binary, no Rust toolchain required):
+
+```bash
+dotnet tool install -g Amazon.AuroraDsql.Lint
+```
+
 Or via Cargo:
 
 ```bash
