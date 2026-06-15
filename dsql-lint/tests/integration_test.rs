@@ -419,27 +419,6 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "ALTER TABLE t NO FORCE ROW LEVEL SECURITY;",
         "ROW LEVEL SECURITY",
     ),
-    // ALTER TABLE — Triggers
-    (
-        "alter-enable-trigger",
-        "ALTER TABLE t ENABLE TRIGGER trg1;",
-        "ENABLE TRIGGER",
-    ),
-    (
-        "alter-disable-trigger",
-        "ALTER TABLE t DISABLE TRIGGER trg1;",
-        "DISABLE TRIGGER",
-    ),
-    (
-        "alter-enable-always-trigger",
-        "ALTER TABLE t ENABLE ALWAYS TRIGGER trg1;",
-        "ENABLE ALWAYS TRIGGER",
-    ),
-    (
-        "alter-enable-replica-trigger",
-        "ALTER TABLE t ENABLE REPLICA TRIGGER trg1;",
-        "ENABLE REPLICA TRIGGER",
-    ),
     // ALTER TABLE — Replica Identity
     (
         "alter-replica-identity",

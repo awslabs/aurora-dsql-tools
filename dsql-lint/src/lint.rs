@@ -79,7 +79,6 @@ pub enum LintRule {
     AtUnsupportedPrimaryKeyUsingIndex,
     AtUnsupportedUniqueUsingIndex,
     AtUnsupportedRowLevelSecurity,
-    AtUnsupportedTrigger,
     AtUnsupportedReplicaIdentity,
     AtUnsupportedValidateConstraint,
     AtUnsupportedRewriteRule,

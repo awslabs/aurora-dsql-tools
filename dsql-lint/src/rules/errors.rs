@@ -442,19 +442,6 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
                     FixResult::Unfixable,
                 ));
             }
-            // Triggers
-            AlterTableOperation::EnableTrigger { .. }
-            | AlterTableOperation::DisableTrigger { .. }
-            | AlterTableOperation::EnableAlwaysTrigger { .. }
-            | AlterTableOperation::EnableReplicaTrigger { .. } => {
-                diagnostics.push(error(
-                    LintRule::AtUnsupportedTrigger,
-                    find_line(raw_sql, "trigger"),
-                    format!("ALTER TABLE {op} is not supported in DSQL."),
-                    "Implement trigger logic in the application layer.",
-                    FixResult::Unfixable,
-                ));
-            }
             // Replica identity
             AlterTableOperation::ReplicaIdentity { .. } => {
                 diagnostics.push(error(
