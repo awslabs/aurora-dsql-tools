@@ -107,21 +107,6 @@ fn check_column(
         }
     }
 
-    // JSONB → json
-    if matches!(&col.data_type, DataType::JSONB) {
-        col.data_type = DataType::JSON;
-        diagnostics.push(error(
-            LintRule::JsonType,
-            find_line(raw_sql, "jsonb"),
-            format!(
-                "Column `{}` uses JSONB, which is not supported as a storage type in DSQL.",
-                col.name
-            ),
-            "Use JSON instead. Cast to ::jsonb at query time for JSONB operators.",
-            FixResult::Fixed(format!("Replaced JSONB with JSON on column `{}`", col.name)),
-        ));
-    }
-
     // Array types
     if matches!(&col.data_type, DataType::Array(_)) {
         diagnostics.push(error(
@@ -461,19 +446,6 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
                     find_line(raw_sql, "row level security"),
                     format!("ALTER TABLE {op} is not supported in DSQL."),
                     "Implement row-level access control in the application layer.",
-                    FixResult::Unfixable,
-                ));
-            }
-            // Triggers
-            AlterTableOperation::EnableTrigger { .. }
-            | AlterTableOperation::DisableTrigger { .. }
-            | AlterTableOperation::EnableAlwaysTrigger { .. }
-            | AlterTableOperation::EnableReplicaTrigger { .. } => {
-                diagnostics.push(error(
-                    LintRule::AtUnsupportedTrigger,
-                    find_line(raw_sql, "trigger"),
-                    format!("ALTER TABLE {op} is not supported in DSQL."),
-                    "Implement trigger logic in the application layer.",
                     FixResult::Unfixable,
                 ));
             }

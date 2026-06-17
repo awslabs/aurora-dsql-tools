@@ -38,6 +38,8 @@ pub const SUPPORTED_TYPES: &[(&str, &str)] = &[
     ("bool", "BOOL"),
     ("bytea", "BYTEA"),
     ("uuid", "UUID"),
+    ("json", "JSON"),
+    ("jsonb", "JSONB"),
     // Identity columns
     (
         "identity-always",
@@ -195,9 +197,8 @@ pub const FALSE_POSITIVE_CASES: &[(&str, &str)] = &[
     ("CREATE SEQUENCE s CACHE 65537;", "CACHE value"),
     // Plain ROLLBACK should not trigger ROLLBACK TO SAVEPOINT rule
     ("ROLLBACK;", "SAVEPOINT"),
-    // Plain ALTER TABLE ADD COLUMN should not trigger RLS/trigger rules
+    // Plain ALTER TABLE ADD COLUMN should not trigger RLS or REPLICA IDENTITY rules
     ("ALTER TABLE t ADD COLUMN x TEXT;", "ROW LEVEL SECURITY"),
-    ("ALTER TABLE t ADD COLUMN x TEXT;", "TRIGGER"),
     ("ALTER TABLE t ADD COLUMN x TEXT;", "REPLICA IDENTITY"),
     // RENAME/OWNER should not trigger VALIDATE CONSTRAINT
     ("ALTER TABLE t OWNER TO new_owner;", "VALIDATE CONSTRAINT"),
@@ -225,6 +226,11 @@ pub const FALSE_POSITIVE_CASES: &[(&str, &str)] = &[
     ("ALTER ROLE r RENAME TO r2;", "ALTER ROLE"),
     ("ALTER ROLE r RESET ALL;", "ALTER ROLE"),
     ("ALTER ROLE r RESET work_mem;", "ALTER ROLE"),
+    // ALTER TABLE ENABLE/DISABLE TRIGGER is supported in DSQL
+    ("ALTER TABLE t ENABLE TRIGGER ALL;", "TRIGGER"),
+    ("ALTER TABLE t DISABLE TRIGGER ALL;", "TRIGGER"),
+    ("ALTER TABLE t ENABLE ALWAYS TRIGGER trg1;", "TRIGGER"),
+    ("ALTER TABLE t ENABLE REPLICA TRIGGER trg1;", "TRIGGER"),
     // DROP VIEW (non-materialized) is supported on DSQL
     ("DROP VIEW v;", "MATERIALIZED VIEW"),
 ];
@@ -410,7 +416,6 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
     match rule {
         // ─── Single-purpose rules ─────────────────────────────────────────
         LintRule::SerialType => fix("CREATE TABLE _r (id SERIAL PRIMARY KEY);", "SERIAL"),
-        LintRule::JsonType => fix("CREATE TABLE _r (id INT, data JSONB);", "JSONB"),
         LintRule::ArrayType => fix("CREATE TABLE _r (id INT, tags TEXT[]);", "array"),
         LintRule::ForeignKey => fix(
             "CREATE TABLE _r (id INT, cid INT REFERENCES _clust_base(id));",
@@ -547,10 +552,6 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
         LintRule::AtUnsupportedRowLevelSecurity => fix(
             "ALTER TABLE _clust_base ENABLE ROW LEVEL SECURITY;",
             "ROW LEVEL SECURITY",
-        ),
-        LintRule::AtUnsupportedTrigger => fix(
-            "ALTER TABLE _clust_base DISABLE TRIGGER ALL;",
-            "TRIGGER",
         ),
         LintRule::AtUnsupportedReplicaIdentity => fix(
             "ALTER TABLE _clust_base REPLICA IDENTITY FULL;",

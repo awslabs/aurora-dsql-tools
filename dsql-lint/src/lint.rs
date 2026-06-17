@@ -41,7 +41,6 @@ pub enum FixResult {
 )]
 pub enum LintRule {
     SerialType,
-    JsonType,
     ArrayType,
     ForeignKey,
     TempTable,
@@ -80,7 +79,6 @@ pub enum LintRule {
     AtUnsupportedPrimaryKeyUsingIndex,
     AtUnsupportedUniqueUsingIndex,
     AtUnsupportedRowLevelSecurity,
-    AtUnsupportedTrigger,
     AtUnsupportedReplicaIdentity,
     AtUnsupportedValidateConstraint,
     AtUnsupportedRewriteRule,
