@@ -297,7 +297,8 @@ fn fix_multiple_files_creates_multiple_outputs() {
     let dir = tempfile::tempdir().unwrap();
     let a = dir.path().join("a.sql");
     let b = dir.path().join("b.sql");
-    std::fs::write(&a, "CREATE INDEX idx ON t(col);").unwrap();
+    // Tier-1 Fixed (no warning) so the run exits 0; the point is two outputs.
+    std::fs::write(&a, "CREATE SEQUENCE s;").unwrap();
     std::fs::write(&b, "CREATE TABLE t (id UUID PRIMARY KEY);").unwrap();
 
     let status = dsql_lint_bin()
