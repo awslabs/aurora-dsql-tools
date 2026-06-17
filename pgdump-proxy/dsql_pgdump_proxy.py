@@ -14,7 +14,7 @@ intercepts the specific setup statements DSQL rejects, none of which affect dump
 *content*:
 
   * `SET <param>` for a param DSQL rejects        -> synth a `SET` success reply
-  * `SELECT set_config('<rejected param>', ...)`  -> rewrite to `SELECT NULL`
+  * `SELECT ... set_config(...)` setup probe       -> rewrite to `SELECT NULL`
   * `LOCK TABLE ... IN ... MODE`                  -> synth a `LOCK TABLE` reply
                                                      (DSQL is snapshot-isolated;
                                                       the lock is unnecessary)
@@ -65,15 +65,17 @@ SET_RE = re.compile(
     rb'^\s*SET\s+(?:SESSION\s+|LOCAL\s+)?"?([A-Za-z_][A-Za-z0-9_]*)',
     re.IGNORECASE,
 )
-# pg_dump's set_config setup probe: `SELECT [pg_catalog.]set_config('<param>', ...)`.
-# Anchored to a leading SELECT (so a `set_config(` substring inside a string
-# literal or a non-probe query is not matched) and capturing the parameter, so it
-# is gated against the same allowlist as SET — an allowlisted GUC (e.g.
-# search_path) passes through; only a rejected param is neutralized.
+# pg_dump's set_config setup probe. It comes in two shapes, both of which DSQL
+# rejects and both of which must be neutralized:
+#   SELECT pg_catalog.set_config('search_path', '', false);
+#   SELECT set_config(name, '...', false) FROM pg_settings WHERE name = '...'
+# (the second sets restrict_nonsystem_relation_kind via a pg_settings lookup, so
+# the param is not a literal first arg). Anchored to a leading SELECT so a
+# `set_config(` substring inside a string literal or column ref is not matched;
+# the whole probe is rewritten to `SELECT NULL` regardless of the named param
+# (none of pg_dump's setup set_config calls affect dump content).
 SET_CONFIG_RE = re.compile(
-    rb"^\s*SELECT\s+(?:pg_catalog\.)?set_config\s*\(\s*'([A-Za-z_][A-Za-z0-9_.]*)'",
-    re.IGNORECASE,
-)
+    rb"^\s*SELECT\s+(?:pg_catalog\.)?set_config\s*\(", re.IGNORECASE)
 LOCK_RE = re.compile(rb'^\s*LOCK\b', re.IGNORECASE)
 
 SSL_REQUEST_CODE = 80877103
@@ -87,6 +89,12 @@ def set_param_allowed(param: bytes) -> bool:
         or p.startswith("enable_")
         or p == "disable_sync_create_index"
     )
+
+
+def frame(type_byte: bytes, body: bytes) -> bytes:
+    """Build a typed protocol message: 1-byte type + Int32 length + body. The
+    length covers itself (4) plus the body, per the PostgreSQL wire protocol."""
+    return type_byte + struct.pack("!I", 4 + len(body)) + body
 
 
 def recv_exact(sock: socket.socket, n: int) -> bytes | None:
@@ -172,14 +180,14 @@ def client_to_server(client: socket.socket, server: socket.socket,
                 sys.stderr.write("[proxy] synthesized LOCK TABLE ok\n")
                 send_command_complete(client, client_lock, b"LOCK TABLE", b"T")
                 continue
-            mc = SET_CONFIG_RE.match(body)
-            if mc and not set_param_allowed(mc.group(1)):
-                sys.stderr.write(
-                    f"[proxy] neutralized set_config({mc.group(1).decode()}) probe\n")
-                # Rewrite in place and fall through to the forward below: unlike
-                # SET/LOCK we still want a real reply from the server.
-                body = b"SELECT NULL;\x00"
-                len_bytes = struct.pack("!I", 4 + len(body))
+            if SET_CONFIG_RE.match(body):
+                sys.stderr.write("[proxy] neutralized set_config() probe\n")
+                # Replace the whole probe with SELECT NULL and forward THAT (not
+                # the original) — unlike SET/LOCK we still want a real reply from
+                # the server. pg_dump issues each setup set_config as its own
+                # standalone simple query, so replacing the whole body is safe.
+                server.sendall(frame(b"Q", b"SELECT NULL;\x00"))
+                continue
         server.sendall(type_byte + len_bytes + body)
 
 
@@ -277,22 +285,21 @@ def _self_test() -> None:
     assert LOCK_RE.match(b"LOCK TABLE public.t IN ACCESS SHARE MODE")
     assert LOCK_RE.match(b"  lock table t")
     assert LOCK_RE.match(b"SELECT 1") is None
-    # set_config probe: anchored to a leading SELECT and gated on the param, so
-    # a rejected param is neutralized but an allowlisted one (search_path) and a
-    # `set_config(` substring inside an unrelated query are left alone.
+    # set_config probe: both real pg_dump forms (the search_path literal and the
+    # restrict_nonsystem_relation_kind pg_settings lookup) are neutralized; a
+    # `set_config(` substring inside a string literal or a column ref is not.
+    assert SET_CONFIG_RE.match(b"SELECT pg_catalog.set_config('search_path', '', false);")
     assert SET_CONFIG_RE.match(
-        b"SELECT set_config('restrict_nonsystem_relation_kind', '', false)"
-    ).group(1) == b"restrict_nonsystem_relation_kind"
-    assert SET_CONFIG_RE.match(b"SELECT pg_catalog.set_config('x','y',false)")
-    assert set_param_allowed(SET_CONFIG_RE.match(
-        b"SELECT set_config('search_path', '', false)").group(1))
+        b"SELECT set_config(name, 'view, foreign-table', false) FROM pg_settings "
+        b"WHERE name = 'restrict_nonsystem_relation_kind'")
     assert SET_CONFIG_RE.match(b"SELECT 1") is None
     assert SET_CONFIG_RE.match(b"SELECT * FROM t WHERE c = 'set_config('") is None
+    assert SET_CONFIG_RE.match(b"SELECT a, set_config FROM t") is None
 
-    # set_config rewrite framing: the replacement Query message is correctly
-    # length-prefixed (Int32 self + null-terminated body).
-    body = b"SELECT NULL;\x00"
-    msg = b"Q" + struct.pack("!I", 4 + len(body)) + body
+    # frame() produces a correctly length-prefixed message (Int32 covers itself +
+    # body); this is the exact builder the set_config rewrite path uses.
+    msg = frame(b"Q", b"SELECT NULL;\x00")
+    assert msg == b"Q\x00\x00\x00\x11SELECT NULL;\x00"
     assert struct.unpack("!I", msg[1:5])[0] == len(msg) - 1
     print("self-test: ok")
 
