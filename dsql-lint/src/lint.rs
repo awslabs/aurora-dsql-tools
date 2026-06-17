@@ -129,6 +129,11 @@ pub enum LintRule {
     SerialSequenceIdiom,
     AlterAddUniqueCollapse,
     AlterAddPrimaryKeyCollapse,
+    // DSQL-native pg_dump idioms (a dump taken from a DSQL cluster emits DDL
+    // it cannot itself re-ingest; these collapse/strip it back to a loadable
+    // form). See `rules::identity_idiom`.
+    IdentityAddGeneratedCollapse,
+    AlterColumnSetCompressionStrip,
     ParseError,
 }
 
@@ -572,6 +577,8 @@ pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
     rules::serial_idiom::check_serial_idioms(&stmts, &mut diagnostics);
     rules::constraint_collapse::check_alter_add_unique(&stmts, &mut diagnostics);
     rules::constraint_collapse::check_alter_add_primary_key(&stmts, &mut diagnostics);
+    rules::identity_idiom::check_identity_adds(&stmts, &mut diagnostics);
+    rules::identity_idiom::check_set_compression(&stmts, &mut diagnostics);
 
     for (line_num, stmt_text) in &stmts {
         if stmt_text.trim().is_empty() {
@@ -647,6 +654,8 @@ pub fn fix_sql(sql: &str) -> FixOutput {
     rules::serial_idiom::fix_serial_idioms(&mut stmts, &mut all_diagnostics);
     rules::constraint_collapse::fix_alter_add_unique(&mut stmts, &mut all_diagnostics);
     rules::constraint_collapse::fix_alter_add_primary_key(&mut stmts, &mut all_diagnostics);
+    rules::identity_idiom::fix_identity_adds(&mut stmts, &mut all_diagnostics);
+    rules::identity_idiom::fix_set_compression(&mut stmts, &mut all_diagnostics);
 
     for (line_num, stmt_text) in &stmts {
         if stmt_text.trim().is_empty() {
