@@ -748,7 +748,7 @@ fn check_truncate(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<Dia
             LintRule::Truncate,
             find_line(raw_sql, "truncate"),
             "TRUNCATE is not supported in DSQL.",
-            "Use DELETE FROM table_name instead.",
+            "Use DELETE FROM table_name instead. Note: DELETE does not reset identity/sequence counters or skip triggers the way TRUNCATE does, and DSQL caps a transaction at 3,000 rows — delete large tables in batches.",
             FixResult::Unfixable,
         ));
     }
