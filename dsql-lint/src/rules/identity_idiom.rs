@@ -35,9 +35,11 @@
 //! parse. Matching is anchored on whole statements (the `parts` list is already
 //! split on `;`), so a `;` inside a string literal cannot trip it.
 
-use sqlparser::ast::{ColumnOption, GeneratedAs, Statement};
-use sqlparser::dialect::PostgreSqlDialect;
-use sqlparser::parser::Parser;
+use sqlparser::{
+    ast::{ColumnOption, GeneratedAs, Statement},
+    dialect::PostgreSqlDialect,
+    parser::Parser,
+};
 
 use super::errors::identity_cache_1;
 use crate::lint::{Diagnostic, FixResult, LintRule};
