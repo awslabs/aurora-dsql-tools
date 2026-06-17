@@ -41,6 +41,8 @@ which uses dsql-lint to collapse the DSQL-native identity / compression idioms.
 
 Pure standard library; no third-party dependencies.
 """
+from __future__ import annotations  # `X | None` annotations on Python 3.9
+
 import argparse
 import re
 import socket
@@ -63,7 +65,15 @@ SET_RE = re.compile(
     rb'^\s*SET\s+(?:SESSION\s+|LOCAL\s+)?"?([A-Za-z_][A-Za-z0-9_]*)',
     re.IGNORECASE,
 )
-SET_CONFIG_RE = re.compile(rb'set_config\s*\(', re.IGNORECASE)
+# pg_dump's set_config setup probe: `SELECT [pg_catalog.]set_config('<param>', ...)`.
+# Anchored to a leading SELECT (so a `set_config(` substring inside a string
+# literal or a non-probe query is not matched) and capturing the parameter, so it
+# is gated against the same allowlist as SET — an allowlisted GUC (e.g.
+# search_path) passes through; only a rejected param is neutralized.
+SET_CONFIG_RE = re.compile(
+    rb"^\s*SELECT\s+(?:pg_catalog\.)?set_config\s*\(\s*'([A-Za-z_][A-Za-z0-9_.]*)'",
+    re.IGNORECASE,
+)
 LOCK_RE = re.compile(rb'^\s*LOCK\b', re.IGNORECASE)
 
 SSL_REQUEST_CODE = 80877103
@@ -162,8 +172,12 @@ def client_to_server(client: socket.socket, server: socket.socket,
                 sys.stderr.write("[proxy] synthesized LOCK TABLE ok\n")
                 send_command_complete(client, client_lock, b"LOCK TABLE", b"T")
                 continue
-            if SET_CONFIG_RE.search(body):
-                sys.stderr.write("[proxy] neutralized set_config() probe\n")
+            mc = SET_CONFIG_RE.match(body)
+            if mc and not set_param_allowed(mc.group(1)):
+                sys.stderr.write(
+                    f"[proxy] neutralized set_config({mc.group(1).decode()}) probe\n")
+                # Rewrite in place and fall through to the forward below: unlike
+                # SET/LOCK we still want a real reply from the server.
                 body = b"SELECT NULL;\x00"
                 len_bytes = struct.pack("!I", 4 + len(body))
         server.sendall(type_byte + len_bytes + body)
@@ -218,6 +232,14 @@ def main() -> None:
                         help="local port to listen on (default: 6543)")
     args = parser.parse_args()
 
+    # The client->proxy hop is plaintext (the proxy answers SSLRequest with 'N'),
+    # so the DSQL auth token and dump data cross it unencrypted. Safe on loopback;
+    # warn loudly if bound anywhere reachable off-host.
+    if args.listen_host not in ("127.0.0.1", "::1", "localhost"):
+        sys.stderr.write(
+            f"[proxy] WARNING: listening on non-loopback {args.listen_host}; the "
+            "DSQL auth token and dump data will traverse the network UNENCRYPTED\n")
+
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((args.listen_host, args.listen_port))
@@ -255,9 +277,23 @@ def _self_test() -> None:
     assert LOCK_RE.match(b"LOCK TABLE public.t IN ACCESS SHARE MODE")
     assert LOCK_RE.match(b"  lock table t")
     assert LOCK_RE.match(b"SELECT 1") is None
-    assert SET_CONFIG_RE.search(b"SELECT set_config('x', 'y', false)")
-    assert SET_CONFIG_RE.search(b"SELECT pg_catalog.set_config('x','y',false)")
-    assert not SET_CONFIG_RE.search(b"SELECT 1")
+    # set_config probe: anchored to a leading SELECT and gated on the param, so
+    # a rejected param is neutralized but an allowlisted one (search_path) and a
+    # `set_config(` substring inside an unrelated query are left alone.
+    assert SET_CONFIG_RE.match(
+        b"SELECT set_config('restrict_nonsystem_relation_kind', '', false)"
+    ).group(1) == b"restrict_nonsystem_relation_kind"
+    assert SET_CONFIG_RE.match(b"SELECT pg_catalog.set_config('x','y',false)")
+    assert set_param_allowed(SET_CONFIG_RE.match(
+        b"SELECT set_config('search_path', '', false)").group(1))
+    assert SET_CONFIG_RE.match(b"SELECT 1") is None
+    assert SET_CONFIG_RE.match(b"SELECT * FROM t WHERE c = 'set_config('") is None
+
+    # set_config rewrite framing: the replacement Query message is correctly
+    # length-prefixed (Int32 self + null-terminated body).
+    body = b"SELECT NULL;\x00"
+    msg = b"Q" + struct.pack("!I", 4 + len(body)) + body
+    assert struct.unpack("!I", msg[1:5])[0] == len(msg) - 1
     print("self-test: ok")
 
 

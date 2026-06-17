@@ -67,6 +67,11 @@ idioms a DSQL dump contains.
 Options: `--target-port` (default 5432), `--listen-host` (default `127.0.0.1`),
 `--listen-port` (default 6543). Run `python3 dsql_pgdump_proxy.py --help`.
 
+> **Keep the listen address on loopback.** The client→proxy hop is plaintext, so
+> the DSQL auth token and dump data cross it unencrypted. The default
+> `127.0.0.1` keeps that on-host; binding `--listen-host` to a non-loopback
+> address exposes both on the network (the proxy warns when you do).
+
 ## Limitations
 
 - **Plain format only.** Use `pg_dump -Fp` (the default). The proxy does not

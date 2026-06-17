@@ -661,7 +661,8 @@ fn fix_rollback_transaction_not_split() {
 /// and a covering PK. Captured verbatim from a live cluster. Every construct
 /// must collapse/strip cleanly: zero ParseError/Unfixable, identity inline on
 /// the CREATE TABLE, and the trailing `setval` left intact (it lands on the
-/// inline identity's implicit sequence).
+/// inline identity's implicit sequence, which PostgreSQL auto-names
+/// `<table>_<column>_seq` — the same name pg_dump's setval targets).
 #[test]
 fn fix_real_dsql_dump_round_trips_clean() {
     let ddl = "\
