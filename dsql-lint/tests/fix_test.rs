@@ -12,28 +12,15 @@ use dsql_lint::{fix_sql, FixResult, LintRule};
 
 const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
     // ── Tier 1: Fixed ─────────────────────────────────────────────────
-    ("index-async", "CREATE INDEX idx ON t(col);", "Fixed"),
-    (
-        "index-concurrently",
-        "CREATE INDEX CONCURRENTLY idx ON t(col);",
-        "Fixed",
-    ),
     (
         "index-using-btree",
         "CREATE INDEX ASYNC idx ON t USING btree(col);",
         "Fixed",
     ),
-    ("seq-type", "CREATE SEQUENCE s AS INTEGER CACHE 1;", "Fixed"),
     ("seq-missing-cache", "CREATE SEQUENCE s;", "Fixed"),
     (
         "identity-missing-cache",
         "CREATE TABLE t (id BIGINT GENERATED ALWAYS AS IDENTITY);",
-        "Fixed",
-    ),
-    ("isolation", "BEGIN ISOLATION LEVEL SERIALIZABLE;", "Fixed"),
-    (
-        "isolation-read-committed",
-        "BEGIN ISOLATION LEVEL READ COMMITTED;",
         "Fixed",
     ),
     (
@@ -57,6 +44,34 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "Fixed",
     ),
     // ── Tier 2: FixedWithWarning ──────────────────────────────────────
+    // Async index builds change timing semantics (index not ready on return).
+    (
+        "index-async",
+        "CREATE INDEX idx ON t(col);",
+        "FixedWithWarning",
+    ),
+    (
+        "index-concurrently",
+        "CREATE INDEX CONCURRENTLY idx ON t(col);",
+        "FixedWithWarning",
+    ),
+    // Sequence widening to BIGINT changes the consumable range.
+    (
+        "seq-type",
+        "CREATE SEQUENCE s AS INTEGER CACHE 1;",
+        "FixedWithWarning",
+    ),
+    // Isolation downgrade changes concurrency semantics.
+    (
+        "isolation",
+        "BEGIN ISOLATION LEVEL SERIALIZABLE;",
+        "FixedWithWarning",
+    ),
+    (
+        "isolation-read-committed",
+        "BEGIN ISOLATION LEVEL READ COMMITTED;",
+        "FixedWithWarning",
+    ),
     (
         "serial",
         "CREATE TABLE t (id SERIAL PRIMARY KEY);",
