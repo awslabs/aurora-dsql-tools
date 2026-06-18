@@ -43,10 +43,7 @@ use sqlparser::{
 
 use super::errors::identity_cache_1;
 use crate::lint::{Diagnostic, FixResult, LintRule};
-use crate::rules::name_match::{
-    drop_parts, fold_ident, fold_text_ident, normalize_dotted_identifier, normalize_object_name,
-    parse_parts, refs_match, NameRef,
-};
+use crate::rules::name_match::*;
 
 const ALTER_TABLE: &str = "alter table ";
 const ONLY: &str = "only ";
