@@ -48,6 +48,12 @@ use crate::rules::name_match::{
     parse_parts, refs_match, NameRef,
 };
 
+const ALTER_TABLE: &str = "alter table ";
+const ONLY: &str = "only ";
+const ALTER_COLUMN: &str = " alter column ";
+const ADD_GENERATED: &str = " add generated ";
+const SET_COMPRESSION: &str = " set compression ";
+
 /// A detected `ALTER TABLE ... ALTER COLUMN <col> ADD GENERATED <as> AS
 /// IDENTITY (...)` whose target `CREATE TABLE` is present earlier in the input.
 struct IdentityAdd {
@@ -61,128 +67,134 @@ struct IdentityAdd {
     alter_part: usize,
 }
 
+/// The `ALTER TABLE [ONLY] <name> ALTER COLUMN` prefix shared by both idioms,
+/// scanned from statement text that does not parse.
+struct AlterColumnPrefix {
+    /// Case-preserving statement text, for slicing identifier spans.
+    original: String,
+    /// Lowercased copy, for case-insensitive keyword scanning. Same byte length
+    /// as `original` (`to_ascii_lowercase` only remaps ASCII A–Z), so a byte
+    /// offset found in one is valid in the other.
+    lowered: String,
+    /// Normalized table name the ALTER targets.
+    table: NameRef,
+    /// Byte offset just past ` alter column `, into both `original`/`lowered`.
+    col_offset: usize,
+}
+
+/// A `CREATE TABLE` located in the input, for correlating an ALTER against it.
+struct CreateTableRef {
+    table: NameRef,
+    /// PG case-folded column names.
+    columns: Vec<String>,
+    /// Index into `parts`.
+    part_idx: usize,
+}
+
 /// Parse `ALTER TABLE [ONLY] <name> ALTER COLUMN <col> ADD GENERATED
-/// { ALWAYS | BY DEFAULT } AS IDENTITY` out of a single statement's text. Stops
-/// at `AS IDENTITY` — the `(SEQUENCE NAME ...)` tail (the part sqlparser chokes
-/// on) is irrelevant to the collapse. Returns `(table_ref, column, generated_as)`.
-///
-/// Matched at the text level because the full statement does not parse. The
-/// lowercased copy is used only for case-insensitive keyword scanning; every
-/// identifier span is sliced out of the original `trimmed` text (offsets agree
-/// because `to_ascii_lowercase` is length-preserving for ASCII keywords).
-fn parse_identity_add(text: &str) -> Option<(NameRef, String, GeneratedAs)> {
-    let (trimmed, lower, table, mut consumed) = scan_alter_column(text)?;
+/// { ALWAYS | BY DEFAULT } AS IDENTITY` into an [`IdentityAdd`] for the
+/// statement at `alter_part`. Stops at `AS IDENTITY`: the `(SEQUENCE NAME ...)`
+/// tail is what sqlparser chokes on and is irrelevant to the collapse.
+fn parse_identity_add(text: &str, alter_part: usize) -> Option<IdentityAdd> {
+    let prefix = scan_alter_column(text)?;
+    let after_col = &prefix.lowered[prefix.col_offset..];
 
-    // Column name runs up to " add generated ".
-    let add_gen_off = lower[consumed..].find(" add generated ")?;
-    let column = fold_text_ident(&trimmed[consumed..consumed + add_gen_off]);
-    consumed += add_gen_off + " add generated ".len();
+    let add_gen_off = after_col.find(ADD_GENERATED)?;
+    let column =
+        fold_text_ident(&prefix.original[prefix.col_offset..prefix.col_offset + add_gen_off]);
+    let after_gen = &prefix.lowered[prefix.col_offset + add_gen_off + ADD_GENERATED.len()..];
 
-    // `always as identity` | `by default as identity`.
-    let rest = &lower[consumed..];
-    let (generated_as, after_kw) = if let Some(after) = rest.strip_prefix("always ") {
+    let (generated_as, after_kw) = if let Some(after) = after_gen.strip_prefix("always ") {
         (GeneratedAs::Always, after)
-    } else if let Some(after) = rest.strip_prefix("by default ") {
+    } else if let Some(after) = after_gen.strip_prefix("by default ") {
         (GeneratedAs::ByDefault, after)
     } else {
         return None;
     };
-    after_kw
-        .starts_with("as identity")
-        .then_some((table, column, generated_as))
+    after_kw.starts_with("as identity").then_some(IdentityAdd {
+        table: prefix.table,
+        column,
+        generated_as,
+        alter_part,
+    })
 }
 
-/// Whether a statement's text is `ALTER TABLE [ONLY] <name> ALTER COLUMN <col>
-/// SET COMPRESSION <method>`. DSQL manages column compression itself, so the
-/// statement is dropped wholesale; we only need to recognize the shape.
 fn is_set_compression(text: &str) -> bool {
-    let Some((_, lower, _, consumed)) = scan_alter_column(text) else {
-        return false;
-    };
-    lower[consumed..].contains(" set compression ")
+    scan_alter_column(text)
+        .is_some_and(|prefix| prefix.lowered[prefix.col_offset..].contains(SET_COMPRESSION))
 }
 
-/// Match the `ALTER TABLE [ONLY] <name> ALTER COLUMN` prefix shared by both
-/// DSQL-native idioms. Returns the trimmed text, its lowercased copy (for
-/// case-insensitive keyword scanning — byte offsets agree because
-/// `to_ascii_lowercase` is length-preserving for the ASCII keywords), the
-/// normalized table name, and the byte offset just past ` alter column `.
-/// `None` if the statement is not an `ALTER TABLE ... ALTER COLUMN`.
-fn scan_alter_column(text: &str) -> Option<(String, String, NameRef, usize)> {
-    let trimmed = text.trim().trim_end_matches(';').trim().to_string();
-    let lower = trimmed.to_ascii_lowercase();
+/// `None` unless the statement is an `ALTER TABLE ... ALTER COLUMN`. Matched at
+/// the text level because these idioms do not parse.
+fn scan_alter_column(text: &str) -> Option<AlterColumnPrefix> {
+    let original = text.trim().trim_end_matches(';').trim().to_string();
+    let lowered = original.to_ascii_lowercase();
 
-    let mut consumed = "alter table ".len();
-    if !lower.starts_with("alter table ") {
+    let mut consumed = ALTER_TABLE.len();
+    if !lowered.starts_with(ALTER_TABLE) {
         return None;
     }
-    if let Some(after) = lower[consumed..].strip_prefix("only ") {
-        consumed += lower[consumed..].len() - after.len();
+    if lowered[consumed..].starts_with(ONLY) {
+        consumed += ONLY.len();
     }
-    // Table name runs up to " alter column ".
-    let alter_col_off = lower[consumed..].find(" alter column ")?;
-    let table = normalize_dotted_identifier(&trimmed[consumed..consumed + alter_col_off]);
-    consumed += alter_col_off + " alter column ".len();
-    Some((trimmed, lower, table, consumed))
+    let alter_col_off = lowered[consumed..].find(ALTER_COLUMN)?;
+    let table = normalize_dotted_identifier(&original[consumed..consumed + alter_col_off]);
+    consumed += alter_col_off + ALTER_COLUMN.len();
+    Some(AlterColumnPrefix {
+        original,
+        lowered,
+        table,
+        col_offset: consumed,
+    })
 }
 
-/// Collect every `CREATE TABLE` in the parsed statements as a
-/// `(NameRef, columns, part_idx)` triple for correlation.
-fn create_tables(parts: &[(usize, String)]) -> Vec<(NameRef, Vec<String>, usize)> {
+/// Collect every `CREATE TABLE` in the input for correlation.
+fn create_tables(parts: &[(usize, String)]) -> Vec<CreateTableRef> {
     let (parsed, parsed_to_part) = parse_parts(parts);
     parsed
         .iter()
         .enumerate()
         .filter_map(|(i, stmt)| match stmt {
-            Statement::CreateTable(ct) => normalize_object_name(&ct.name).map(|n| {
-                let cols = ct.columns.iter().map(|c| fold_ident(&c.name)).collect();
-                (n, cols, parsed_to_part[i])
-            }),
+            Statement::CreateTable(ct) => {
+                normalize_object_name(&ct.name).map(|table| CreateTableRef {
+                    table,
+                    columns: ct.columns.iter().map(|c| fold_ident(&c.name)).collect(),
+                    part_idx: parsed_to_part[i],
+                })
+            }
             _ => None,
         })
         .collect()
 }
 
-/// Find every collapsible `ADD GENERATED ... AS IDENTITY` ALTER: one whose
+/// Every collapsible `ADD GENERATED ... AS IDENTITY` ALTER, i.e. one whose
 /// target CREATE TABLE (with the named column) appears earlier in `parts`.
 /// Cross-file ALTERs without a preceding CREATE TABLE are left for the
 /// per-statement Unfixable path.
 fn detect_identity_adds(parts: &[(usize, String)]) -> Vec<IdentityAdd> {
     let tables = create_tables(parts);
-    let mut found = Vec::new();
-    for (part_idx, (_, text)) in parts.iter().enumerate() {
-        let Some((table, column, generated_as)) = parse_identity_add(text) else {
-            continue;
-        };
-        if find_target_create_table(&tables, &table, &column, part_idx).is_some() {
-            found.push(IdentityAdd {
-                table,
-                column,
-                generated_as,
-                alter_part: part_idx,
-            });
-        }
-    }
-    found
+    parts
+        .iter()
+        .enumerate()
+        .filter_map(|(part_idx, (_, text))| parse_identity_add(text, part_idx))
+        .filter(|add| find_target_create_table(&tables, add).is_some())
+        .collect()
 }
 
-/// The `parts` index of the closest `CREATE TABLE` before `alter_part` that
-/// matches `table` and declares `column`, or `None`. Unlike the sibling rules'
-/// `pick_best_match` (exact-schema-over-wildcard), this selects by position
-/// (`.max()` = closest preceding): pg_dump emits the `CREATE TABLE` immediately
-/// before its identity `ALTER`, so positional proximity is the correct anchor.
-fn find_target_create_table(
-    tables: &[(NameRef, Vec<String>, usize)],
-    table: &NameRef,
-    column: &str,
-    alter_part: usize,
-) -> Option<usize> {
+/// The `parts` index of the closest `CREATE TABLE` before the ALTER that matches
+/// its table and declares its column. Unlike the sibling rules' `pick_best_match`
+/// (exact-schema-over-wildcard), this selects by position (`.max()` = closest
+/// preceding): pg_dump emits the `CREATE TABLE` immediately before its identity
+/// `ALTER`, so positional proximity is the correct anchor.
+fn find_target_create_table(tables: &[CreateTableRef], add: &IdentityAdd) -> Option<usize> {
     tables
         .iter()
-        .filter(|(t, cols, p)| {
-            *p < alter_part && refs_match(t, table) && cols.iter().any(|c| c == column)
+        .filter(|ct| {
+            ct.part_idx < add.alter_part
+                && refs_match(&ct.table, &add.table)
+                && ct.columns.contains(&add.column)
         })
-        .map(|(_, _, p)| *p)
+        .map(|ct| ct.part_idx)
         .max()
 }
 
@@ -234,9 +246,7 @@ pub(crate) fn fix_identity_adds(
     let mut parts_to_remove = Vec::with_capacity(adds.len());
 
     for add in &adds {
-        let Some(ct_part) =
-            find_target_create_table(&tables, &add.table, &add.column, add.alter_part)
-        else {
+        let Some(ct_part) = find_target_create_table(&tables, add) else {
             debug_assert!(
                 false,
                 "no CREATE TABLE for `{}` after detect confirmed it",
@@ -245,9 +255,9 @@ pub(crate) fn fix_identity_adds(
             continue;
         };
 
-        // Re-parse the CREATE TABLE part and rewrite the target column inline.
-        // Both guards below are unreachable (detect already proved parse +
-        // column presence); debug_assert! surfaces drift loudly in tests.
+        // The two guards below are unreachable — detect already proved this
+        // part parses and contains the column. debug_assert! turns any future
+        // drift into a loud test failure rather than a silently skipped fix.
         let Ok(mut stmts) = Parser::parse_sql(&dialect, parts[ct_part].1.trim()) else {
             debug_assert!(
                 false,
@@ -261,8 +271,8 @@ pub(crate) fn fix_identity_adds(
             if let Statement::CreateTable(ct) = stmt {
                 for col in &mut ct.columns {
                     if fold_ident(&col.name) == add.column {
-                        // Drop any pre-existing GENERATED clause (defensive) so
-                        // we never emit a doubled identity, then add ours.
+                        // Defensive: drop any pre-existing GENERATED clause so a
+                        // column that already declares one never doubles up.
                         col.options
                             .retain(|opt| !matches!(opt.option, ColumnOption::Generated { .. }));
                         col.options.push(identity_cache_1(add.generated_as));
@@ -353,35 +363,39 @@ mod tests {
     /// `BY DEFAULT` preserved and the name/column folded.
     #[test]
     fn parse_identity_add_full_pgdump_form() {
-        let (table, column, gen) = parse_identity_add(
+        let add = parse_identity_add(
             "ALTER TABLE public.t ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (\n\
              SEQUENCE NAME public.t_id_seq START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1)",
+            0,
         )
         .expect("identity ALTER must parse at text level");
-        assert_eq!(table, (Some("public".into()), "t".into()));
-        assert_eq!(column, "id");
-        assert_eq!(gen, GeneratedAs::ByDefault);
+        assert_eq!(add.table, (Some("public".into()), "t".into()));
+        assert_eq!(add.column, "id");
+        assert_eq!(add.generated_as, GeneratedAs::ByDefault);
     }
 
     /// `ALWAYS` is preserved (must not be forced to BY DEFAULT) and `ONLY`,
     /// trailing `;`, and quoted mixed-case identifiers are handled.
     #[test]
     fn parse_identity_add_always_only_quoted() {
-        let (table, column, gen) = parse_identity_add(
+        let add = parse_identity_add(
             "ALTER TABLE ONLY public.\"T\" ALTER COLUMN \"Id\" ADD GENERATED ALWAYS AS IDENTITY (CACHE 1);",
+            0,
         )
         .expect("identity ALTER must parse");
-        assert_eq!(table, (Some("public".into()), "T".into()));
-        assert_eq!(column, "Id");
-        assert_eq!(gen, GeneratedAs::Always);
+        assert_eq!(add.table, (Some("public".into()), "T".into()));
+        assert_eq!(add.column, "Id");
+        assert_eq!(add.generated_as, GeneratedAs::Always);
     }
 
     #[test]
     fn parse_identity_add_rejects_non_matching() {
-        assert!(parse_identity_add("ALTER TABLE t ALTER COLUMN id SET DEFAULT 0").is_none());
-        assert!(parse_identity_add("CREATE TABLE t (id bigint)").is_none());
+        assert!(parse_identity_add("ALTER TABLE t ALTER COLUMN id SET DEFAULT 0", 0).is_none());
+        assert!(parse_identity_add("CREATE TABLE t (id bigint)", 0).is_none());
         // ADD a constraint, not GENERATED.
-        assert!(parse_identity_add("ALTER TABLE t ADD CONSTRAINT pk PRIMARY KEY (id)").is_none());
+        assert!(
+            parse_identity_add("ALTER TABLE t ADD CONSTRAINT pk PRIMARY KEY (id)", 0).is_none()
+        );
     }
 
     #[test]
