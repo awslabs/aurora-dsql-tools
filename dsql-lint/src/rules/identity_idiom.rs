@@ -66,9 +66,9 @@ struct IdentityAdd {
 
 /// The `ALTER TABLE [ONLY] <name> ALTER COLUMN` prefix shared by both idioms,
 /// scanned from statement text that does not parse.
-struct AlterColumnPrefix {
-    /// Case-preserving statement text, for slicing identifier spans.
-    original: String,
+struct AlterColumnPrefix<'a> {
+    /// Case-preserving statement text (borrowed), for slicing identifier spans.
+    original: &'a str,
     /// Lowercased copy, for case-insensitive keyword scanning. Same byte length
     /// as `original` (`to_ascii_lowercase` only remaps ASCII A–Z), so a byte
     /// offset found in one is valid in the other.
@@ -123,18 +123,22 @@ fn is_set_compression(text: &str) -> bool {
 
 /// `None` unless the statement is an `ALTER TABLE ... ALTER COLUMN`. Matched at
 /// the text level because these idioms do not parse.
-fn scan_alter_column(text: &str) -> Option<AlterColumnPrefix> {
-    let original = text.trim().trim_end_matches(';').trim().to_string();
+fn scan_alter_column(text: &str) -> Option<AlterColumnPrefix<'_>> {
+    let original = text.trim().trim_end_matches(';').trim();
     let lowered = original.to_ascii_lowercase();
 
-    let mut consumed = ALTER_TABLE.len();
     if !lowered.starts_with(ALTER_TABLE) {
         return None;
     }
-    if lowered[consumed..].starts_with(ONLY) {
+    let mut consumed = ALTER_TABLE.len();
+
+    let rest = &lowered[consumed..];
+    if rest.starts_with(ONLY) {
         consumed += ONLY.len();
     }
-    let alter_col_off = lowered[consumed..].find(ALTER_COLUMN)?;
+
+    let rest = &lowered[consumed..];
+    let alter_col_off = rest.find(ALTER_COLUMN)?;
     let table = normalize_dotted_identifier(&original[consumed..consumed + alter_col_off]);
     consumed += alter_col_off + ALTER_COLUMN.len();
     Some(AlterColumnPrefix {
