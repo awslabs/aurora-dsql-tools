@@ -367,6 +367,81 @@ jobs:
             --api-key "${{ env.NUGET_API_KEY }}" \
             --source https://api.nuget.org/v3/index.json
 
+  publish-nuget-runtime:
+    needs: [build-binaries, publish-pypi]
+    runs-on: ubuntu-latest
+    environment: nuget
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.NUGET_PUBLISH_IAM_ROLE }}
+          role-session-name: dsql-lint-nuget-runtime-publish
+          aws-region: us-west-2
+
+      - name: Get NuGet API Key
+        run: |
+          SECRET_JSON=$(aws secretsmanager get-secret-value \
+            --secret-id "production/build/AuroraDsql-nuget-api-key" \
+            --query 'SecretString' \
+            --output text)
+          NUGET_API_KEY=$(echo "$SECRET_JSON" | jq -r '.Key')
+          echo "::add-mask::$NUGET_API_KEY"
+          echo "NUGET_API_KEY=$NUGET_API_KEY" >> "$GITHUB_ENV"
+
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#dsql-lint/v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Publishing NuGet Runtime package version $VERSION"
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          pattern: dsql-lint-*
+
+      - name: Stage binaries into runtimes layout
+        run: |
+          declare -A RID_MAP=(
+            ["darwin-arm64"]="osx-arm64"
+            ["darwin-x64"]="osx-x64"
+            ["linux-arm64"]="linux-arm64"
+            ["linux-x64"]="linux-x64"
+            ["win32-x64"]="win-x64"
+          )
+          for platform in "${!RID_MAP[@]}"; do
+            rid="${RID_MAP[$platform]}"
+            dest="dsql-lint/nuget-runtime/runtimes/$rid/native"
+            rm -f "$dest/.gitkeep"
+            if [ "$platform" = "win32-x64" ]; then
+              cp "artifacts/dsql-lint-$platform/bin/dsql-lint.exe" "$dest/"
+            else
+              cp "artifacts/dsql-lint-$platform/bin/dsql-lint" "$dest/"
+              chmod +x "$dest/dsql-lint"
+            fi
+          done
+
+      - name: Pack NuGet package
+        run: dotnet pack --configuration Release -p:Version="$VERSION"
+        working-directory: dsql-lint/nuget-runtime
+
+      - name: Push to NuGet.org
+        run: |
+          dotnet nuget push dsql-lint/nuget-runtime/bin/Release/*.nupkg \
+            --api-key "${{ env.NUGET_API_KEY }}" \
+            --source https://api.nuget.org/v3/index.json
+
   publish-crates:
     # Gated on publish-pypi for the same reason as publish-npm: crates.io
     # supports yank but PyPI's recovery is the weakest, so publish PyPI first.
