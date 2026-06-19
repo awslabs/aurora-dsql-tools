@@ -19,15 +19,14 @@
 //!
 //! - **`ADD GENERATED ... AS IDENTITY`** is folded back onto the matching
 //!   `CREATE TABLE` column as an inline
-//!   `GENERATED { ALWAYS | BY DEFAULT } AS IDENTITY (CACHE 1)` (mirroring the
-//!   SERIAL-idiom collapse). We drop the source's `(SEQUENCE NAME ...)` tail, so
-//!   the implicit sequence's name is server-chosen: PostgreSQL auto-names it
-//!   `<table>_<column>_seq`, the same name pg_dump used in the dumped
-//!   `SEQUENCE NAME`/`setval`. The trailing `SELECT setval('t_id_seq', ...)` is
-//!   therefore **left untouched** — it normally lands on that implicit sequence
-//!   and advances the counter (no manual reset, unlike the SERIAL path). This
-//!   relies on the auto-naming heuristic; if that name were already taken the
-//!   server would pick another and the setval would miss.
+//!   `GENERATED { ALWAYS | BY DEFAULT } AS IDENTITY (CACHE n)`. The source
+//!   `CACHE n` is preserved (not forced to `1`) so a tuned `CACHE 65536` isn't
+//!   silently downgraded; an out-of-range value is clamped downstream. We drop
+//!   the `(SEQUENCE NAME ...)` tail and leave the trailing `setval(...)`: it
+//!   lands on the implicit sequence PostgreSQL auto-names `<table>_<column>_seq`
+//!   — the same name pg_dump used. When the source name differs (a collision
+//!   suffix), that auto-name won't match and the setval misses, so we warn (see
+//!   [`setval_may_miss`]).
 //! - **`SET COMPRESSION`** is dropped outright. Column compression is a storage
 //!   detail DSQL manages itself; the column definition is unchanged.
 //!
@@ -41,7 +40,7 @@ use sqlparser::{
     parser::Parser,
 };
 
-use super::errors::identity_cache_1;
+use super::errors::identity_with_cache;
 use crate::lint::{Diagnostic, FixResult, LintRule};
 use crate::rules::name_match::*;
 
@@ -60,6 +59,12 @@ struct IdentityAdd {
     column: String,
     /// `ALWAYS` or `BY DEFAULT`, preserved from the source.
     generated_as: GeneratedAs,
+    /// Source cache, preserved so a tuned `CACHE 65536` isn't reset to 1.
+    /// Defaults to 1 when the tail carries no `CACHE`.
+    cache: i64,
+    /// Bare (schema-stripped, folded) source sequence name; `None` if the tail
+    /// names none. Compared against the auto-name to detect a setval miss.
+    seq_name: Option<String>,
     /// Index into `parts` of the (unparseable) ALTER statement to drop.
     alter_part: usize,
 }
@@ -89,9 +94,9 @@ struct CreateTableRef {
 }
 
 /// Parse `ALTER TABLE [ONLY] <name> ALTER COLUMN <col> ADD GENERATED
-/// { ALWAYS | BY DEFAULT } AS IDENTITY` into an [`IdentityAdd`] for the
-/// statement at `alter_part`. Stops at `AS IDENTITY`: the `(SEQUENCE NAME ...)`
-/// tail is what sqlparser chokes on and is irrelevant to the collapse.
+/// { ALWAYS | BY DEFAULT } AS IDENTITY (SEQUENCE NAME ... CACHE n ...)` into an
+/// [`IdentityAdd`] for the statement at `alter_part`. The `(...)` tail doesn't
+/// parse in sqlparser, so its `CACHE` / `SEQUENCE NAME` are scanned from text.
 fn parse_identity_add(text: &str, alter_part: usize) -> Option<IdentityAdd> {
     let prefix = scan_alter_column(text)?;
     let after_col = &prefix.lowered[prefix.col_offset..];
@@ -99,26 +104,100 @@ fn parse_identity_add(text: &str, alter_part: usize) -> Option<IdentityAdd> {
     let add_gen_off = after_col.find(ADD_GENERATED)?;
     let column =
         fold_text_ident(&prefix.original[prefix.col_offset..prefix.col_offset + add_gen_off]);
-    let after_gen = &prefix.lowered[prefix.col_offset + add_gen_off + ADD_GENERATED.len()..];
+    let after_gen_off = prefix.col_offset + add_gen_off + ADD_GENERATED.len();
+    let after_gen = &prefix.lowered[after_gen_off..];
 
-    let (generated_as, after_kw) = if let Some(after) = after_gen.strip_prefix("always ") {
-        (GeneratedAs::Always, after)
-    } else if let Some(after) = after_gen.strip_prefix("by default ") {
-        (GeneratedAs::ByDefault, after)
+    const AS_IDENTITY: &str = "as identity";
+    let (generated_as, gen_kw_len) = if after_gen.starts_with("always ") {
+        (GeneratedAs::Always, "always ".len())
+    } else if after_gen.starts_with("by default ") {
+        (GeneratedAs::ByDefault, "by default ".len())
     } else {
         return None;
     };
-    after_kw.starts_with("as identity").then_some(IdentityAdd {
+    if !after_gen[gen_kw_len..].starts_with(AS_IDENTITY) {
+        return None;
+    }
+
+    // Lowercase preserves byte length, so one offset slices both copies:
+    // `lowered` for keyword matching, `original` to keep a quoted name's case.
+    let tail_off = after_gen_off + gen_kw_len + AS_IDENTITY.len();
+    let cache = parse_cache(&prefix.lowered[tail_off..]).unwrap_or(1);
+    let seq_name = parse_sequence_name(&prefix.lowered[tail_off..], &prefix.original[tail_off..]);
+
+    Some(IdentityAdd {
         table: prefix.table,
         column,
         generated_as,
+        cache,
+        seq_name,
         alter_part,
     })
 }
 
+/// `CACHE n` from a lowercased identity tail; `None` if absent or non-integer.
+fn parse_cache(tail_lower: &str) -> Option<i64> {
+    let after = tail_lower.split(" cache ").nth(1)?;
+    after
+        .split(|c: char| !c.is_ascii_digit())
+        .next()
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse::<i64>().ok())
+}
+
+/// Bare (schema-stripped, folded) name from a `SEQUENCE NAME <name>` clause;
+/// `None` if absent. Folded to match the auto-name and setval target.
+fn parse_sequence_name(tail_lower: &str, tail_orig: &str) -> Option<String> {
+    const SEQ_NAME: &str = "sequence name ";
+    let kw_off = tail_lower.find(SEQ_NAME)? + SEQ_NAME.len();
+    // Name ends at the first whitespace/`)` outside quotes — the following
+    // option keywords are all so delimited.
+    let rest = &tail_orig[kw_off..];
+    let mut in_quotes = false;
+    let mut end = rest.len();
+    for (i, ch) in rest.char_indices() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            c if !in_quotes && (c.is_whitespace() || c == ')') => {
+                end = i;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let raw = rest[..end].trim();
+    if raw.is_empty() {
+        return None;
+    }
+    Some(normalize_dotted_identifier(raw).1)
+}
+
 fn is_set_compression(text: &str) -> bool {
-    scan_alter_column(text)
-        .is_some_and(|prefix| prefix.lowered[prefix.col_offset..].contains(SET_COMPRESSION))
+    scan_alter_column(text).is_some_and(|prefix| {
+        // Require SET COMPRESSION right after the column. A `.contains` would
+        // also fire on the phrase inside another op's argument (e.g.
+        // `SET DEFAULT 'set compression'`), silently deleting that statement.
+        let tail = &prefix.lowered[prefix.col_offset..];
+        let after_col = skip_identifier(tail);
+        tail[after_col..]
+            .trim_start()
+            .starts_with(SET_COMPRESSION.trim_start())
+    })
+}
+
+/// Byte offset past a leading (optionally `"`-quoted) identifier in `s`,
+/// skipping leading whitespace and ending at the first unquoted whitespace.
+fn skip_identifier(s: &str) -> usize {
+    let lead_ws = s.len() - s.trim_start().len();
+    let mut in_quotes = false;
+    for (i, ch) in s[lead_ws..].char_indices() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            c if !in_quotes && c.is_whitespace() => return lead_ws + i,
+            _ => {}
+        }
+    }
+    s.len()
 }
 
 /// `None` unless the statement is an `ALTER TABLE ... ALTER COLUMN`. Matched at
@@ -207,8 +286,36 @@ fn identity_message(column: &str) -> String {
     )
 }
 
-fn identity_diag(line: usize, statement: String, column: &str, fixed: bool) -> Diagnostic {
+/// True when the preserved `setval(...)` may miss its target: dropping
+/// `SEQUENCE NAME` makes the implicit sequence auto-named `<table>_<column>_seq`,
+/// so a source named anything else leaves the counter un-advanced and risks a
+/// PK collision on the first insert. No source name → can't tell, don't warn.
+fn setval_may_miss(add: &IdentityAdd) -> bool {
+    match &add.seq_name {
+        Some(name) => *name != format!("{}_{}_seq", add.table.1, add.column),
+        None => false,
+    }
+}
+
+fn identity_diag(line: usize, statement: String, add: &IdentityAdd, fixed: bool) -> Diagnostic {
+    let column = &add.column;
     let verb = if fixed { "Moved" } else { "Move" };
+    let fix_result = if setval_may_miss(add) {
+        FixResult::FixedWithWarning(format!(
+            "Folded the identity clause for `{column}` into the CREATE TABLE definition. \
+             The source sequence `{}` does not match the auto-generated name \
+             `{}_{}_seq` that DSQL will assign to the inline identity, so the dump's \
+             trailing `setval(...)` may not advance this column's counter — verify the \
+             next insert does not collide on the primary key, and reset the counter if needed.",
+            add.seq_name.as_deref().unwrap_or_default(),
+            add.table.1,
+            column,
+        ))
+    } else {
+        FixResult::Fixed(format!(
+            "Folded the identity clause for `{column}` into the CREATE TABLE definition."
+        ))
+    };
     Diagnostic {
         rule: LintRule::IdentityAddGeneratedCollapse,
         line,
@@ -217,9 +324,7 @@ fn identity_diag(line: usize, statement: String, column: &str, fixed: bool) -> D
         suggestion: format!(
             "{verb} the GENERATED ... AS IDENTITY clause onto the column in the CREATE TABLE definition."
         ),
-        fix_result: FixResult::Fixed(format!(
-            "Folded the identity clause for `{column}` into the CREATE TABLE definition."
-        )),
+        fix_result,
     }
 }
 
@@ -228,7 +333,7 @@ fn identity_diag(line: usize, statement: String, column: &str, fixed: bool) -> D
 pub(crate) fn check_identity_adds(parts: &[(usize, String)], diagnostics: &mut Vec<Diagnostic>) {
     for add in detect_identity_adds(parts) {
         let (line, stmt) = (parts[add.alter_part].0, parts[add.alter_part].1.clone());
-        diagnostics.push(identity_diag(line, stmt, &add.column, false));
+        diagnostics.push(identity_diag(line, stmt, &add, false));
     }
 }
 
@@ -276,7 +381,8 @@ pub(crate) fn fix_identity_adds(
                         // column that already declares one never doubles up.
                         col.options
                             .retain(|opt| !matches!(opt.option, ColumnOption::Generated { .. }));
-                        col.options.push(identity_cache_1(add.generated_as));
+                        col.options
+                            .push(identity_with_cache(add.generated_as, add.cache));
                         rewrote = true;
                     }
                 }
@@ -300,7 +406,7 @@ pub(crate) fn fix_identity_adds(
         diagnostics.push(identity_diag(
             parts[add.alter_part].0,
             parts[add.alter_part].1.clone(),
-            &add.column,
+            add,
             true,
         ));
     }
@@ -373,6 +479,99 @@ mod tests {
         assert_eq!(add.table, (Some("public".into()), "t".into()));
         assert_eq!(add.column, "id");
         assert_eq!(add.generated_as, GeneratedAs::ByDefault);
+        assert_eq!(add.cache, 1);
+        assert_eq!(add.seq_name.as_deref(), Some("t_id_seq"));
+    }
+
+    /// L1: a tuned source `CACHE 65536` is read from the tail, not forced to 1.
+    #[test]
+    fn parse_identity_add_preserves_source_cache() {
+        let add = parse_identity_add(
+            "ALTER TABLE public.t ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (\n\
+             SEQUENCE NAME public.t_id_seq INCREMENT BY 1 CACHE 65536)",
+            0,
+        )
+        .expect("must parse");
+        assert_eq!(add.cache, 65536);
+    }
+
+    /// A tail with no `CACHE` clause defaults to 1 (the safe DSQL default).
+    #[test]
+    fn parse_identity_add_defaults_cache_when_absent() {
+        let add = parse_identity_add(
+            "ALTER TABLE t ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (SEQUENCE NAME s)",
+            0,
+        )
+        .expect("must parse");
+        assert_eq!(add.cache, 1);
+        assert_eq!(add.seq_name.as_deref(), Some("s"));
+    }
+
+    /// L1: a preserved high-throughput cache round-trips onto the CREATE TABLE
+    /// rather than being silently downgraded to `CACHE 1`.
+    #[test]
+    fn fix_preserves_high_throughput_cache() {
+        let mut parts = vec![
+            (1, "CREATE TABLE public.t (id bigint NOT NULL)".into()),
+            (
+                2,
+                "ALTER TABLE public.t ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (SEQUENCE NAME public.t_id_seq CACHE 65536)".into(),
+            ),
+        ];
+        let mut diags = Vec::new();
+        fix_identity_adds(&mut parts, &mut diags);
+        assert!(
+            parts[0].1.contains("65536"),
+            "source CACHE 65536 must be preserved, got: {}",
+            parts[0].1
+        );
+    }
+
+    /// L2: when the source `SEQUENCE NAME` matches the auto-name DSQL will pick
+    /// (`<table>_<column>_seq`), the collapse is a plain `Fixed` — the trailing
+    /// setval lands correctly, no warning needed.
+    #[test]
+    fn fix_setval_match_is_plain_fixed() {
+        let mut parts = vec![
+            (1, "CREATE TABLE public.t (id bigint NOT NULL)".into()),
+            (
+                2,
+                "ALTER TABLE public.t ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (SEQUENCE NAME public.t_id_seq CACHE 1)".into(),
+            ),
+        ];
+        let mut diags = Vec::new();
+        fix_identity_adds(&mut parts, &mut diags);
+        assert_eq!(diags.len(), 1);
+        assert!(
+            matches!(diags[0].fix_result, FixResult::Fixed(_)),
+            "matching sequence name must not warn, got: {:?}",
+            diags[0].fix_result
+        );
+    }
+
+    /// L2: when the source sequence name does NOT match the auto-name (e.g. a
+    /// `_seq1` collision suffix), the preserved setval would miss — emit a
+    /// `FixedWithWarning` so the silent PK-collision risk is surfaced.
+    #[test]
+    fn fix_setval_mismatch_warns() {
+        let mut parts = vec![
+            (1, "CREATE TABLE public.t (id bigint NOT NULL)".into()),
+            (
+                2,
+                "ALTER TABLE public.t ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (SEQUENCE NAME public.t_id_seq1 CACHE 1)".into(),
+            ),
+        ];
+        let mut diags = Vec::new();
+        fix_identity_adds(&mut parts, &mut diags);
+        assert_eq!(diags.len(), 1);
+        let warning = match &diags[0].fix_result {
+            FixResult::FixedWithWarning(w) => w,
+            other => panic!("expected FixedWithWarning, got: {other:?}"),
+        };
+        assert!(
+            warning.contains("t_id_seq1") && warning.contains("t_id_seq"),
+            "warning must name both the source and auto-generated sequence: {warning}"
+        );
     }
 
     /// `ALWAYS` is preserved (must not be forced to BY DEFAULT) and `ONLY`,
@@ -561,6 +760,19 @@ mod tests {
             "ALTER TABLE t ALTER COLUMN c SET DEFAULT 0"
         ));
         assert!(!is_set_compression("CREATE TABLE t (c text)"));
+        // L3: the phrase only appears inside another op's argument — must NOT
+        // be treated as a SET COMPRESSION statement (would silently delete it).
+        assert!(!is_set_compression(
+            "ALTER TABLE t ALTER COLUMN c SET DEFAULT 'set compression lz4'"
+        ));
+        // Quoted column name whose value embeds the phrase must not false-match.
+        assert!(!is_set_compression(
+            "ALTER TABLE t ALTER COLUMN \"weird set compression col\" SET DEFAULT 0"
+        ));
+        // Quoted column name still matches a genuine SET COMPRESSION.
+        assert!(is_set_compression(
+            "ALTER TABLE t ALTER COLUMN \"My Col\" SET COMPRESSION lz4"
+        ));
 
         let mut parts = vec![
             (1, "CREATE TABLE t (c text)".into()),

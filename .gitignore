@@ -8,6 +8,9 @@ out/
 **/test-vscode-sqltools.code-workspace
 # Python build artifacts (maturin)
 dsql-lint/pypi/dist/
+# Python bytecode cache
+__pycache__/
+*.pyc
 # .NET build artifacts
 dsql-lint/nuget/bin/
 dsql-lint/nuget/obj/
