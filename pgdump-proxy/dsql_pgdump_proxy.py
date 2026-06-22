@@ -14,7 +14,7 @@ intercepts the specific setup statements DSQL rejects, none of which affect dump
 *content*:
 
   * `SET <param>` for a param DSQL rejects        -> synth a `SET` success reply
-  * `SELECT ... set_config(...)` setup probe       -> rewrite to `SELECT NULL`
+  * `SELECT ... set_config(...)` setup probe       -> rewrite to `SELECT NULL::text`
   * `LOCK TABLE ... IN ... MODE`                  -> synth a `LOCK TABLE` reply
                                                      (DSQL is snapshot-isolated;
                                                       the lock is unnecessary)
@@ -22,6 +22,15 @@ intercepts the specific setup statements DSQL rejects, none of which affect dump
 Content-relevant GUCs (`client_encoding`, `DateStyle`, `extra_float_digits`,
 `intervalstyle`, `timezone`, `search_path`) are on DSQL's allowlist and pass
 through, so dump fidelity is preserved.
+
+Interception is scoped to single-statement simple queries (`'Q'`) — what
+`pg_dump`/`psql` setup emits. Extended-query (Parse/Bind/Execute) and
+multi-statement `'Q'` batches are passed through and, if DSQL rejects them, abort
+the connection. Note the `SET RE` captures the first identifier, so the alternate
+`SET TIME ZONE '...'` spelling matches param `TIME` (not allowlisted) and is
+swallowed like any other unsupported SET — pg_dump itself emits the allowlisted
+`SET timezone = '...'` GUC form, so the export path's timezone fidelity is intact.
+Fine for the export path; not a general gateway.
 
 Usage:
     # 1. Start the proxy (defaults to 127.0.0.1:6543 -> <endpoint>:5432):
@@ -72,7 +81,7 @@ SET_RE = re.compile(
 # (the second sets restrict_nonsystem_relation_kind via a pg_settings lookup, so
 # the param is not a literal first arg). Anchored to a leading SELECT so a
 # `set_config(` substring inside a string literal or column ref is not matched;
-# the whole probe is rewritten to `SELECT NULL` regardless of the named param
+# the whole probe is rewritten to `SELECT NULL::text` regardless of the named param
 # (none of pg_dump's setup set_config calls affect dump content).
 SET_CONFIG_RE = re.compile(
     rb"^\s*SELECT\s+(?:pg_catalog\.)?set_config\s*\(", re.IGNORECASE)
@@ -152,12 +161,29 @@ def connect_upstream(host: str, port: int) -> ssl.SSLSocket:
     return ctx.wrap_socket(upstream, server_hostname=host)
 
 
+def half_close(sock: socket.socket) -> None:
+    """Shut down `sock` so a peer thread blocked in `recv` wakes. Best-effort."""
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+
+
 def client_to_server(client: socket.socket, server: socket.socket,
                      client_lock: threading.Lock) -> None:
     """Forward client -> server, intercepting the setup statements DSQL rejects.
 
     Runs after the StartupMessage has been forwarded, so every message here is
-    the typed form (1-byte type + Int32 length + body)."""
+    the typed form (1-byte type + Int32 length + body). On exit, closes `server`
+    so the paired `server_to_client` thread doesn't hang on `upstream.recv()`."""
+    try:
+        _pump_client_to_server(client, server, client_lock)
+    finally:
+        half_close(server)
+
+
+def _pump_client_to_server(client: socket.socket, server: socket.socket,
+                           client_lock: threading.Lock) -> None:
     while True:
         type_byte = recv_exact(client, 1)
         if type_byte is None:
@@ -182,24 +208,31 @@ def client_to_server(client: socket.socket, server: socket.socket,
                 continue
             if SET_CONFIG_RE.match(body):
                 sys.stderr.write("[proxy] neutralized set_config() probe\n")
-                # Replace the whole probe with SELECT NULL and forward THAT (not
-                # the original) — unlike SET/LOCK we still want a real reply from
-                # the server. pg_dump issues each setup set_config as its own
-                # standalone simple query, so replacing the whole body is safe.
-                server.sendall(frame(b"Q", b"SELECT NULL;\x00"))
+                # Forward a rewrite (not the original) — unlike SET/LOCK we want
+                # a real server reply. `::text` matches set_config's return type,
+                # so a client reading the column type sees text, not `unknown`.
+                # Each setup set_config is its own simple query, so replacing the
+                # whole body is safe.
+                server.sendall(frame(b"Q", b"SELECT NULL::text;\x00"))
                 continue
         server.sendall(type_byte + len_bytes + body)
 
 
 def server_to_client(server: socket.socket, client: socket.socket,
                     client_lock: threading.Lock) -> None:
-    """Forward server -> client verbatim."""
-    while True:
-        data = server.recv(65536)
-        if not data:
-            return
-        with client_lock:
-            client.sendall(data)
+    """Forward server -> client verbatim. On exit, closes `client` so an upstream
+    drop (e.g. DSQL's ~1 h connection cap firing mid-dump) reaches pg_dump as a
+    lost connection — a non-zero exit, not a clean EOF that looks like a complete
+    dump — and the paired client->server thread doesn't hang."""
+    try:
+        while True:
+            data = server.recv(65536)
+            if not data:
+                return
+            with client_lock:
+                client.sendall(data)
+    finally:
+        half_close(client)
 
 
 def handle(client: socket.socket, target_host: str, target_port: int) -> None:
@@ -296,11 +329,16 @@ def _self_test() -> None:
     assert SET_CONFIG_RE.match(b"SELECT * FROM t WHERE c = 'set_config('") is None
     assert SET_CONFIG_RE.match(b"SELECT a, set_config FROM t") is None
 
-    # frame() produces a correctly length-prefixed message (Int32 covers itself +
-    # body); this is the exact builder the set_config rewrite path uses.
-    msg = frame(b"Q", b"SELECT NULL;\x00")
-    assert msg == b"Q\x00\x00\x00\x11SELECT NULL;\x00"
+    # frame() length prefix (Int32 covers itself + body) — the set_config path.
+    msg = frame(b"Q", b"SELECT NULL::text;\x00")
     assert struct.unpack("!I", msg[1:5])[0] == len(msg) - 1
+    assert msg[5:] == b"SELECT NULL::text;\x00"
+
+    # half_close must tolerate an already-closed socket.
+    a, b = socket.socketpair()
+    a.close()
+    b.close()
+    half_close(a)
     print("self-test: ok")
 
 

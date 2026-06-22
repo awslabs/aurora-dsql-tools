@@ -34,7 +34,7 @@ The proxy sits between the client (plaintext, on localhost) and DSQL (TLS):
 - It intercepts only the setup statements DSQL rejects, none of which affect the
   dump's *content*:
   - a rejected `SET <param>` → a synthesized `SET` success reply,
-  - `SELECT set_config('<rejected>', ...)` → rewritten to `SELECT NULL`,
+  - `SELECT set_config('<rejected>', ...)` → rewritten to `SELECT NULL::text`,
   - `LOCK TABLE ...` → a synthesized `LOCK TABLE` reply (DSQL gives snapshot
     isolation, so the lock is unnecessary).
 - Content-relevant GUCs (`client_encoding`, `DateStyle`, `extra_float_digits`,
@@ -82,3 +82,12 @@ Options: `--target-port` (default 5432), `--listen-host` (default `127.0.0.1`),
   cluster if dumping several.
 - **Use for migration/export, not as a general-purpose gateway.** It rewrites
   only the statements needed for `pg_dump`/`psql` to function against DSQL.
+- **Simple-query setup only.** Interception fires on simple-query (`'Q'`)
+  messages carrying one setup statement — what `pg_dump`/`psql` actually send.
+  Setup statements issued via the extended-query protocol (Parse/Bind/Execute) or
+  bundled in a multi-statement `'Q'` batch (`SET x; SELECT ...`) are passed
+  through untouched; if DSQL rejects one, the connection aborts. The alternate
+  `SET TIME ZONE '...'` spelling is classified by its first identifier (`TIME`)
+  and swallowed like any other unsupported SET; pg_dump emits the allowlisted
+  `SET timezone = '...'` form, so the export path's timezone fidelity holds. The
+  supported `pg_dump`/`psql` export path does not hit these cases.

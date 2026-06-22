@@ -1,0 +1,43 @@
+name: pgdump-proxy CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pgdump-proxy/**'
+      - '.github/workflows/pgdump-proxy-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'pgdump-proxy/**'
+      - '.github/workflows/pgdump-proxy-ci.yml'
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: pgdump-proxy
+
+jobs:
+  test:
+    name: Self-test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # The proxy targets 3.9+ (`from __future__ import annotations` for the
+        # `X | None` syntax). Pin the floor and a current version.
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Byte-compile (syntax check)
+        run: python -m compileall dsql_pgdump_proxy.py
+
+      - name: Run statement-classifier self-test
+        run: python dsql_pgdump_proxy.py --self-test
