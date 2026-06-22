@@ -24,9 +24,13 @@ Content-relevant GUCs (`client_encoding`, `DateStyle`, `extra_float_digits`,
 through, so dump fidelity is preserved.
 
 Interception is scoped to single-statement simple queries (`'Q'`) — what
-`pg_dump`/`psql` setup emits. Extended-query (Parse/Bind/Execute), multi-statement
-`'Q'` batches, and `SET TIME ZONE '...'` are passed through and, if DSQL rejects
-them, abort the connection. Fine for the export path; not a general gateway.
+`pg_dump`/`psql` setup emits. Extended-query (Parse/Bind/Execute) and
+multi-statement `'Q'` batches are passed through and, if DSQL rejects them, abort
+the connection. Note the `SET RE` captures the first identifier, so the alternate
+`SET TIME ZONE '...'` spelling matches param `TIME` (not allowlisted) and is
+swallowed like any other unsupported SET — pg_dump itself emits the allowlisted
+`SET timezone = '...'` GUC form, so the export path's timezone fidelity is intact.
+Fine for the export path; not a general gateway.
 
 Usage:
     # 1. Start the proxy (defaults to 127.0.0.1:6543 -> <endpoint>:5432):

@@ -84,8 +84,10 @@ Options: `--target-port` (default 5432), `--listen-host` (default `127.0.0.1`),
   only the statements needed for `pg_dump`/`psql` to function against DSQL.
 - **Simple-query setup only.** Interception fires on simple-query (`'Q'`)
   messages carrying one setup statement — what `pg_dump`/`psql` actually send.
-  Setup statements issued via the extended-query protocol (Parse/Bind/Execute),
-  bundled in a multi-statement `'Q'` batch (`SET x; SELECT ...`), or written as
-  `SET TIME ZONE '...'` are passed through untouched; if DSQL rejects one, the
-  connection aborts. The supported `pg_dump`/`psql` export path does not hit
-  these cases.
+  Setup statements issued via the extended-query protocol (Parse/Bind/Execute) or
+  bundled in a multi-statement `'Q'` batch (`SET x; SELECT ...`) are passed
+  through untouched; if DSQL rejects one, the connection aborts. The alternate
+  `SET TIME ZONE '...'` spelling is classified by its first identifier (`TIME`)
+  and swallowed like any other unsupported SET; pg_dump emits the allowlisted
+  `SET timezone = '...'` form, so the export path's timezone fidelity holds. The
+  supported `pg_dump`/`psql` export path does not hit these cases.
