@@ -67,6 +67,7 @@ fn normalize_statement(stmt: &mut Statement) -> Vec<Statement> {
     for col in &mut ct.columns {
         unquote_ident(&mut col.name);
         normalize_data_type(&mut col.data_type);
+        strip_mysql_column_options(col);
         normalize_auto_increment(col);
     }
     // Lift secondary KEY/INDEX constraints out into separate CREATE INDEX
@@ -116,6 +117,25 @@ fn normalize_auto_increment(col: &mut sqlparser::ast::ColumnDef) {
     });
 }
 
+/// Drop MySQL-only column options that have no DSQL meaning and that the
+/// lenient Postgres parser would otherwise accept into invalid DSQL:
+/// per-column `CHARACTER SET` / `COLLATE` (DSQL is UTF-8 + C collation),
+/// inline `COMMENT` (no Postgres inline-comment syntax), and
+/// `ON UPDATE CURRENT_TIMESTAMP` (no Postgres equivalent — `DEFAULT
+/// CURRENT_TIMESTAMP` is kept). Application-layer timestamp maintenance
+/// replaces ON UPDATE.
+fn strip_mysql_column_options(col: &mut sqlparser::ast::ColumnDef) {
+    col.options.retain(|opt| {
+        !matches!(
+            opt.option,
+            ColumnOption::CharacterSet(_)
+                | ColumnOption::Collation(_)
+                | ColumnOption::Comment(_)
+                | ColumnOption::OnUpdate(_)
+        )
+    });
+}
+
 /// Whether a column option is MySQL's `AUTO_INCREMENT` (parsed as a
 /// dialect-specific token sequence).
 fn is_auto_increment(option: &ColumnOption) -> bool {
@@ -153,6 +173,15 @@ fn lift_index(table: &ObjectName, idx: &mut sqlparser::ast::IndexConstraint) -> 
     })
 }
 
+/// Whether a single-part object name equals `target` (ASCII case-insensitive).
+fn object_name_eq_ci(name: &ObjectName, target: &str) -> bool {
+    name.0.len() == 1
+        && matches!(
+            &name.0[0],
+            ObjectNamePart::Identifier(id) if id.value.eq_ignore_ascii_case(target)
+        )
+}
+
 /// A bare unsigned numeric literal expression (for sequence CACHE values).
 fn num_expr(n: u64) -> Expr {
     Expr::Value(ValueWithSpan {
@@ -174,20 +203,33 @@ fn normalize_data_type(ty: &mut DataType) {
         // Unsigned widening: next signed type holds the full unsigned range.
         DataType::SmallIntUnsigned(_) => DataType::Integer(None),
         DataType::IntUnsigned(_) | DataType::IntegerUnsigned(_) => DataType::BigInt(None),
-        // bigint unsigned overflows i64 → NUMERIC (arbitrary precision).
+        // bigint unsigned overflows i64 → NUMERIC (arbitrary precision, stores
+        // the full unsigned range). NOTE: emits bare NUMERIC, not NUMERIC(20,0);
+        // and unsigned types do not add a `CHECK (col >= 0)` invariant. Both
+        // are valid DSQL that store the data; tightening to NUMERIC(20,0) +
+        // CHECK is deferred polish (design phase L4).
         DataType::BigIntUnsigned(_) => DataType::Numeric(ExactNumberInfo::None),
+        // Signed integers with a MySQL display width (`int(11)`) → drop the
+        // width; Postgres has no integer type modifier.
+        DataType::Int(Some(_)) => DataType::Int(None),
+        DataType::Integer(Some(_)) => DataType::Integer(None),
+        DataType::SmallInt(Some(_)) => DataType::SmallInt(None),
+        DataType::BigInt(Some(_)) => DataType::BigInt(None),
         // DATETIME → TIMESTAMP (without time zone).
         DataType::Datetime(_) => DataType::Timestamp(None, TimezoneInfo::None),
-        // ENUM/SET have no DSQL type → VARCHAR(255). CHECK-based value
-        // validation is a later enhancement.
-        DataType::Enum(_, _) | DataType::Set(_) => {
-            DataType::Varchar(Some(CharacterLength::IntegerLength {
-                length: 255,
-                unit: None,
-            }))
-        }
-        // Everything else (varchar, char, text, date, time, decimal, int,
-        // bigint, smallint, double, real, json, blob, ...) maps directly.
+        // YEAR (parsed as a custom type name) has no DSQL type → INTEGER.
+        DataType::Custom(name, _) if object_name_eq_ci(name, "year") => DataType::Integer(None),
+        // ENUM → VARCHAR(255) (CHECK-based value validation is a later
+        // enhancement). SET → TEXT: a many-member set's comma-joined value
+        // can exceed 255 chars, so VARCHAR(255) would truncate.
+        DataType::Enum(_, _) => DataType::Varchar(Some(CharacterLength::IntegerLength {
+            length: 255,
+            unit: None,
+        })),
+        DataType::Set(_) => DataType::Text,
+        // Everything else (varchar, char, text, date, time, decimal,
+        // width-less int/bigint/smallint, double, real, json, blob, ...) maps
+        // directly.
         _ => return,
     };
     *ty = replacement;
@@ -283,10 +325,12 @@ fn unquote_ident(ident: &mut Ident) {
 mod tests {
     use super::*;
 
-    /// No backtick may survive anywhere in the output — not in the table name,
-    /// columns, or constraint column lists — or the Postgres `fix_sql` parse
-    /// fails.
-    fn assert_no_backticks_and_no_parse_error(out: &FixOutput) {
+    /// Assert the output is clean DSQL. Checks for `ParseError` AND for
+    /// MySQL-isms that sqlparser's lenient `PostgreSqlDialect` parses without
+    /// complaint but real DSQL rejects (backticks, inline COMMENT, CHARACTER
+    /// SET/COLLATE, integer display widths, ON UPDATE, MySQL-only type names).
+    /// A no-ParseError check alone is NOT sufficient — the gate is lenient.
+    fn assert_clean_dsql(out: &FixOutput) {
         assert!(!out.sql.contains('`'), "backticks survived:\n{}", out.sql);
         assert!(
             !out.diagnostics
@@ -296,13 +340,33 @@ mod tests {
             out.sql,
             out.diagnostics
         );
+        let u = out.sql.to_uppercase();
+        for banned in [
+            "COMMENT '",
+            "CHARACTER SET",
+            "COLLATE",
+            "ON UPDATE",
+            "AUTO_INCREMENT",
+            "UNSIGNED",
+            "ENUM(",
+            "DATETIME",
+            "TINYINT",
+            "MEDIUMINT",
+            " YEAR",
+        ] {
+            assert!(
+                !u.contains(banned),
+                "MySQL-ism {banned:?} survived into output (lenient PG parser won't flag it):\n{}",
+                out.sql
+            );
+        }
     }
 
     #[test]
     fn strips_backticks_and_engine_into_clean_postgres() {
         let sql = "CREATE TABLE `users` (`id` int NOT NULL, `name` varchar(255)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
         let out = fix_sql_mysql(sql);
-        assert_no_backticks_and_no_parse_error(&out);
+        assert_clean_dsql(&out);
         assert!(
             !out.sql.to_uppercase().contains("ENGINE"),
             "ENGINE= must be stripped, got:\n{}",
@@ -322,7 +386,7 @@ mod tests {
         let sql = "CREATE TABLE `t` (`id` int NOT NULL, `name` varchar(50), \
                    PRIMARY KEY (`id`), UNIQUE KEY `uk` (`name`)) ENGINE=InnoDB;";
         let out = fix_sql_mysql(sql);
-        assert_no_backticks_and_no_parse_error(&out);
+        assert_clean_dsql(&out);
         assert!(
             out.sql.to_uppercase().contains("PRIMARY KEY"),
             "PRIMARY KEY must survive, got:\n{}",
@@ -337,7 +401,7 @@ mod tests {
         let sql = "CREATE TABLE `t` (\
                    `flag` tinyint(1), `small` tinyint, `mid` mediumint, `n` int, `big` bigint) ENGINE=InnoDB;";
         let out = fix_sql_mysql(sql);
-        assert_no_backticks_and_no_parse_error(&out);
+        assert_clean_dsql(&out);
         let u = out.sql.to_uppercase();
         assert!(u.contains("FLAG BOOLEAN"), "tinyint(1)->BOOLEAN, got:\n{}", out.sql);
         assert!(u.contains("SMALL SMALLINT"), "tinyint->SMALLINT, got:\n{}", out.sql);
@@ -351,7 +415,7 @@ mod tests {
     fn widens_unsigned_integers() {
         let sql = "CREATE TABLE `t` (`a` int unsigned, `b` bigint unsigned) ENGINE=InnoDB;";
         let out = fix_sql_mysql(sql);
-        assert_no_backticks_and_no_parse_error(&out);
+        assert_clean_dsql(&out);
         let u = out.sql.to_uppercase();
         assert!(!u.contains("UNSIGNED"), "UNSIGNED must be gone, got:\n{}", out.sql);
         assert!(u.contains("A BIGINT"), "int unsigned->BIGINT, got:\n{}", out.sql);
@@ -363,7 +427,7 @@ mod tests {
     fn maps_datetime_to_timestamp() {
         let sql = "CREATE TABLE `t` (`created` datetime) ENGINE=InnoDB;";
         let out = fix_sql_mysql(sql);
-        assert_no_backticks_and_no_parse_error(&out);
+        assert_clean_dsql(&out);
         let u = out.sql.to_uppercase();
         assert!(u.contains("TIMESTAMP"), "datetime->TIMESTAMP, got:\n{}", out.sql);
         assert!(!u.contains("DATETIME"), "DATETIME must be gone, got:\n{}", out.sql);
@@ -375,7 +439,7 @@ mod tests {
     fn maps_enum_to_varchar() {
         let sql = "CREATE TABLE `t` (`kind` enum('a','b','c')) ENGINE=InnoDB;";
         let out = fix_sql_mysql(sql);
-        assert_no_backticks_and_no_parse_error(&out);
+        assert_clean_dsql(&out);
         let u = out.sql.to_uppercase();
         assert!(u.contains("KIND VARCHAR"), "enum->VARCHAR, got:\n{}", out.sql);
         assert!(!u.contains("ENUM"), "ENUM must be gone, got:\n{}", out.sql);
@@ -387,7 +451,7 @@ mod tests {
     fn maps_auto_increment_to_identity() {
         let sql = "CREATE TABLE `t` (`id` int NOT NULL AUTO_INCREMENT, PRIMARY KEY (`id`)) ENGINE=InnoDB;";
         let out = fix_sql_mysql(sql);
-        assert_no_backticks_and_no_parse_error(&out);
+        assert_clean_dsql(&out);
         let u = out.sql.to_uppercase();
         assert!(
             u.contains("GENERATED BY DEFAULT AS IDENTITY"),
@@ -405,7 +469,7 @@ mod tests {
         let sql = "CREATE TABLE `t` (`id` int NOT NULL, `name` varchar(50), \
                    PRIMARY KEY (`id`), KEY `idx_name` (`name`)) ENGINE=InnoDB;";
         let out = fix_sql_mysql(sql);
-        assert_no_backticks_and_no_parse_error(&out);
+        assert_clean_dsql(&out);
         let u = out.sql.to_uppercase();
         assert!(
             u.contains("CREATE INDEX"),
@@ -419,5 +483,69 @@ mod tests {
             out.sql
         );
         assert!(u.contains("PRIMARY KEY"), "PRIMARY KEY must survive inline, got:\n{}", out.sql);
+    }
+
+    /// `ON UPDATE CURRENT_TIMESTAMP` has no Postgres equivalent and breaks the
+    /// parse; it must be stripped (keeping `DEFAULT CURRENT_TIMESTAMP`).
+    /// Common on every mysqldump `updated_at` column.
+    #[test]
+    fn strips_on_update_current_timestamp() {
+        let sql = "CREATE TABLE `t` (`ts` timestamp DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP);";
+        let out = fix_sql_mysql(sql);
+        assert_clean_dsql(&out);
+        assert!(
+            out.sql.to_uppercase().contains("DEFAULT CURRENT_TIMESTAMP"),
+            "DEFAULT CURRENT_TIMESTAMP must survive, got:\n{}",
+            out.sql
+        );
+    }
+
+    /// Inline column `COMMENT '...'` is MySQL-only; the lenient PG parser
+    /// accepts it but DSQL rejects it at apply — must be stripped.
+    #[test]
+    fn strips_column_comment() {
+        let sql = "CREATE TABLE `t` (`n` int COMMENT 'a note');";
+        let out = fix_sql_mysql(sql);
+        assert_clean_dsql(&out);
+    }
+
+    /// Per-column `CHARACTER SET` / `COLLATE` are MySQL-only; strip them.
+    #[test]
+    fn strips_column_charset_and_collate() {
+        let sql = "CREATE TABLE `t` (`s` varchar(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci);";
+        let out = fix_sql_mysql(sql);
+        assert_clean_dsql(&out);
+        assert!(out.sql.to_uppercase().contains("VARCHAR(10)"), "type must survive, got:\n{}", out.sql);
+    }
+
+    /// Signed integer display widths (`int(11)`, `bigint(20)`) are MySQL-only
+    /// and must be dropped — Postgres has no integer type modifier.
+    #[test]
+    fn drops_signed_integer_display_width() {
+        let sql = "CREATE TABLE `t` (`a` int(11), `b` bigint(20), `c` smallint(6));";
+        let out = fix_sql_mysql(sql);
+        assert_clean_dsql(&out);
+        let u = out.sql.to_uppercase();
+        assert!(u.contains("A INT") || u.contains("A INTEGER"), "int width dropped, got:\n{}", out.sql);
+        assert!(!u.contains("(11)") && !u.contains("(20)") && !u.contains("(6)"), "no display widths, got:\n{}", out.sql);
+    }
+
+    /// `YEAR` has no DSQL type → INTEGER.
+    #[test]
+    fn maps_year_to_integer() {
+        let sql = "CREATE TABLE `t` (`y` year);";
+        let out = fix_sql_mysql(sql);
+        assert_clean_dsql(&out);
+        assert!(out.sql.to_uppercase().contains("INTEGER"), "year->INTEGER, got:\n{}", out.sql);
+    }
+
+    /// `SET(...)` → TEXT (per the design policy; VARCHAR(255) can truncate a
+    /// many-member set's comma-joined value).
+    #[test]
+    fn maps_set_to_text() {
+        let sql = "CREATE TABLE `t` (`perms` set('read','write','admin'));";
+        let out = fix_sql_mysql(sql);
+        assert_clean_dsql(&out);
+        assert!(out.sql.to_uppercase().contains("PERMS TEXT"), "set->TEXT, got:\n{}", out.sql);
     }
 }
