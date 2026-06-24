@@ -46,6 +46,12 @@ struct Args {
     /// Output format
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     format: OutputFormat,
+
+    /// Source SQL dialect. `postgres` (default) lints/fixes PostgreSQL or
+    /// pg_dump DDL. `mysql` first translates mysqldump-shaped MySQL DDL to
+    /// DSQL-compatible SQL (requires --fix); MySQL is a fix-only dialect.
+    #[arg(long, value_enum, default_value_t = Dialect::Postgres)]
+    dialect: Dialect,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, ValueEnum)]
@@ -53,6 +59,13 @@ enum OutputFormat {
     #[default]
     Text,
     Json,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, ValueEnum)]
+enum Dialect {
+    #[default]
+    Postgres,
+    Mysql,
 }
 
 impl OutputFormat {
@@ -286,6 +299,13 @@ fn run() -> ExitCode {
 
     if args.output.is_some() && args.files.len() > 1 {
         eprintln!("Error: -o/--output can only be used with a single input file");
+        return ExitCode::Usage;
+    }
+
+    // MySQL is a translate-then-fix dialect: there is no lint-only MySQL path
+    // (the MySQL DDL must be translated to Postgres before it can be checked).
+    if args.dialect == Dialect::Mysql && !args.fix {
+        eprintln!("Error: --dialect mysql requires --fix (MySQL DDL is translated, not lint-only)");
         return ExitCode::Usage;
     }
 
@@ -533,7 +553,10 @@ fn fix_one(args: &Args, src: &InputSource) -> FixOutcome {
     };
 
     let had_comments = sql.contains("--") || sql.contains("/*");
-    let result = dsql_lint::fix_sql(&sql);
+    let result = match args.dialect {
+        Dialect::Postgres => dsql_lint::fix_sql(&sql),
+        Dialect::Mysql => dsql_lint::fix_sql_mysql(&sql),
+    };
     let dest = compute_fix_dest(args, src);
 
     if let FixDest::File(ref output_path) = dest {

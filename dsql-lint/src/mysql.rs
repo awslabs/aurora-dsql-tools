@@ -10,13 +10,14 @@
 use sqlparser::ast::{
     CharacterLength, ColumnOption, ColumnOptionDef, CreateIndex, CreateTableOptions, DataType,
     ExactNumberInfo, Expr, GeneratedAs, Ident, IndexColumn, KeyOrIndexDisplay, ObjectName,
-    ObjectNamePart, SequenceOptions, Statement, TableConstraint, TimezoneInfo, Value, ValueWithSpan,
+    ObjectNamePart, SequenceOptions, Statement, TableConstraint, TimezoneInfo, Value,
+    ValueWithSpan,
 };
 use sqlparser::dialect::MySqlDialect;
 use sqlparser::parser::Parser;
 use sqlparser::tokenizer::Span;
 
-use crate::lint::{FixOutput, fix_sql};
+use crate::lint::{fix_sql, FixOutput};
 
 /// Translate MySQL-dialect DDL to DSQL-compatible SQL.
 ///
@@ -96,10 +97,7 @@ fn normalize_statement(stmt: &mut Statement) -> Vec<Statement> {
 /// explicit value wins), so existing IDs reload. Dropping AUTO_INCREMENT
 /// without a replacement would silently lose the column's auto-increment.
 fn normalize_auto_increment(col: &mut sqlparser::ast::ColumnDef) {
-    let had_auto_increment = col
-        .options
-        .iter()
-        .any(|opt| is_auto_increment(&opt.option));
+    let had_auto_increment = col.options.iter().any(|opt| is_auto_increment(&opt.option));
     if !had_auto_increment {
         return;
     }
@@ -140,7 +138,9 @@ fn strip_mysql_column_options(col: &mut sqlparser::ast::ColumnDef) {
 /// dialect-specific token sequence).
 fn is_auto_increment(option: &ColumnOption) -> bool {
     matches!(option, ColumnOption::DialectSpecific(_))
-        && format!("{option}").to_uppercase().contains("AUTO_INCREMENT")
+        && format!("{option}")
+            .to_uppercase()
+            .contains("AUTO_INCREMENT")
 }
 
 /// Build a `CREATE INDEX <name> ON <table> (cols)` from a lifted inline
@@ -403,10 +403,26 @@ mod tests {
         let out = fix_sql_mysql(sql);
         assert_clean_dsql(&out);
         let u = out.sql.to_uppercase();
-        assert!(u.contains("FLAG BOOLEAN"), "tinyint(1)->BOOLEAN, got:\n{}", out.sql);
-        assert!(u.contains("SMALL SMALLINT"), "tinyint->SMALLINT, got:\n{}", out.sql);
-        assert!(u.contains("MID INTEGER"), "mediumint->INTEGER, got:\n{}", out.sql);
-        assert!(!u.contains("TINYINT") && !u.contains("MEDIUMINT"), "no MySQL int types, got:\n{}", out.sql);
+        assert!(
+            u.contains("FLAG BOOLEAN"),
+            "tinyint(1)->BOOLEAN, got:\n{}",
+            out.sql
+        );
+        assert!(
+            u.contains("SMALL SMALLINT"),
+            "tinyint->SMALLINT, got:\n{}",
+            out.sql
+        );
+        assert!(
+            u.contains("MID INTEGER"),
+            "mediumint->INTEGER, got:\n{}",
+            out.sql
+        );
+        assert!(
+            !u.contains("TINYINT") && !u.contains("MEDIUMINT"),
+            "no MySQL int types, got:\n{}",
+            out.sql
+        );
     }
 
     /// Unsigned integers widen to the next signed Postgres type (DSQL has no
@@ -417,9 +433,21 @@ mod tests {
         let out = fix_sql_mysql(sql);
         assert_clean_dsql(&out);
         let u = out.sql.to_uppercase();
-        assert!(!u.contains("UNSIGNED"), "UNSIGNED must be gone, got:\n{}", out.sql);
-        assert!(u.contains("A BIGINT"), "int unsigned->BIGINT, got:\n{}", out.sql);
-        assert!(u.contains("B NUMERIC"), "bigint unsigned->NUMERIC, got:\n{}", out.sql);
+        assert!(
+            !u.contains("UNSIGNED"),
+            "UNSIGNED must be gone, got:\n{}",
+            out.sql
+        );
+        assert!(
+            u.contains("A BIGINT"),
+            "int unsigned->BIGINT, got:\n{}",
+            out.sql
+        );
+        assert!(
+            u.contains("B NUMERIC"),
+            "bigint unsigned->NUMERIC, got:\n{}",
+            out.sql
+        );
     }
 
     /// MySQL DATETIME has no Postgres equivalent name → TIMESTAMP.
@@ -429,8 +457,16 @@ mod tests {
         let out = fix_sql_mysql(sql);
         assert_clean_dsql(&out);
         let u = out.sql.to_uppercase();
-        assert!(u.contains("TIMESTAMP"), "datetime->TIMESTAMP, got:\n{}", out.sql);
-        assert!(!u.contains("DATETIME"), "DATETIME must be gone, got:\n{}", out.sql);
+        assert!(
+            u.contains("TIMESTAMP"),
+            "datetime->TIMESTAMP, got:\n{}",
+            out.sql
+        );
+        assert!(
+            !u.contains("DATETIME"),
+            "DATETIME must be gone, got:\n{}",
+            out.sql
+        );
     }
 
     /// ENUM has no DSQL type → VARCHAR(255) (validation via CHECK is a later
@@ -441,7 +477,11 @@ mod tests {
         let out = fix_sql_mysql(sql);
         assert_clean_dsql(&out);
         let u = out.sql.to_uppercase();
-        assert!(u.contains("KIND VARCHAR"), "enum->VARCHAR, got:\n{}", out.sql);
+        assert!(
+            u.contains("KIND VARCHAR"),
+            "enum->VARCHAR, got:\n{}",
+            out.sql
+        );
         assert!(!u.contains("ENUM"), "ENUM must be gone, got:\n{}", out.sql);
     }
 
@@ -458,7 +498,11 @@ mod tests {
             "AUTO_INCREMENT must become an IDENTITY column, got:\n{}",
             out.sql
         );
-        assert!(!u.contains("AUTO_INCREMENT"), "AUTO_INCREMENT must be gone, got:\n{}", out.sql);
+        assert!(
+            !u.contains("AUTO_INCREMENT"),
+            "AUTO_INCREMENT must be gone, got:\n{}",
+            out.sql
+        );
     }
 
     /// A secondary `KEY`/`INDEX` inside CREATE TABLE is not valid DSQL — it
@@ -482,7 +526,11 @@ mod tests {
             "inline KEY must be lifted out of CREATE TABLE, got:\n{}",
             out.sql
         );
-        assert!(u.contains("PRIMARY KEY"), "PRIMARY KEY must survive inline, got:\n{}", out.sql);
+        assert!(
+            u.contains("PRIMARY KEY"),
+            "PRIMARY KEY must survive inline, got:\n{}",
+            out.sql
+        );
     }
 
     /// `ON UPDATE CURRENT_TIMESTAMP` has no Postgres equivalent and breaks the
@@ -512,10 +560,15 @@ mod tests {
     /// Per-column `CHARACTER SET` / `COLLATE` are MySQL-only; strip them.
     #[test]
     fn strips_column_charset_and_collate() {
-        let sql = "CREATE TABLE `t` (`s` varchar(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci);";
+        let sql =
+            "CREATE TABLE `t` (`s` varchar(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci);";
         let out = fix_sql_mysql(sql);
         assert_clean_dsql(&out);
-        assert!(out.sql.to_uppercase().contains("VARCHAR(10)"), "type must survive, got:\n{}", out.sql);
+        assert!(
+            out.sql.to_uppercase().contains("VARCHAR(10)"),
+            "type must survive, got:\n{}",
+            out.sql
+        );
     }
 
     /// Signed integer display widths (`int(11)`, `bigint(20)`) are MySQL-only
@@ -526,8 +579,16 @@ mod tests {
         let out = fix_sql_mysql(sql);
         assert_clean_dsql(&out);
         let u = out.sql.to_uppercase();
-        assert!(u.contains("A INT") || u.contains("A INTEGER"), "int width dropped, got:\n{}", out.sql);
-        assert!(!u.contains("(11)") && !u.contains("(20)") && !u.contains("(6)"), "no display widths, got:\n{}", out.sql);
+        assert!(
+            u.contains("A INT") || u.contains("A INTEGER"),
+            "int width dropped, got:\n{}",
+            out.sql
+        );
+        assert!(
+            !u.contains("(11)") && !u.contains("(20)") && !u.contains("(6)"),
+            "no display widths, got:\n{}",
+            out.sql
+        );
     }
 
     /// `YEAR` has no DSQL type → INTEGER.
@@ -536,7 +597,11 @@ mod tests {
         let sql = "CREATE TABLE `t` (`y` year);";
         let out = fix_sql_mysql(sql);
         assert_clean_dsql(&out);
-        assert!(out.sql.to_uppercase().contains("INTEGER"), "year->INTEGER, got:\n{}", out.sql);
+        assert!(
+            out.sql.to_uppercase().contains("INTEGER"),
+            "year->INTEGER, got:\n{}",
+            out.sql
+        );
     }
 
     /// `SET(...)` → TEXT (per the design policy; VARCHAR(255) can truncate a
@@ -546,6 +611,10 @@ mod tests {
         let sql = "CREATE TABLE `t` (`perms` set('read','write','admin'));";
         let out = fix_sql_mysql(sql);
         assert_clean_dsql(&out);
-        assert!(out.sql.to_uppercase().contains("PERMS TEXT"), "set->TEXT, got:\n{}", out.sql);
+        assert!(
+            out.sql.to_uppercase().contains("PERMS TEXT"),
+            "set->TEXT, got:\n{}",
+            out.sql
+        );
     }
 }
