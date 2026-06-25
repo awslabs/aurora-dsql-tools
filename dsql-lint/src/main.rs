@@ -302,8 +302,6 @@ fn run() -> ExitCode {
         return ExitCode::Usage;
     }
 
-    // MySQL is a translate-then-fix dialect: there is no lint-only MySQL path
-    // (the MySQL DDL must be translated to Postgres before it can be checked).
     if args.dialect == Dialect::Mysql && !args.fix {
         eprintln!("Error: --dialect mysql requires --fix (MySQL DDL is translated, not lint-only)");
         return ExitCode::Usage;

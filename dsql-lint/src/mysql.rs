@@ -21,15 +21,9 @@ use crate::lint::{fix_sql, FixOutput};
 
 /// Translate MySQL-dialect DDL to DSQL-compatible SQL.
 ///
-/// Parses with `MySqlDialect`, normalizes MySQL-isms in the AST to
-/// Postgres-shaped nodes, re-emits Postgres SQL, then runs the existing
-/// [`fix_sql`] as the shared DSQL gate. Mirrors [`fix_sql`]'s signature so
-/// callers (the loader's migrate path) pick it by source dialect with no
-/// other change.
-///
-/// If the MySQL parse fails, the input is forwarded to [`fix_sql`] unchanged,
-/// so the caller still gets a `ParseError` diagnostic from the Postgres path
-/// rather than a silent empty result.
+/// Mirrors [`fix_sql`]'s signature for dialect dispatch. On a MySQL parse
+/// failure, forwards to [`fix_sql`] unchanged so the caller still gets a
+/// `ParseError` from the Postgres path rather than a silent empty result.
 pub fn fix_sql_mysql(sql: &str) -> FixOutput {
     // Split first, then parse each statement independently. mysqldump DDL is
     // interleaved with MySQL-only noise (`LOCK TABLES`, `/*!40000 ALTER ...
@@ -86,11 +80,8 @@ fn split_mysql_statements(sql: &str) -> Vec<String> {
     out
 }
 
-/// MySQL-only statements that have no DSQL meaning and must be dropped (rather
-/// than re-emitted into the Postgres `fix_sql`, which would reject them).
-/// `LOCK`/`UNLOCK TABLES` are bulk-load locking; `SET` is session/charset
-/// directives (mysqldump's `/*!40101 SET ... */` preamble). `CREATE TABLE`,
-/// `DROP TABLE` (kept for idempotency), and `CREATE INDEX` are retained.
+/// MySQL-only statements to drop (LOCK/UNLOCK/SET) — Postgres `fix_sql` would
+/// reject them. CREATE TABLE, DROP TABLE, and CREATE INDEX are retained.
 fn is_mysql_only_noise(stmt: &Statement) -> bool {
     matches!(
         stmt,
@@ -98,7 +89,6 @@ fn is_mysql_only_noise(stmt: &Statement) -> bool {
     )
 }
 
-/// Join normalized statements into a single SQL string for `fix_sql`.
 fn join_statements(stmts: &[String]) -> String {
     let mut out = stmts.join(";\n");
     if !out.is_empty() {
@@ -111,8 +101,7 @@ fn join_statements(stmts: &[String]) -> String {
 /// Returns any follow-on statements that must be emitted *after* this one
 /// (e.g. a `CREATE INDEX` lifted out of an inline secondary `KEY`).
 fn normalize_statement(stmt: &mut Statement) -> Vec<Statement> {
-    // DROP TABLE (kept for idempotency) just needs its backtick identifiers
-    // stripped so the Postgres `fix_sql` parse accepts it.
+    // DROP TABLE is kept for idempotency; strip its backtick identifiers.
     if let Statement::Drop { names, .. } = stmt {
         for name in names.iter_mut() {
             unquote_object_name(name);
@@ -192,8 +181,7 @@ fn strip_mysql_column_options(col: &mut sqlparser::ast::ColumnDef) {
     });
 }
 
-/// Whether a column option is MySQL's `AUTO_INCREMENT` (parsed as a
-/// dialect-specific token sequence).
+/// Whether a column option is MySQL's `AUTO_INCREMENT`.
 fn is_auto_increment(option: &ColumnOption) -> bool {
     matches!(option, ColumnOption::DialectSpecific(_))
         && format!("{option}")
@@ -240,7 +228,6 @@ fn object_name_eq_ci(name: &ObjectName, target: &str) -> bool {
         )
 }
 
-/// A bare unsigned numeric literal expression (for sequence CACHE values).
 fn num_expr(n: u64) -> Expr {
     Expr::Value(ValueWithSpan {
         value: Value::Number(n.to_string(), false),
@@ -261,33 +248,24 @@ fn normalize_data_type(ty: &mut DataType) {
         // Unsigned widening: next signed type holds the full unsigned range.
         DataType::SmallIntUnsigned(_) => DataType::Integer(None),
         DataType::IntUnsigned(_) | DataType::IntegerUnsigned(_) => DataType::BigInt(None),
-        // bigint unsigned overflows i64 → NUMERIC (arbitrary precision, stores
-        // the full unsigned range). NOTE: emits bare NUMERIC, not NUMERIC(20,0);
-        // and unsigned types do not add a `CHECK (col >= 0)` invariant. Both
-        // are valid DSQL that store the data; tightening to NUMERIC(20,0) +
-        // CHECK is deferred polish (design phase L4).
+        // bigint unsigned overflows i64 → NUMERIC. Bare NUMERIC (not
+        // NUMERIC(20,0) + CHECK) is deferred polish (L4).
         DataType::BigIntUnsigned(_) => DataType::Numeric(ExactNumberInfo::None),
-        // Signed integers with a MySQL display width (`int(11)`) → drop the
-        // width; Postgres has no integer type modifier.
+        // Postgres has no integer type modifier; drop MySQL display widths.
         DataType::Int(Some(_)) => DataType::Int(None),
         DataType::Integer(Some(_)) => DataType::Integer(None),
         DataType::SmallInt(Some(_)) => DataType::SmallInt(None),
         DataType::BigInt(Some(_)) => DataType::BigInt(None),
-        // DATETIME → TIMESTAMP (without time zone).
         DataType::Datetime(_) => DataType::Timestamp(None, TimezoneInfo::None),
-        // YEAR (parsed as a custom type name) has no DSQL type → INTEGER.
+        // YEAR parses as a custom type name; no DSQL equivalent.
         DataType::Custom(name, _) if object_name_eq_ci(name, "year") => DataType::Integer(None),
-        // ENUM → VARCHAR(255) (CHECK-based value validation is a later
-        // enhancement). SET → TEXT: a many-member set's comma-joined value
-        // can exceed 255 chars, so VARCHAR(255) would truncate.
+        // ENUM → VARCHAR(255), CHECK validation deferred. SET → TEXT (a
+        // comma-joined member list can exceed 255 chars).
         DataType::Enum(_, _) => DataType::Varchar(Some(CharacterLength::IntegerLength {
             length: 255,
             unit: None,
         })),
         DataType::Set(_) => DataType::Text,
-        // Everything else (varchar, char, text, date, time, decimal,
-        // width-less int/bigint/smallint, double, real, json, blob, ...) maps
-        // directly.
         _ => return,
     };
     *ty = replacement;
@@ -346,7 +324,6 @@ fn unquote_constraint(constraint: &mut TableConstraint) {
     }
 }
 
-/// Strip backticks from the identifiers inside one indexed-column expression.
 fn unquote_index_column(col: &mut IndexColumn) {
     if let Expr::Identifier(ident) = &mut col.column.expr {
         unquote_ident(ident);
@@ -578,7 +555,6 @@ mod tests {
             "secondary KEY must become a CREATE INDEX, got:\n{}",
             out.sql
         );
-        // The inline KEY clause must be gone from the CREATE TABLE body.
         assert!(
             !u.contains("KEY IDX_NAME") && !u.contains("KEY `IDX_NAME`"),
             "inline KEY must be lifted out of CREATE TABLE, got:\n{}",
