@@ -308,6 +308,7 @@ fn unquote_constraint(constraint: &mut TableConstraint) {
         }
         TableConstraint::Check(c) => {
             unquote_opt_ident(&mut c.name);
+            unquote_expr(&mut c.expr);
             return;
         }
         // Remaining variants (FulltextOrSpatial, *UsingIndex) carry idents too,
@@ -325,8 +326,39 @@ fn unquote_constraint(constraint: &mut TableConstraint) {
 }
 
 fn unquote_index_column(col: &mut IndexColumn) {
-    if let Expr::Identifier(ident) = &mut col.column.expr {
-        unquote_ident(ident);
+    unquote_expr(&mut col.column.expr);
+}
+
+/// Recursively strip backtick quoting from every identifier in an expression
+/// (CHECK predicates, indexed-column expressions). Covers the shapes a
+/// mysqldump CREATE TABLE realistically emits; unhandled variants are left
+/// as-is for the Postgres `fix_sql` parse to reject explicitly.
+fn unquote_expr(expr: &mut Expr) {
+    match expr {
+        Expr::Identifier(ident) => unquote_ident(ident),
+        Expr::CompoundIdentifier(parts) => parts.iter_mut().for_each(unquote_ident),
+        Expr::Nested(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => unquote_expr(inner),
+        Expr::UnaryOp { expr, .. } => unquote_expr(expr),
+        Expr::BinaryOp { left, right, .. } => {
+            unquote_expr(left);
+            unquote_expr(right);
+        }
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            unquote_expr(expr);
+            unquote_expr(low);
+            unquote_expr(high);
+        }
+        Expr::InList { expr, list, .. } => {
+            unquote_expr(expr);
+            list.iter_mut().for_each(unquote_expr);
+        }
+        Expr::Like { expr, pattern, .. } => {
+            unquote_expr(expr);
+            unquote_expr(pattern);
+        }
+        _ => {}
     }
 }
 
@@ -684,5 +716,164 @@ mod tests {
             out.sql
         );
         assert!(!u.contains("SET @"), "session SET dropped: {}", out.sql);
+    }
+
+    /// FOREIGN KEY backticks (constraint name, FK columns, referenced table and
+    /// columns) must all be stripped so they never reach the Postgres parser.
+    /// The FK itself is removed by the existing fix_sql ForeignKey rule.
+    #[test]
+    fn unquotes_foreign_key_backticks() {
+        let sql = "CREATE TABLE `t` (`id` int, `cid` int, \
+                   CONSTRAINT `fk_c` FOREIGN KEY (`cid`) REFERENCES `other` (`id`));";
+        let out = fix_sql_mysql(sql);
+        assert_clean_dsql(&out);
+    }
+
+    /// A backtick-quoted CHECK constraint name must be unquoted.
+    #[test]
+    fn unquotes_check_constraint_name() {
+        let sql = "CREATE TABLE `t` (`id` int, CONSTRAINT `ck` CHECK (`id` > 0));";
+        let out = fix_sql_mysql(sql);
+        assert_clean_dsql(&out);
+        assert!(
+            out.sql.to_uppercase().contains("CHECK"),
+            "CHECK must survive, got:\n{}",
+            out.sql
+        );
+    }
+
+    /// The small unsigned variants each widen to the next signed type.
+    #[test]
+    fn widens_unsigned_small_integer_variants() {
+        let sql =
+            "CREATE TABLE `t` (`a` tinyint unsigned, `b` smallint unsigned, `c` mediumint unsigned);";
+        let out = fix_sql_mysql(sql);
+        assert_clean_dsql(&out);
+        let u = out.sql.to_uppercase();
+        assert!(
+            u.contains("A SMALLINT"),
+            "tinyint unsigned->SMALLINT:\n{}",
+            out.sql
+        );
+        assert!(
+            u.contains("B INTEGER"),
+            "smallint unsigned->INTEGER:\n{}",
+            out.sql
+        );
+        assert!(
+            u.contains("C INTEGER"),
+            "mediumint unsigned->INTEGER:\n{}",
+            out.sql
+        );
+    }
+
+    /// Unsigned widening and display-width dropping compose on one column.
+    #[test]
+    fn widens_unsigned_with_display_width() {
+        let out = fix_sql_mysql("CREATE TABLE `t` (`x` int(11) unsigned);");
+        assert_clean_dsql(&out);
+        assert!(
+            out.sql.to_uppercase().contains("X BIGINT"),
+            "int(11) unsigned->BIGINT:\n{}",
+            out.sql
+        );
+    }
+
+    /// A session `SET` is dropped but a following CREATE TABLE is kept.
+    #[test]
+    fn drops_session_set_keeps_create_table() {
+        let out = fix_sql_mysql("SET NAMES utf8mb4; CREATE TABLE t (id INT);");
+        let u = out.sql.to_uppercase();
+        assert!(
+            u.contains("CREATE TABLE"),
+            "CREATE TABLE kept:\n{}",
+            out.sql
+        );
+        assert!(!u.contains("SET NAMES"), "SET dropped:\n{}", out.sql);
+    }
+
+    /// Input that is only MySQL-only noise yields empty output, no diagnostics.
+    #[test]
+    fn noise_only_input_yields_empty_output() {
+        let out = fix_sql_mysql("LOCK TABLES t WRITE; UNLOCK TABLES;");
+        assert!(out.sql.trim().is_empty(), "expected empty:\n{}", out.sql);
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| matches!(d.rule, crate::LintRule::ParseError)),
+            "no ParseError on noise-only input: {:?}",
+            out.diagnostics
+        );
+    }
+
+    /// Empty input round-trips to empty output with no diagnostics.
+    #[test]
+    fn empty_input_yields_empty_output() {
+        let out = fix_sql_mysql("");
+        assert!(out.sql.is_empty());
+        assert!(out.diagnostics.is_empty());
+    }
+
+    /// An anonymous secondary `KEY (col)` lifts to an unnamed CREATE INDEX
+    /// (DSQL auto-names it).
+    #[test]
+    fn lifts_anonymous_secondary_key() {
+        let out =
+            fix_sql_mysql("CREATE TABLE t (id INT PRIMARY KEY, name VARCHAR(50), KEY (name));");
+        assert_clean_dsql(&out);
+        let u = out.sql.to_uppercase();
+        assert!(
+            u.contains("CREATE INDEX"),
+            "anonymous KEY lifted:\n{}",
+            out.sql
+        );
+        assert!(
+            u.contains("ON T(NAME)"),
+            "index references t(name):\n{}",
+            out.sql
+        );
+    }
+
+    /// Backticks in a composite PRIMARY KEY column list are all stripped.
+    #[test]
+    fn composite_primary_key_unquoted() {
+        let out = fix_sql_mysql(
+            "CREATE TABLE `t` (`a` int NOT NULL, `b` int NOT NULL, PRIMARY KEY (`a`, `b`));",
+        );
+        assert_clean_dsql(&out);
+        assert!(
+            out.sql.to_uppercase().contains("PRIMARY KEY (A, B)"),
+            "composite PK columns unquoted:\n{}",
+            out.sql
+        );
+    }
+
+    /// A db-qualified backtick table name (`db`.`t`) is unquoted in both
+    /// CREATE TABLE and DROP TABLE.
+    #[test]
+    fn unquotes_db_qualified_table_name() {
+        let out = fix_sql_mysql("CREATE TABLE `db`.`t` (id int); DROP TABLE `db`.`t`;");
+        assert!(!out.sql.contains('`'), "backticks gone:\n{}", out.sql);
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| matches!(d.rule, crate::LintRule::ParseError)),
+            "no ParseError: {:?}",
+            out.diagnostics
+        );
+    }
+
+    /// Multiple CREATE TABLEs in one input are each translated.
+    #[test]
+    fn multiple_create_tables_each_translated() {
+        let out =
+            fix_sql_mysql("CREATE TABLE `t1` (`id` int); CREATE TABLE `t2` (`id` int, `ref` int);");
+        assert_clean_dsql(&out);
+        assert_eq!(
+            out.sql.to_uppercase().matches("CREATE TABLE").count(),
+            2,
+            "both tables translated:\n{}",
+            out.sql
+        );
     }
 }
