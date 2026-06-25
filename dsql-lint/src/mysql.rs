@@ -266,6 +266,16 @@ fn normalize_data_type(ty: &mut DataType) {
             unit: None,
         })),
         DataType::Set(_) => DataType::Text,
+        // Binary/BLOB family → BYTEA (DSQL has no BLOB/BINARY/VARBINARY).
+        DataType::Blob(_)
+        | DataType::TinyBlob
+        | DataType::MediumBlob
+        | DataType::LongBlob
+        | DataType::Binary(_)
+        | DataType::Varbinary(_) => DataType::Bytea,
+        // bit(1) is MySQL's other boolean spelling; wider bit → BYTEA.
+        DataType::Bit(Some(1)) => DataType::Boolean,
+        DataType::Bit(_) | DataType::BitVarying(_) => DataType::Bytea,
         _ => return,
     };
     *ty = replacement;
@@ -420,6 +430,9 @@ mod tests {
             "TINYINT",
             "MEDIUMINT",
             " YEAR",
+            "BLOB",
+            "VARBINARY",
+            "BINARY",
         ] {
             assert!(
                 !u.contains(banned),
@@ -875,5 +888,24 @@ mod tests {
             "both tables translated:\n{}",
             out.sql
         );
+    }
+
+    /// Binary/BLOB family → BYTEA, bit(1) → BOOLEAN. DSQL has no BLOB/BINARY/
+    /// VARBINARY/BIT — a real cluster rejects `BLOB` (caught by the cluster
+    /// test's binary-types probe).
+    #[test]
+    fn maps_binary_and_bit_types() {
+        let sql = "CREATE TABLE `t` (`d` blob, `b` binary(16), `vb` varbinary(255), \
+                   `flag` bit(1), `mask` bit(8));";
+        let out = fix_sql_mysql(sql);
+        assert_clean_dsql(&out);
+        let u = out.sql.to_uppercase();
+        assert_eq!(
+            u.matches("BYTEA").count(),
+            4,
+            "blob/binary/varbinary/bit(8)->BYTEA:\n{}",
+            out.sql
+        );
+        assert!(u.contains("FLAG BOOLEAN"), "bit(1)->BOOLEAN:\n{}", out.sql);
     }
 }
