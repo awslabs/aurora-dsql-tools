@@ -15,7 +15,7 @@ use sqlparser::ast::{
 };
 use sqlparser::dialect::MySqlDialect;
 use sqlparser::parser::Parser;
-use sqlparser::tokenizer::Span;
+use sqlparser::tokenizer::{Span, Token, Tokenizer};
 
 use crate::lint::{fix_sql, FixOutput};
 
@@ -31,21 +31,71 @@ use crate::lint::{fix_sql, FixOutput};
 /// so the caller still gets a `ParseError` diagnostic from the Postgres path
 /// rather than a silent empty result.
 pub fn fix_sql_mysql(sql: &str) -> FixOutput {
-    let parsed = match Parser::parse_sql(&MySqlDialect {}, sql) {
-        Ok(stmts) => stmts,
-        Err(_) => return fix_sql(sql),
-    };
-
+    // Split first, then parse each statement independently. mysqldump DDL is
+    // interleaved with MySQL-only noise (`LOCK TABLES`, `/*!40000 ALTER ...
+    // DISABLE KEYS */`, session `SET @var`) that sqlparser cannot represent —
+    // a whole-buffer `parse_sql` aborts on the first such statement and would
+    // throw away every good translation. Per-statement parsing lets us drop
+    // the noise and keep the CREATE TABLEs.
     let mut normalized: Vec<String> = Vec::new();
-    for mut stmt in parsed {
-        // A CREATE TABLE may emit follow-on statements (lifted CREATE INDEX
-        // for each secondary KEY/INDEX), which must come after the table.
-        let extra = normalize_statement(&mut stmt);
-        normalized.push(format!("{stmt}"));
-        normalized.extend(extra.into_iter().map(|s| format!("{s}")));
+    for stmt_sql in split_mysql_statements(sql) {
+        let mut parsed = match Parser::parse_sql(&MySqlDialect {}, &stmt_sql) {
+            Ok(p) => p,
+            // Unparseable → MySQL-only noise with no DSQL equivalent; drop it.
+            Err(_) => continue,
+        };
+        for stmt in &mut parsed {
+            if is_mysql_only_noise(stmt) {
+                continue;
+            }
+            let extra = normalize_statement(stmt);
+            normalized.push(format!("{stmt}"));
+            normalized.extend(extra.into_iter().map(|s| format!("{s}")));
+        }
     }
 
     fix_sql(&join_statements(&normalized))
+}
+
+/// Split a MySQL DDL string into individual statement texts on top-level `;`,
+/// using the MySQL tokenizer so a `;` inside a string/backtick/comment is not
+/// a boundary. Returns the trimmed, non-empty statement texts.
+fn split_mysql_statements(sql: &str) -> Vec<String> {
+    let dialect = MySqlDialect {};
+    let Ok(tokens) = Tokenizer::new(&dialect, sql).tokenize() else {
+        // Tokenize failure is rare for DDL; fall back to the whole string so
+        // the caller still attempts a parse (and drops it if unparseable).
+        return vec![sql.to_string()];
+    };
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for tok in tokens {
+        match tok {
+            Token::SemiColon => {
+                if !current.trim().is_empty() {
+                    out.push(current.trim().to_string());
+                }
+                current.clear();
+            }
+            other => current.push_str(&other.to_string()),
+        }
+    }
+    if !current.trim().is_empty() {
+        out.push(current.trim().to_string());
+    }
+    out
+}
+
+/// MySQL-only statements that have no DSQL meaning and must be dropped (rather
+/// than re-emitted into the Postgres `fix_sql`, which would reject them).
+/// `LOCK`/`UNLOCK TABLES` are bulk-load locking; `SET` is session/charset
+/// directives (mysqldump's `/*!40101 SET ... */` preamble). `CREATE TABLE`,
+/// `DROP TABLE` (kept for idempotency), and `CREATE INDEX` are retained.
+fn is_mysql_only_noise(stmt: &Statement) -> bool {
+    matches!(
+        stmt,
+        Statement::LockTables { .. } | Statement::UnlockTables | Statement::Set(_)
+    )
 }
 
 /// Join normalized statements into a single SQL string for `fix_sql`.
@@ -61,6 +111,14 @@ fn join_statements(stmts: &[String]) -> String {
 /// Returns any follow-on statements that must be emitted *after* this one
 /// (e.g. a `CREATE INDEX` lifted out of an inline secondary `KEY`).
 fn normalize_statement(stmt: &mut Statement) -> Vec<Statement> {
+    // DROP TABLE (kept for idempotency) just needs its backtick identifiers
+    // stripped so the Postgres `fix_sql` parse accepts it.
+    if let Statement::Drop { names, .. } = stmt {
+        for name in names.iter_mut() {
+            unquote_object_name(name);
+        }
+        return Vec::new();
+    }
     let Statement::CreateTable(ct) = stmt else {
         return Vec::new();
     };
@@ -616,5 +674,39 @@ mod tests {
             "set->TEXT, got:\n{}",
             out.sql
         );
+    }
+
+    /// A full mysqldump DDL section carries noise around the CREATE TABLE:
+    /// `DROP TABLE IF EXISTS` (with backticks), session `SET @var`, executable
+    /// `/*! ... */` comments, and `LOCK`/`UNLOCK TABLES`. These are MySQL-only
+    /// and must not surface as ParseErrors — the CREATE TABLE translates, the
+    /// noise is dropped (DROP TABLE is kept for idempotency, backticks gone).
+    #[test]
+    fn strips_mysqldump_noise_around_create_table() {
+        let sql = "DROP TABLE IF EXISTS `users`;\n\
+                   /*!40101 SET @saved_cs_client = @@character_set_client */;\n\
+                   CREATE TABLE `users` (`id` int NOT NULL AUTO_INCREMENT, PRIMARY KEY (`id`)) ENGINE=InnoDB;\n\
+                   /*!40101 SET character_set_client = @saved_cs_client */;\n\
+                   LOCK TABLES `users` WRITE;\n\
+                   UNLOCK TABLES;\n\
+                   /*!40000 ALTER TABLE `users` DISABLE KEYS */;";
+        let out = fix_sql_mysql(sql);
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| matches!(d.rule, crate::LintRule::ParseError)),
+            "mysqldump noise must not produce ParseErrors:\n{}\ndiagnostics: {:?}",
+            out.sql,
+            out.diagnostics
+        );
+        assert!(!out.sql.contains('`'), "backticks gone: {}", out.sql);
+        let u = out.sql.to_uppercase();
+        assert!(u.contains("CREATE TABLE"), "CREATE TABLE kept: {}", out.sql);
+        assert!(
+            !u.contains("LOCK TABLES") && !u.contains("UNLOCK"),
+            "LOCK/UNLOCK dropped: {}",
+            out.sql
+        );
+        assert!(!u.contains("SET @"), "session SET dropped: {}", out.sql);
     }
 }
