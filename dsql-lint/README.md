@@ -132,7 +132,7 @@ What it translates:
 - **Column options** — per-column `CHARACTER SET`/`COLLATE`/`COMMENT` and `ON UPDATE CURRENT_TIMESTAMP` are dropped (`DEFAULT CURRENT_TIMESTAMP` is kept; replicate auto-update in the application layer).
 - **Out of scope** — triggers, views, functions/procedures, and MySQL-specific extensions (`FULLTEXT`/spatial indexes and types). `dsql-lint` handles `CREATE TABLE`/`DROP TABLE` and column definitions; other statements (`LOCK TABLES`, session `SET`, executable `/*! ... */` directives) are dropped as noise.
 
-> Like the Postgres path, this is DSQL-_accepted_ SQL, not a semantics-preserving transpile — review every `WARNING`. Some refinements are intentionally not yet applied: `bigint unsigned` maps to bare `NUMERIC` (not `NUMERIC(20,0)`), unsigned columns get no `CHECK (col >= 0)` invariant, and `enum`/`set` get no value-validation `CHECK`. All produce valid DSQL that stores the data.
+> As with the Postgres path, `FIXED` means the rewrite is faithful and `WARNING` means it changed behavior you must review. A value-preserving translation (backtick stripping, `datetime` → `TIMESTAMP`, `tinyint(1)` → `BOOLEAN`, `blob` → `BYTEA`, dropping cosmetic `ENGINE=`/`CHARSET`) is silent. A lossy one emits a `WARNING`: `enum`/`set` → `VARCHAR`/`TEXT` drops the allowed-values constraint, unsigned → a signed type drops the non-negative invariant (`bigint unsigned` → bare `NUMERIC`, no range `CHECK`), `AUTO_INCREMENT` → identity leaves the sequence unseeded, and a dropped `ON UPDATE CURRENT_TIMESTAMP` stops auto-updating the column. Review every `WARNING` before applying the migration.
 
 ### JSON output
 
