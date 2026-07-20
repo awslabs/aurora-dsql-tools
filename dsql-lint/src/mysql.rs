@@ -413,10 +413,11 @@ fn normalize_data_type(ty: &mut DataType, col_name: &str, diags: &mut Vec<Diagno
         // tiny/medium/longtext have no Postgres spelling → TEXT (faithful).
         DataType::TinyText | DataType::MediumText | DataType::LongText => DataType::Text,
         // Floating point: DSQL has no MySQL `DOUBLE`/`DOUBLE(m,d)` spelling and
-        // rejects the `UNSIGNED` modifier. Drop the modifier and the (m,d)
-        // display precision (Postgres float types take no scale). Faithful.
-        DataType::Double(_) | DataType::DoublePrecisionUnsigned => DataType::DoublePrecision,
-        DataType::DoubleUnsigned(_) => {
+        // rejects the `UNSIGNED` modifier. Map to DOUBLE PRECISION, dropping the
+        // (m,d) display precision (Postgres float types take no scale). The
+        // signed form is faithful; the unsigned forms drop the ≥0 invariant.
+        DataType::Double(_) => DataType::DoublePrecision,
+        DataType::DoubleUnsigned(_) | DataType::DoublePrecisionUnsigned => {
             diags.push(unsigned_warning(col_name, "DOUBLE PRECISION"));
             DataType::DoublePrecision
         }
@@ -454,14 +455,15 @@ fn float_info(info: &ExactNumberInfo) -> ExactNumberInfo {
     }
 }
 
-/// Warning for an unsigned-integer column widened to a signed DSQL type: the
-/// widened type holds the range, but the non-negative invariant is dropped.
+/// Warning for an unsigned numeric column mapped to a signed DSQL type: the
+/// target holds the range, but the non-negative invariant is dropped (DSQL has
+/// no `UNSIGNED`, and no `CHECK (col >= 0)` is added).
 fn unsigned_warning(col_name: &str, target: &str) -> Diagnostic {
     warn(
         LintRule::MysqlUnsignedWidened,
-        "Unsigned integer widened to a signed DSQL type.",
+        "Unsigned numeric type mapped to a signed DSQL type.",
         format!(
-            "Column `{col_name}`: an unsigned integer became {target}; DSQL has no UNSIGNED, and no              CHECK (col >= 0) is added, so negative values MySQL rejected are now storable."
+            "Column `{col_name}`: an unsigned numeric type became {target}; DSQL has no UNSIGNED, and no              CHECK (col >= 0) is added, so negative values MySQL rejected are now storable."
         ),
     )
 }
@@ -1175,5 +1177,128 @@ mod tests {
             out.sql
         );
         assert!(u.contains("FLAG BOOLEAN"), "bit(1)->BOOLEAN:\n{}", out.sql);
+    }
+
+    /// Float family: `double`/`double(m,d)` → DOUBLE PRECISION, `float(m,d)` →
+    /// bare FLOAT, `*text` → TEXT. The lenient PG parser accepts MySQL
+    /// `DOUBLE`/`FLOAT(m,d)`/`LONGTEXT` verbatim, so a missing arm passes the
+    /// parse but fails on a real cluster.
+    #[test]
+    fn maps_float_and_text_families() {
+        let sql = "CREATE TABLE `t` (`a` double, `b` double(10,2), `c` float(10,2), \
+                   `d` longtext, `e` mediumtext, `f` tinytext);";
+        let out = fix_sql_mysql(sql);
+        assert_clean_dsql(&out);
+        let u = out.sql.to_uppercase();
+        assert_eq!(
+            u.matches("DOUBLE PRECISION").count(),
+            2,
+            "double/double(m,d)->DOUBLE PRECISION:\n{}",
+            out.sql
+        );
+        assert!(
+            !u.contains("(10,2)"),
+            "float display (m,d) dropped:\n{}",
+            out.sql
+        );
+        assert_eq!(u.matches(" TEXT").count(), 3, "*text->TEXT:\n{}", out.sql);
+    }
+
+    /// Unsigned exact-numeric (`decimal(m,d) unsigned`) and `double unsigned`
+    /// drop the `UNSIGNED` DSQL rejects and warn the non-negative invariant is
+    /// lost.
+    #[test]
+    fn drops_unsigned_on_decimal_and_double() {
+        let out =
+            fix_sql_mysql("CREATE TABLE `t` (`a` decimal(10,2) unsigned, `b` double unsigned);");
+        assert_clean_dsql(&out);
+        assert!(
+            has_warning(&out, "no UNSIGNED"),
+            "unsigned decimal/double warns:\n{:?}",
+            out.diagnostics
+        );
+    }
+
+    /// A `CREATE TABLE` the MySQL dialect can't parse (e.g. `int zerofill`) must
+    /// NOT vanish silently — it is forwarded so fix_sql reports a ParseError.
+    #[test]
+    fn unparseable_create_table_surfaces_parse_error() {
+        let out = fix_sql_mysql("CREATE TABLE zf (c int zerofill);");
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| matches!(d.rule, crate::LintRule::ParseError)),
+            "unparseable CREATE TABLE must surface a ParseError, not vanish:\n{}\n{:?}",
+            out.sql,
+            out.diagnostics
+        );
+    }
+
+    /// A good table beside an unparseable one still translates; the bad one is
+    /// reported, not dropped along with the good output.
+    #[test]
+    fn unparseable_table_does_not_drop_sibling() {
+        let out = fix_sql_mysql("CREATE TABLE good (id int); CREATE TABLE zf (c int zerofill);");
+        assert!(
+            out.sql.to_uppercase().contains("GOOD"),
+            "good table survives:\n{}",
+            out.sql
+        );
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| matches!(d.rule, crate::LintRule::ParseError)),
+            "bad table still reported:\n{:?}",
+            out.diagnostics
+        );
+    }
+
+    /// mysqldump `ALTER ... DISABLE KEYS` noise fails to parse but is not a
+    /// CREATE TABLE, so the parse-failure forwarding must leave it dropped, not
+    /// resurrect it as a spurious ParseError.
+    #[test]
+    fn disable_keys_noise_stays_dropped() {
+        let sql = "CREATE TABLE `t` (`id` int, PRIMARY KEY (`id`)) ENGINE=InnoDB;\n\
+                   /*!40000 ALTER TABLE `t` DISABLE KEYS */;";
+        let out = fix_sql_mysql(sql);
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| matches!(d.rule, crate::LintRule::ParseError)),
+            "DISABLE KEYS noise must not produce a ParseError:\n{}\n{:?}",
+            out.sql,
+            out.diagnostics
+        );
+    }
+
+    /// A backtick identifier inside a generated-column expression is unquoted,
+    /// not re-emitted with backticks (which the PG parser rejects).
+    #[test]
+    fn unquotes_generated_column_expr() {
+        let out = fix_sql_mysql(
+            "CREATE TABLE `t` (`a` int, `b` int GENERATED ALWAYS AS (`a` + 1) STORED);",
+        );
+        assert_clean_dsql(&out);
+    }
+
+    /// AUTO_INCREMENT with an explicit DEFAULT drops the DEFAULT: a column can't
+    /// carry both DEFAULT and GENERATED AS IDENTITY.
+    #[test]
+    fn auto_increment_drops_conflicting_default() {
+        let out = fix_sql_mysql(
+            "CREATE TABLE `t` (`id` int NOT NULL DEFAULT 7 AUTO_INCREMENT, PRIMARY KEY (`id`));",
+        );
+        assert_clean_dsql(&out);
+        let u = out.sql.to_uppercase();
+        assert!(
+            u.contains("GENERATED BY DEFAULT AS IDENTITY"),
+            "identity present:\n{}",
+            out.sql
+        );
+        assert!(
+            !u.contains("DEFAULT 7"),
+            "conflicting DEFAULT dropped:\n{}",
+            out.sql
+        );
     }
 }
