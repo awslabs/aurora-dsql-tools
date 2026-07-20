@@ -584,30 +584,6 @@ fn check_alter_table_operations(
                     suggestion: "Add NOT NULL at table creation time.",
                     needle: "not null",
                 },
-                AlterColumnOperation::DropNotNull => UnsupportedOp {
-                    rule: LintRule::AtUnsupportedAlterColumnDropNotNull,
-                    msg: format!(
-                        "ALTER COLUMN '{column_name}' DROP NOT NULL is not supported in DSQL."
-                    ),
-                    suggestion: "Recreate the table if needed.",
-                    needle: "not null",
-                },
-                AlterColumnOperation::SetDefault { .. } => UnsupportedOp {
-                    rule: LintRule::AtUnsupportedAlterColumnSetDefault,
-                    msg: format!(
-                        "ALTER COLUMN '{column_name}' SET DEFAULT is not supported in DSQL."
-                    ),
-                    suggestion: "Set default at table creation time.",
-                    needle: "set default",
-                },
-                AlterColumnOperation::DropDefault => UnsupportedOp {
-                    rule: LintRule::AtUnsupportedAlterColumnDropDefault,
-                    msg: format!(
-                        "ALTER COLUMN '{column_name}' DROP DEFAULT is not supported in DSQL."
-                    ),
-                    suggestion: "Recreate the table if needed.",
-                    needle: "drop default",
-                },
                 AlterColumnOperation::AddGenerated { .. } => UnsupportedOp {
                     rule: LintRule::AtUnsupportedAlterColumnAddGenerated,
                     msg: format!(
@@ -616,6 +592,10 @@ fn check_alter_table_operations(
                     suggestion: "Define identity columns at table creation time.",
                     needle: "identity",
                 },
+                // Supported by DSQL — not flagged.
+                AlterColumnOperation::DropNotNull
+                | AlterColumnOperation::SetDefault { .. }
+                | AlterColumnOperation::DropDefault => continue,
             },
             AlterTableOperation::AddConstraint { constraint, .. } => match constraint {
                 TableConstraint::Check(_) => UnsupportedOp {

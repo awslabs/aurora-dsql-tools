@@ -68,9 +68,6 @@ pub enum LintRule {
     AtUnsupportedDropColumn,
     AtUnsupportedAlterColumnSetType,
     AtUnsupportedAlterColumnSetNotNull,
-    AtUnsupportedAlterColumnDropNotNull,
-    AtUnsupportedAlterColumnSetDefault,
-    AtUnsupportedAlterColumnDropDefault,
     AtUnsupportedAlterColumnAddGenerated,
     AtUnsupportedAddCheck,
     AtUnsupportedAddPrimaryKey,
@@ -983,12 +980,9 @@ ALTER TABLE ONLY public.t ALTER COLUMN id SET DEFAULT nextval('public.t_id_seq':
         );
     }
 
-    /// A `SET DEFAULT nextval('external_seq')` whose CREATE SEQUENCE lives in a
-    /// different file (or wasn't dumped) must NOT be silently collapsed —
-    /// dropping the SET DEFAULT without a replacement would lose the column's
-    /// auto-increment behavior. The collapse skips it; the existing
-    /// per-statement rule (`AtUnsupportedAlterColumnSetDefault`) still flags
-    /// the SET DEFAULT as Unfixable, so the user is told.
+    /// A `SET DEFAULT nextval('external_seq')` whose CREATE SEQUENCE isn't in
+    /// the input must NOT be collapsed into the CREATE TABLE (no matching
+    /// sequence to fold), and the `nextval` default must be preserved verbatim.
     #[test]
     fn test_fix_sql_preserves_cross_file_sequence_default() {
         let sql = "\
@@ -1009,14 +1003,6 @@ ALTER TABLE ONLY public.t ALTER COLUMN id SET DEFAULT nextval('public.external_s
             result.sql.to_lowercase().contains("nextval"),
             "cross-file SET DEFAULT must NOT be silently dropped, got:\n{}",
             result.sql
-        );
-        assert!(
-            result.diagnostics.iter().any(|d| matches!(
-                d.rule,
-                LintRule::AtUnsupportedAlterColumnSetDefault
-            ) && matches!(d.fix_result, FixResult::Unfixable)),
-            "SET DEFAULT should be flagged Unfixable so the user notices, got: {:?}",
-            result.diagnostics
         );
     }
 
@@ -1089,9 +1075,8 @@ ALTER TABLE ONLY public.\"T\" ALTER COLUMN \"Id\" SET DEFAULT nextval('public.\"
     }
 
     /// Multi-op ALTER TABLE bundling SET DEFAULT with sibling operations (here:
-    /// ADD CONSTRAINT … PRIMARY KEY) must NOT collapse — the per-statement
-    /// `AtUnsupportedAlterColumnSetDefault` rule still flags the SET DEFAULT
-    /// Unfixable so the user is told, but the PRIMARY KEY survives untouched.
+    /// ADD CONSTRAINT … PRIMARY KEY) must NOT be collapsed into the SERIAL
+    /// idiom, and the unrelated PRIMARY KEY must survive untouched.
     #[test]
     fn test_fix_sql_serial_idiom_preserves_unrelated_alter_ops() {
         let sql = "\
@@ -1116,14 +1101,6 @@ ADD CONSTRAINT t_pkey PRIMARY KEY (id);
             result.sql.to_uppercase().contains("PRIMARY KEY"),
             "the unrelated ADD CONSTRAINT t_pkey PRIMARY KEY must survive, got:\n{}",
             result.sql
-        );
-        assert!(
-            result.diagnostics.iter().any(|d| matches!(
-                d.rule,
-                LintRule::AtUnsupportedAlterColumnSetDefault
-            ) && matches!(d.fix_result, FixResult::Unfixable)),
-            "SET DEFAULT should be flagged Unfixable, got: {:?}",
-            result.diagnostics
         );
     }
 
