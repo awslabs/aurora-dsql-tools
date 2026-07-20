@@ -21,9 +21,13 @@ use crate::lint::{fix_sql, Diagnostic, FixOutput, FixResult, LintRule};
 
 /// Translate MySQL-dialect DDL to DSQL-compatible SQL.
 ///
-/// Mirrors [`fix_sql`]'s signature for dialect dispatch. On a MySQL parse
-/// failure, forwards to [`fix_sql`] unchanged so the caller still gets a
-/// `ParseError` from the Postgres path rather than a silent empty result.
+/// Mirrors [`fix_sql`]'s signature for dialect dispatch. Parses each statement
+/// independently with `MySqlDialect`: a statement that fails to parse is
+/// dropped as MySQL-only noise *unless* it opens a `CREATE TABLE`, in which
+/// case its raw text is forwarded to [`fix_sql`] so a table sqlparser can't
+/// represent surfaces as a `ParseError` rather than silently vanishing.
+/// Surviving statements are normalized to Postgres-shaped AST and handed to
+/// [`fix_sql`] as the final DSQL gate.
 pub fn fix_sql_mysql(sql: &str) -> FixOutput {
     // Split first, then parse each statement independently. mysqldump DDL is
     // interleaved with MySQL-only noise (`LOCK TABLES`, `/*!40000 ALTER ...
@@ -36,16 +40,25 @@ pub fn fix_sql_mysql(sql: &str) -> FixOutput {
     for stmt_sql in split_mysql_statements(sql) {
         let mut parsed = match Parser::parse_sql(&MySqlDialect {}, &stmt_sql) {
             Ok(p) => p,
-            // Unparseable → MySQL-only noise with no DSQL equivalent; drop it.
-            Err(_) => continue,
+            // A CREATE TABLE we can't parse is a table we can't translate, not
+            // noise — forward it so fix_sql reports a ParseError instead of
+            // silently dropping the table. Everything else that fails to parse
+            // (executable `/*! ... DISABLE KEYS */` directives, vendor
+            // extensions, out-of-scope CREATE VIEW/TRIGGER) is genuine noise.
+            Err(_) => {
+                if opens_create_table(&stmt_sql) {
+                    normalized.push(stmt_sql);
+                }
+                continue;
+            }
         };
         for stmt in &mut parsed {
             if is_mysql_only_noise(stmt) {
                 continue;
             }
             let extra = normalize_statement(stmt, &mut mysql_diags);
-            normalized.push(format!("{stmt}"));
-            normalized.extend(extra.into_iter().map(|s| format!("{s}")));
+            normalized.push(stmt.to_string());
+            normalized.extend(extra.into_iter().map(|s| s.to_string()));
         }
     }
 
@@ -69,6 +82,16 @@ fn warn(rule: LintRule, message: &str, detail: String) -> Diagnostic {
         suggestion: "Review the translated column and adjust downstream expectations.".to_string(),
         fix_result: FixResult::FixedWithWarning(detail),
     }
+}
+
+/// Whether a statement text opens a `CREATE TABLE`. Distinguishes an
+/// untranslatable table (forward it so fix_sql reports a ParseError) from
+/// droppable MySQL noise (`ALTER ... DISABLE KEYS`, executable directives) on a
+/// parse failure. `TEMPORARY`/`IF NOT EXISTS` can sit between the keywords, so
+/// match `CREATE` + a later `TABLE` rather than an exact prefix.
+fn opens_create_table(stmt_sql: &str) -> bool {
+    let head = stmt_sql.trim_start().to_ascii_uppercase();
+    head.starts_with("CREATE") && head.contains("TABLE")
 }
 
 /// Split a MySQL DDL string into individual statement texts on top-level `;`,
@@ -137,6 +160,7 @@ fn normalize_statement(stmt: &mut Statement, diags: &mut Vec<Diagnostic>) -> Vec
         unquote_ident(&mut col.name);
         normalize_data_type(&mut col.data_type, &col_name, diags);
         strip_mysql_column_options(col, &col_name, diags);
+        unquote_column_option_exprs(col);
         normalize_auto_increment(col, &col_name, diags);
     }
     // Lift secondary KEY/INDEX constraints out into separate CREATE INDEX
@@ -173,7 +197,13 @@ fn normalize_auto_increment(
     if !had_auto_increment {
         return;
     }
-    col.options.retain(|opt| !is_auto_increment(&opt.option));
+    // Drop AUTO_INCREMENT and any DEFAULT: a column cannot carry both a DEFAULT
+    // and GENERATED AS IDENTITY (Postgres/DSQL reject the pairing, and the
+    // lenient PG gate won't flag it). MySQL forbids the pairing too, so nothing
+    // faithful is lost.
+    col.options.retain(|opt| {
+        !is_auto_increment(&opt.option) && !matches!(opt.option, ColumnOption::Default(_))
+    });
     col.data_type = DataType::BigInt(None);
     // Lossy: the identity's sequence is NOT seeded to the source's current
     // AUTO_INCREMENT value, so reload/backfill must reset it (setval) or new
@@ -235,6 +265,23 @@ fn strip_mysql_column_options(
                 | ColumnOption::OnUpdate(_)
         )
     });
+}
+
+/// Strip backtick quoting from identifiers inside a column's expression-bearing
+/// options (`DEFAULT <expr>`, `GENERATED ALWAYS AS (<expr>)`). A generated
+/// column referencing another via `` `col` `` would otherwise re-emit the
+/// backtick and fail the Postgres parse.
+fn unquote_column_option_exprs(col: &mut sqlparser::ast::ColumnDef) {
+    for opt in &mut col.options {
+        match &mut opt.option {
+            ColumnOption::Default(expr) => unquote_expr(expr),
+            ColumnOption::Generated {
+                generation_expr: Some(expr),
+                ..
+            } => unquote_expr(expr),
+            _ => {}
+        }
+    }
 }
 
 /// Whether a column option is MySQL's `AUTO_INCREMENT`.
@@ -363,9 +410,48 @@ fn normalize_data_type(ty: &mut DataType, col_name: &str, diags: &mut Vec<Diagno
         // bit(1) is MySQL's other boolean spelling; wider bit → BYTEA.
         DataType::Bit(Some(1)) => DataType::Boolean,
         DataType::Bit(_) | DataType::BitVarying(_) => DataType::Bytea,
+        // tiny/medium/longtext have no Postgres spelling → TEXT (faithful).
+        DataType::TinyText | DataType::MediumText | DataType::LongText => DataType::Text,
+        // Floating point: DSQL has no MySQL `DOUBLE`/`DOUBLE(m,d)` spelling and
+        // rejects the `UNSIGNED` modifier. Drop the modifier and the (m,d)
+        // display precision (Postgres float types take no scale). Faithful.
+        DataType::Double(_) | DataType::DoublePrecisionUnsigned => DataType::DoublePrecision,
+        DataType::DoubleUnsigned(_) => {
+            diags.push(unsigned_warning(col_name, "DOUBLE PRECISION"));
+            DataType::DoublePrecision
+        }
+        DataType::Float(info) => DataType::Float(float_info(info)),
+        DataType::FloatUnsigned(info) => {
+            diags.push(unsigned_warning(col_name, "FLOAT"));
+            DataType::Float(float_info(info))
+        }
+        DataType::Real => DataType::Real,
+        DataType::RealUnsigned => {
+            diags.push(unsigned_warning(col_name, "REAL"));
+            DataType::Real
+        }
+        // Unsigned exact-numeric: DSQL rejects `UNSIGNED`; precision/scale carry
+        // over. Lossy — the non-negative invariant is dropped (no CHECK).
+        DataType::DecimalUnsigned(info) => {
+            diags.push(unsigned_warning(col_name, "DECIMAL"));
+            DataType::Decimal(*info)
+        }
+        DataType::DecUnsigned(info) => {
+            diags.push(unsigned_warning(col_name, "DEC"));
+            DataType::Dec(*info)
+        }
         _ => return,
     };
     *ty = replacement;
+}
+
+/// Postgres accepts `FLOAT(p)` but not MySQL's `FLOAT(m,d)`; keep a lone
+/// precision, drop the (m,d) display form to a bare `FLOAT`.
+fn float_info(info: &ExactNumberInfo) -> ExactNumberInfo {
+    match info {
+        ExactNumberInfo::Precision(p) => ExactNumberInfo::Precision(*p),
+        _ => ExactNumberInfo::None,
+    }
 }
 
 /// Warning for an unsigned-integer column widened to a signed DSQL type: the
@@ -532,6 +618,9 @@ mod tests {
             "BLOB",
             "VARBINARY",
             "BINARY",
+            "TINYTEXT",
+            "MEDIUMTEXT",
+            "LONGTEXT",
         ] {
             assert!(
                 !u.contains(banned),
