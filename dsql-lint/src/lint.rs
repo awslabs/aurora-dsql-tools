@@ -129,6 +129,17 @@ pub enum LintRule {
     // form). See `rules::identity_idiom`.
     IdentityAddGeneratedCollapse,
     AlterColumnSetCompressionStrip,
+    // MySQL → DSQL translation warnings (emitted only by `fix_sql_mysql`).
+    // Each marks a lossy transform whose output is valid DSQL but not
+    // semantically identical to the MySQL source — surfaced as
+    // `FixedWithWarning` so `Fixed` stays reserved for faithful rewrites.
+    MysqlUnsignedWidened,
+    MysqlEnumToVarchar,
+    MysqlSetToText,
+    MysqlAutoIncrementToIdentity,
+    MysqlOnUpdateDropped,
+    MysqlInvalidDefaultDropped,
+    MysqlIndexPrefixDropped,
     ParseError,
 }
 

@@ -44,6 +44,17 @@ dsql-lint --version
 dsql-lint --help
 ```
 
+### Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--fix` | Generate DSQL-compatible SQL instead of lint-only reporting | off (lint only) |
+| `-o`, `--output <path>` | Write fixed SQL to a path (requires `--fix`) | `<input>-fixed.sql` |
+| `--format <text\|json>` | Output format | `text` |
+| `--dialect <postgres\|mysql>` | Source SQL dialect. `mysql` translates mysqldump DDL and requires `--fix` | `postgres` |
+| `--version` | Print version and exit | — |
+| `--help` | Print help and exit | — |
+
 ### Example Output
 
 ```
@@ -99,6 +110,21 @@ Fixed output written to: migration-fixed.sql
 - `FIXED` — mechanical transformation that is equivalent on DSQL
 - `WARNING` — fix applied but behavior changes; review required (e.g. removed foreign key, async index not ready on return, weakened isolation level, widened SERIAL/sequence type)
 - `ERROR (unfixable)` — cannot be auto-fixed, requires manual intervention
+
+### MySQL source DDL (`--dialect mysql`)
+
+`dsql-lint` can translate MySQL DDL (e.g. `mysqldump` `CREATE TABLE` output) into DSQL-compatible SQL. It parses the MySQL dialect, rewrites the MySQL-specific constructs into their PostgreSQL/DSQL equivalents, then runs the same DSQL fix pipeline as the Postgres path.
+
+```bash
+mysqldump --no-data mydb > schema.sql
+dsql-lint --fix --dialect mysql -o schema-dsql.sql schema.sql
+```
+
+> **`--dialect mysql` requires `--fix`.** MySQL DDL must be translated before DSQL can accept it, so there is no lint-only MySQL mode (only the default `postgres` dialect supports lint-only reporting).
+
+> **Out of scope** — triggers, views, functions/procedures, and MySQL-specific extensions (`FULLTEXT`/spatial indexes and types). `dsql-lint` handles `CREATE TABLE`/`DROP TABLE` and column definitions; other statements (`LOCK TABLES`, session `SET`, executable `/*! ... */` directives) are dropped as noise.
+
+As with the Postgres path, `FIXED` means the rewrite is faithful; a lossy translation (e.g. `enum` → `VARCHAR`, unsigned → signed, `AUTO_INCREMENT` → identity) emits a `WARNING` explaining what changed. Review every `WARNING` before applying the migration.
 
 ### JSON output
 
@@ -200,7 +226,7 @@ dsql-lint = "0.1"
 ```
 
 ```rust
-use dsql_lint::{lint_sql, fix_sql};
+use dsql_lint::{lint_sql, fix_sql, fix_sql_mysql};
 
 // Lint: check for compatibility issues
 let diagnostics = lint_sql("CREATE TABLE t (id SERIAL);");
@@ -210,6 +236,10 @@ for d in &diagnostics {
 
 // Fix: get DSQL-compatible SQL
 let output = fix_sql("CREATE TABLE t (id SERIAL);");
+println!("{}", output.sql);
+
+// Translate MySQL (mysqldump) DDL to DSQL-compatible SQL
+let output = fix_sql_mysql("CREATE TABLE `t` (`id` int AUTO_INCREMENT PRIMARY KEY);");
 println!("{}", output.sql);
 ```
 

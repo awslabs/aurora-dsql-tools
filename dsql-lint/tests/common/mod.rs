@@ -711,6 +711,16 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
             "SET COMPRESSION is not supported",
         ),
         LintRule::ParseError => None,
+        // MySQL-translation warnings are emitted only by `fix_sql_mysql` on
+        // MySQL-dialect input; the PG-dialect fixture harness can't exercise
+        // them, and they carry no standalone unfixed→rejected fixture.
+        LintRule::MysqlUnsignedWidened
+        | LintRule::MysqlEnumToVarchar
+        | LintRule::MysqlSetToText
+        | LintRule::MysqlAutoIncrementToIdentity
+        | LintRule::MysqlOnUpdateDropped
+        | LintRule::MysqlInvalidDefaultDropped
+        | LintRule::MysqlIndexPrefixDropped => None,
     }
 }
 
