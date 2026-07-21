@@ -32,9 +32,11 @@ pub fn fix_sql_mysql(sql: &str) -> FixOutput {
     // Per-statement parsing: a whole-buffer parse_sql would abort on the first
     // mysqldump noise statement sqlparser can't represent and throw away every
     // good translation.
-    let mut normalized: Vec<String> = Vec::new();
+    // Each normalized statement keeps its starting line in the original MySQL
+    // source so every diagnostic can point at the input file.
+    let mut normalized: Vec<(String, u64)> = Vec::new();
     let mut mysql_diags: Vec<Diagnostic> = Vec::new();
-    for stmt_sql in split_mysql_statements(sql) {
+    for (stmt_sql, line) in split_mysql_statements(sql) {
         let mut parsed = match Parser::parse_sql(&MySqlDialect {}, &stmt_sql) {
             Ok(p) => p,
             // An unparseable CREATE TABLE is a table we can't translate, not
@@ -43,7 +45,7 @@ pub fn fix_sql_mysql(sql: &str) -> FixOutput {
             // directives, out-of-scope CREATE VIEW/TRIGGER) are genuine noise.
             Err(_) => {
                 if opens_create_table(&stmt_sql) {
-                    normalized.push(stmt_sql);
+                    normalized.push((stmt_sql, line));
                 }
                 continue;
             }
@@ -52,21 +54,43 @@ pub fn fix_sql_mysql(sql: &str) -> FixOutput {
             if is_mysql_only_noise(stmt) {
                 continue;
             }
+            // Stamp this statement's source line onto the warnings it produced
+            // so diagnostics point at the original MySQL file, not line 0.
+            let before = mysql_diags.len();
             let extra = normalize_statement(stmt, &mut mysql_diags);
-            normalized.push(stmt.to_string());
-            normalized.extend(extra.into_iter().map(|s| s.to_string()));
+            for diag in &mut mysql_diags[before..] {
+                diag.line = line as usize;
+            }
+            normalized.push((stmt.to_string(), line));
+            // A lifted CREATE INDEX inherits its CREATE TABLE's source line.
+            normalized.extend(extra.into_iter().map(|s| (s.to_string(), line)));
         }
     }
 
     // Shared DSQL gate, with the MySQL-translation warnings prepended — a
     // lossy transform stays a `FixedWithWarning` the caller must review.
-    let mut out = fix_sql(&join_statements(&normalized));
+    let stmts: Vec<String> = normalized.iter().map(|(s, _)| s.clone()).collect();
+    let mut out = fix_sql(&join_statements(&stmts));
+    // Gate diagnostics carry lines in the re-emitted buffer; remap them to the
+    // source so the whole diagnostics list shares one coordinate system.
+    let mut starts = Vec::with_capacity(stmts.len());
+    let mut next = 1usize;
+    for stmt in &stmts {
+        starts.push(next);
+        next += stmt.lines().count().max(1); // ";\n"-joined: each starts fresh
+    }
+    for diag in &mut out.diagnostics {
+        if let Some(idx) = starts.iter().rposition(|&s| s <= diag.line) {
+            diag.line = normalized[idx].1 as usize;
+        }
+    }
     mysql_diags.extend(out.diagnostics);
     out.diagnostics = mysql_diags;
     out
 }
 
 /// Build a `FixedWithWarning` diagnostic for a lossy MySQL→DSQL transform.
+/// The caller stamps the source line after normalize_statement returns.
 fn warn(rule: LintRule, message: &str, detail: String) -> Diagnostic {
     Diagnostic {
         rule,
@@ -109,29 +133,37 @@ fn opens_create_table(stmt_sql: &str) -> bool {
 
 /// Split a MySQL DDL string into individual statement texts on top-level `;`,
 /// using the MySQL tokenizer so a `;` inside a string/backtick/comment is not
-/// a boundary. Returns the trimmed, non-empty statement texts.
-fn split_mysql_statements(sql: &str) -> Vec<String> {
+/// a boundary. Returns each trimmed, non-empty statement text with its
+/// starting line in the source, so diagnostics can point at the original file.
+fn split_mysql_statements(sql: &str) -> Vec<(String, u64)> {
     let dialect = MySqlDialect {};
-    let Ok(tokens) = Tokenizer::new(&dialect, sql).tokenize() else {
+    let Ok(tokens) = Tokenizer::new(&dialect, sql).tokenize_with_location() else {
         // Tokenize failure is rare for DDL; fall back to the whole string so
         // the caller still attempts a parse (and drops it if unparseable).
-        return vec![sql.to_string()];
+        return vec![(sql.to_string(), 1)];
     };
     let mut out = Vec::new();
     let mut current = String::new();
+    let mut line = 0u64; // 0 = no significant token seen yet
     for tok in tokens {
-        match tok {
+        match tok.token {
             Token::SemiColon => {
                 if !current.trim().is_empty() {
-                    out.push(current.trim().to_string());
+                    out.push((current.trim().to_string(), line.max(1)));
                 }
                 current.clear();
+                line = 0;
             }
-            other => current.push_str(&other.to_string()),
+            other => {
+                if line == 0 && !matches!(other, Token::Whitespace(_)) {
+                    line = tok.span.start.line;
+                }
+                current.push_str(&other.to_string());
+            }
         }
     }
     if !current.trim().is_empty() {
-        out.push(current.trim().to_string());
+        out.push((current.trim().to_string(), line.max(1)));
     }
     out
 }
@@ -178,11 +210,18 @@ fn normalize_statement(stmt: &mut Statement, diags: &mut Vec<Diagnostic>) -> Vec
         // declared type, so skip normalize_data_type — otherwise a type like
         // `bigint unsigned` would emit a "widened to NUMERIC" warning that
         // contradicts the BIGINT the identity rewrite actually produces.
+        // bit(N)'s declared width is erased by the BYTEA rewrite but still
+        // needed to pad a recast DEFAULT literal; capture it first.
+        let bit_width = match col.data_type {
+            DataType::Bit(w) => w,
+            _ => None,
+        };
         if col.options.iter().any(|opt| is_auto_increment(&opt.option)) {
             normalize_auto_increment(col, &col_name, diags);
         } else {
             normalize_data_type(&mut col.data_type, &col_name, diags);
         }
+        normalize_default(col, &col_name, bit_width, diags);
         strip_mysql_column_options(col, &col_name, diags);
         unquote_column_option_exprs(col);
     }
@@ -196,7 +235,7 @@ fn normalize_statement(stmt: &mut Statement, diags: &mut Vec<Diagnostic>) -> Vec
             extra.push(lift_index(&table, idx));
             false
         } else {
-            unquote_constraint(constraint);
+            unquote_constraint(constraint, diags);
             true
         }
     });
@@ -282,6 +321,140 @@ fn strip_mysql_column_options(
     });
 }
 
+/// Recast a column's DEFAULT after the type rewrite. Postgres type-checks
+/// DEFAULT against the column type at CREATE time (MySQL doesn't), so a
+/// default valid for the MySQL type can fail the whole CREATE TABLE. For
+/// rewritten BOOLEAN/BYTEA columns only defaults provably valid survive:
+/// recast where possible, dropped + warned otherwise — a shape we don't
+/// recognize (`DEFAULT -1`, `DEFAULT (0)`) is invalid DSQL that the lenient
+/// PG gate cannot catch. Date/time columns drop MySQL zero-date sentinels.
+fn normalize_default(
+    col: &mut sqlparser::ast::ColumnDef,
+    col_name: &str,
+    bit_width: Option<u64>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let is_bool = matches!(col.data_type, DataType::Boolean);
+    let is_bytea = matches!(col.data_type, DataType::Bytea);
+    let is_datetime = matches!(
+        col.data_type,
+        DataType::Timestamp(_, _) | DataType::Date | DataType::Time(_, _)
+    );
+    let mut drop_default = false;
+    for opt in &mut col.options {
+        let ColumnOption::Default(expr) = &mut opt.option else {
+            continue;
+        };
+        if is_bool {
+            drop_default |= !recast_bool_default(expr);
+        } else if is_bytea {
+            drop_default |= !recast_bytea_default(expr, bit_width);
+        } else if is_datetime {
+            if let Expr::Value(v) = expr {
+                if let Value::SingleQuotedString(s) = &v.value {
+                    drop_default |= has_zero_date_segment(s);
+                }
+            }
+        }
+    }
+    if drop_default {
+        diags.push(warn(
+            LintRule::MysqlInvalidDefaultDropped,
+            "DEFAULT dropped: the MySQL default is invalid for the DSQL column type.",
+            format!(
+                "Column `{col_name}`: the DEFAULT was removed because it cannot be represented \
+                 in the translated DSQL type (e.g. a zero-date, or a non-0/1 boolean). \
+                 Set an explicit default or handle it in application code."
+            ),
+        ));
+        col.options
+            .retain(|opt| !matches!(opt.option, ColumnOption::Default(_)));
+    }
+}
+
+/// Recast a DEFAULT for a column rewritten to BOOLEAN. Returns false when the
+/// default must be dropped (not provably a boolean value).
+fn recast_bool_default(expr: &mut Expr) -> bool {
+    let Expr::Value(v) = expr else { return false };
+    let recast = match &v.value {
+        Value::Boolean(_) | Value::Null => return true,
+        Value::Number(s, _)
+        | Value::SingleQuotedString(s)
+        | Value::SingleQuotedByteStringLiteral(s) => match s.as_str() {
+            "0" => false,
+            "1" => true,
+            _ => return false,
+        },
+        Value::HexStringLiteral(s) => match u64::from_str_radix(s, 16) {
+            Ok(0) => false,
+            Ok(1) => true,
+            _ => return false,
+        },
+        _ => return false,
+    };
+    v.value = Value::Boolean(recast);
+    true
+}
+
+/// Recast a DEFAULT for a column rewritten to BYTEA: MySQL bit literals
+/// (`b'10'`) and hex literals (`0x02`) become bytea hex input (`'\x02'`) —
+/// re-emitted verbatim they'd be Postgres *bit-string* literals, type-
+/// incompatible with bytea. Returns false when the default must be dropped.
+fn recast_bytea_default(expr: &mut Expr, bit_width: Option<u64>) -> bool {
+    let Expr::Value(v) = expr else { return false };
+    // Pad to the declared bit(N) width so DEFAULT-generated rows match
+    // loaded rows byte-for-byte.
+    let min_bytes = bit_width.map_or(1, |w| (w as usize).div_ceil(8));
+    let hex = match &v.value {
+        Value::Null => return true,
+        Value::SingleQuotedByteStringLiteral(bits) => match bits_to_bytea_hex(bits, min_bytes) {
+            Some(hex) => hex,
+            None => return false,
+        },
+        Value::HexStringLiteral(s) => {
+            if s.is_empty() || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return false;
+            }
+            let mut h = s.to_lowercase();
+            if h.len() % 2 == 1 {
+                h.insert(0, '0');
+            }
+            while h.len() < min_bytes * 2 {
+                h.insert_str(0, "00");
+            }
+            format!("\\x{h}")
+        }
+        _ => return false,
+    };
+    v.value = Value::SingleQuotedString(hex);
+    true
+}
+
+/// MySQL zero-in-date sentinels (`0000-00-00`, `2004-00-15`, `2004-01-00`,
+/// allowed when NO_ZERO_IN_DATE is off) are out of range for every Postgres
+/// date/time type.
+fn has_zero_date_segment(s: &str) -> bool {
+    let date: String = s.chars().take(10).collect();
+    date.starts_with("0000-") || date.contains("-00-") || date.ends_with("-00")
+}
+
+/// Convert a MySQL bit-string literal body (`b'00000010'` → `"00000010"`) to
+/// Postgres bytea hex input (`\x02`), MSB-first, zero-padded to at least
+/// `min_bytes`. Returns None for non-binary digits.
+fn bits_to_bytea_hex(bits: &str, min_bytes: usize) -> Option<String> {
+    if bits.is_empty() || !bits.bytes().all(|b| b == b'0' || b == b'1') {
+        return None;
+    }
+    let width = bits.len().div_ceil(8).max(min_bytes) * 8;
+    let padded = format!("{bits:0>width$}");
+    let mut hex = String::from("\\x");
+    for chunk in padded.as_bytes().chunks(8) {
+        let byte = chunk.iter().fold(0u8, |acc, b| (acc << 1) | (b - b'0'));
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    Some(hex)
+}
+
 /// Strip backticks inside a column's expression-bearing options (`DEFAULT
 /// <expr>`, `GENERATED ALWAYS AS (<expr>)`) — they would re-emit and fail the
 /// Postgres parse.
@@ -361,7 +534,9 @@ fn num_expr(n: u64) -> Expr {
 fn normalize_data_type(ty: &mut DataType, col_name: &str, diags: &mut Vec<Diagnostic>) {
     let replacement = match ty {
         // tinyint(1) is MySQL's boolean convention; wider/!=1 → SMALLINT.
-        DataType::TinyInt(Some(1)) => DataType::Boolean,
+        // `bool`/`boolean` are aliases for tinyint(1) in MySQL (mysqldump
+        // normalizes them away, but hand-written DDL keeps them).
+        DataType::TinyInt(Some(1)) | DataType::Bool | DataType::Boolean => DataType::Boolean,
         DataType::TinyInt(_) | DataType::TinyIntUnsigned(_) => DataType::SmallInt(None),
         // No MEDIUMINT in DSQL.
         DataType::MediumInt(_) | DataType::MediumIntUnsigned(_) => DataType::Integer(None),
@@ -487,8 +662,10 @@ fn unsigned_warning(col_name: &str, target: &str) -> Diagnostic {
 }
 
 /// Strip backticks from every identifier a table constraint carries: its
-/// optional constraint/index name and its column list.
-fn unquote_constraint(constraint: &mut TableConstraint) {
+/// optional constraint/index name and its column list. Warns when dropping an
+/// index prefix length changes PRIMARY KEY/UNIQUE semantics: prefix uniqueness
+/// and full-column uniqueness accept different row sets.
+fn unquote_constraint(constraint: &mut TableConstraint, diags: &mut Vec<Diagnostic>) {
     // MySQL writes a table-level unique as `UNIQUE KEY <index_name> (cols)`,
     // which Postgres rejects. Drop the `KEY` display word and promote the
     // index name to the constraint name → `CONSTRAINT <name> UNIQUE (cols)`.
@@ -501,14 +678,17 @@ fn unquote_constraint(constraint: &mut TableConstraint) {
         }
     }
 
-    let (name, index_name, columns): (
+    let (name, index_name, columns, is_uniquifying): (
         &mut Option<Ident>,
         Option<&mut Option<Ident>>,
         &mut [IndexColumn],
+        bool,
     ) = match constraint {
-        TableConstraint::PrimaryKey(c) => (&mut c.name, Some(&mut c.index_name), &mut c.columns),
-        TableConstraint::Unique(c) => (&mut c.name, Some(&mut c.index_name), &mut c.columns),
-        TableConstraint::Index(c) => (&mut c.name, None, &mut c.columns),
+        TableConstraint::PrimaryKey(c) => {
+            (&mut c.name, Some(&mut c.index_name), &mut c.columns, true)
+        }
+        TableConstraint::Unique(c) => (&mut c.name, Some(&mut c.index_name), &mut c.columns, true),
+        TableConstraint::Index(c) => (&mut c.name, None, &mut c.columns, false),
         TableConstraint::ForeignKey(c) => {
             unquote_opt_ident(&mut c.name);
             unquote_object_name(&mut c.foreign_table);
@@ -535,15 +715,33 @@ fn unquote_constraint(constraint: &mut TableConstraint) {
         unquote_opt_ident(index_name);
     }
     for col in columns {
-        unquote_index_column(col);
+        // Dropping a prefix inside PRIMARY KEY/UNIQUE weakens the constraint:
+        // values distinct beyond the first N characters were duplicates in
+        // MySQL but coexist here, so future inserts MySQL would have rejected
+        // now succeed. Plain KEY prefixes stay silent (an index prefix is a
+        // storage detail).
+        if unquote_index_column(col) && is_uniquifying {
+            diags.push(warn(
+                LintRule::MysqlIndexPrefixDropped,
+                "Index prefix length dropped inside a PRIMARY KEY/UNIQUE constraint.",
+                "A `col(N)` prefix in a unique constraint was replaced by the full column: \
+                 MySQL enforced uniqueness on the first N characters, DSQL enforces it on the \
+                 whole value. Existing data reloads fine, but inserts MySQL would have rejected \
+                 as prefix duplicates now succeed — add application-side checks if callers \
+                 depend on the stricter rule."
+                    .to_string(),
+            ));
+        }
     }
 }
 
-fn unquote_index_column(col: &mut IndexColumn) {
+/// Returns true if a MySQL index prefix length was dropped.
+fn unquote_index_column(col: &mut IndexColumn) -> bool {
     // A MySQL index prefix length — `KEY k (name(20))` — parses as a Function
     // call. Postgres has no prefix indexes; index the whole column instead
     // (same query semantics, more storage). Only a single numeric "argument"
     // is a prefix length, so nothing else matches this shape.
+    let mut dropped_prefix = false;
     if let Expr::Function(f) = &col.column.expr {
         if let (
             [ObjectNamePart::Identifier(ident)],
@@ -557,10 +755,12 @@ fn unquote_index_column(col: &mut IndexColumn) {
         ) {
             if matches!(v.value, Value::Number(_, _)) {
                 col.column.expr = Expr::Identifier(ident.clone());
+                dropped_prefix = true;
             }
         }
     }
     unquote_expr(&mut col.column.expr);
+    dropped_prefix
 }
 
 /// Recursively strip backticks from identifiers in an expression (CHECK
@@ -1155,7 +1355,9 @@ mod tests {
     }
 
     /// A MySQL index prefix length (`KEY k (name(20))`) has no Postgres form —
-    /// the prefix is dropped and the whole column indexed.
+    /// the prefix is dropped and the whole column indexed. On a plain KEY
+    /// that's a storage detail (silent); inside UNIQUE/PRIMARY KEY it changes
+    /// which rows collide, so it must warn.
     #[test]
     fn drops_index_prefix_length() {
         let out = fix_sql_mysql(
@@ -1170,6 +1372,196 @@ mod tests {
             out.sql
         );
         assert!(!u.contains("(20)"), "no prefix survives:\n{}", out.sql);
+        assert!(
+            !has_warning(&out, "prefix"),
+            "plain KEY prefix drop is silent:\n{:?}",
+            out.diagnostics
+        );
+
+        let out = fix_sql_mysql(
+            "CREATE TABLE `t` (`id` int NOT NULL, `name` varchar(200), \
+             PRIMARY KEY (`id`), UNIQUE KEY `uk` (`name`(20)));",
+        );
+        assert_clean_dsql(&out);
+        assert!(
+            !out.sql.contains("(20)"),
+            "no prefix survives:\n{}",
+            out.sql
+        );
+        assert!(
+            has_warning(&out, "prefix"),
+            "UNIQUE prefix drop must warn (constraint semantics change):\n{:?}",
+            out.diagnostics
+        );
+    }
+
+    /// After a type rewrite the MySQL DEFAULT literal may be invalid for the
+    /// new Postgres type — Postgres validates at CREATE time, MySQL doesn't.
+    /// 0/1 (bare, quoted, or bit) recast to FALSE/TRUE for BOOLEAN; a bit
+    /// literal becomes bytea hex for BYTEA; zero-dates are dropped + warned.
+    #[test]
+    fn recasts_defaults_for_rewritten_types() {
+        let out = fix_sql_mysql(
+            "CREATE TABLE `t` (\
+             `a` tinyint(1) DEFAULT 0, `b` tinyint(1) NOT NULL DEFAULT '1', \
+             `f` bit(1) DEFAULT b'1', `m` bit(8) DEFAULT b'00000010', \
+             `d` datetime NOT NULL DEFAULT '0000-00-00 00:00:00', \
+             `s` varchar(20) DEFAULT '0000-00-00');",
+        );
+        assert_clean_dsql(&out);
+        let u = out.sql.to_uppercase();
+        assert!(
+            u.contains("A BOOLEAN DEFAULT FALSE"),
+            "0->FALSE:\n{}",
+            out.sql
+        );
+        assert!(
+            u.contains("B BOOLEAN NOT NULL DEFAULT TRUE"),
+            "'1'->TRUE:\n{}",
+            out.sql
+        );
+        assert!(
+            u.contains("F BOOLEAN DEFAULT TRUE"),
+            "b'1'->TRUE:\n{}",
+            out.sql
+        );
+        assert!(
+            out.sql.contains("m BYTEA DEFAULT '\\x02'"),
+            "b'00000010'->bytea hex:\n{}",
+            out.sql
+        );
+        assert!(
+            u.contains("D TIMESTAMP NOT NULL") && !u.contains("0000-00-00 00:00:00"),
+            "zero-date default dropped:\n{}",
+            out.sql
+        );
+        assert!(
+            has_warning(&out, "default was removed"),
+            "zero-date drop warns:\n{:?}",
+            out.diagnostics
+        );
+        assert!(
+            out.sql.contains("s VARCHAR(20) DEFAULT '0000-00-00'"),
+            "a string column's zero-date-looking default is untouched:\n{}",
+            out.sql
+        );
+    }
+
+    /// Default shapes we can't prove valid for the rewritten type — `DEFAULT
+    /// -1` (UnaryOp) or `DEFAULT (0)` (Nested) on BOOLEAN, a bare number on
+    /// BYTEA — are dropped + warned, not emitted as invalid DSQL the lenient
+    /// PG gate can't catch. Hex literals (0x01) recast like bit literals.
+    /// MySQL's `bool` alias and partial zero-dates (`2004-01-00`) work too.
+    #[test]
+    fn unprovable_defaults_dropped_not_emitted() {
+        let out = fix_sql_mysql(
+            "CREATE TABLE `t` (\
+             `a` tinyint(1) DEFAULT -1, `b` tinyint(1) DEFAULT (0), \
+             `c` bit(8) DEFAULT 2, `d` tinyint(1) DEFAULT 0x01, \
+             `e` bit(8) DEFAULT 0x02, `f` bool DEFAULT 0, \
+             `g` date DEFAULT '2004-01-00', `w` bit(16) DEFAULT b'101');",
+        );
+        assert_clean_dsql(&out);
+        let u = out.sql.to_uppercase();
+        for gone in [
+            "DEFAULT -1",
+            "DEFAULT (0)",
+            "C BYTEA DEFAULT 2",
+            "'2004-01-00'",
+        ] {
+            assert!(
+                !u.contains(gone),
+                "unprovable default {gone:?} must be dropped:\n{}",
+                out.sql
+            );
+        }
+        assert!(
+            u.contains("D BOOLEAN DEFAULT TRUE"),
+            "0x01->TRUE:\n{}",
+            out.sql
+        );
+        assert!(
+            out.sql.contains("e BYTEA DEFAULT '\\x02'"),
+            "0x02->bytea hex:\n{}",
+            out.sql
+        );
+        assert!(
+            u.contains("F BOOLEAN DEFAULT FALSE"),
+            "bool alias recasts like tinyint(1):\n{}",
+            out.sql
+        );
+        assert!(
+            out.sql.contains("w BYTEA DEFAULT '\\x0005'"),
+            "b'101' on bit(16) pads to the declared width:\n{}",
+            out.sql
+        );
+        assert_eq!(
+            out.diagnostics
+                .iter()
+                .filter(|d| matches!(d.rule, crate::LintRule::MysqlInvalidDefaultDropped))
+                .count(),
+            4,
+            "each dropped default warns once: {:?}",
+            out.diagnostics
+        );
+    }
+
+    #[test]
+    fn bits_to_bytea_hex_edges() {
+        assert_eq!(bits_to_bytea_hex("00000010", 1).as_deref(), Some("\\x02"));
+        assert_eq!(bits_to_bytea_hex("1", 1).as_deref(), Some("\\x01"));
+        assert_eq!(bits_to_bytea_hex("101", 2).as_deref(), Some("\\x0005"));
+        assert_eq!(
+            bits_to_bytea_hex("1000000000000001", 1).as_deref(),
+            Some("\\x8001")
+        );
+        assert_eq!(bits_to_bytea_hex("", 1), None);
+        assert_eq!(bits_to_bytea_hex("102", 1), None);
+    }
+
+    /// Diagnostics point at the statement's line in the original MySQL file,
+    /// not line 0 or a line in the internal re-emitted buffer. Covers all
+    /// three producers: translation warnings, gate warnings on translated
+    /// statements (ASYNC index), and gate ParseErrors on forwarded
+    /// untranslatable tables.
+    #[test]
+    fn warnings_carry_source_line_numbers() {
+        let out = fix_sql_mysql(
+            "DROP TABLE IF EXISTS `t`;\n\n\
+             CREATE TABLE `t` (`k` enum('a','b'), KEY `i` (`k`));\n\n\
+             CREATE TABLE `u` (`x` int unsigned);\n\n\
+             CREATE TABLE zf (c int zerofill);\n",
+        );
+        let line_of = |rule: fn(&crate::LintRule) -> bool| {
+            out.diagnostics
+                .iter()
+                .find(|d| rule(&d.rule))
+                .map(|d| d.line)
+        };
+        assert_eq!(
+            line_of(|r| matches!(r, crate::LintRule::MysqlEnumToVarchar)),
+            Some(3),
+            "translation warning: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(
+            line_of(|r| matches!(r, crate::LintRule::IndexAsync)),
+            Some(3),
+            "gate warning remapped to the CREATE TABLE's source line: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(
+            line_of(|r| matches!(r, crate::LintRule::MysqlUnsignedWidened)),
+            Some(5),
+            "translation warning: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(
+            line_of(|r| matches!(r, crate::LintRule::ParseError)),
+            Some(7),
+            "forwarded table's ParseError remapped to its source line: {:?}",
+            out.diagnostics
+        );
     }
 
     /// An anonymous secondary `KEY (col)` lifts to an unnamed CREATE INDEX

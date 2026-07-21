@@ -726,7 +726,9 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
         | LintRule::MysqlEnumToVarchar
         | LintRule::MysqlSetToText
         | LintRule::MysqlAutoIncrementToIdentity
-        | LintRule::MysqlOnUpdateDropped => None,
+        | LintRule::MysqlOnUpdateDropped
+        | LintRule::MysqlInvalidDefaultDropped
+        | LintRule::MysqlIndexPrefixDropped => None,
     }
 }
 

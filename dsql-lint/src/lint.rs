@@ -141,6 +141,8 @@ pub enum LintRule {
     MysqlSetToText,
     MysqlAutoIncrementToIdentity,
     MysqlOnUpdateDropped,
+    MysqlInvalidDefaultDropped,
+    MysqlIndexPrefixDropped,
     ParseError,
 }
 
