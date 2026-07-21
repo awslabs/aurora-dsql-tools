@@ -77,7 +77,7 @@ pub enum LintRule {
     AtUnsupportedUniqueUsingIndex,
     AtUnsupportedRowLevelSecurity,
     AtUnsupportedReplicaIdentity,
-    AtUnsupportedValidateConstraint,
+    ValidateConstraintAsync,
     AtUnsupportedRewriteRule,
     // Top-level statement rejections — one variant per arm.
     UnsupportedTempView,
