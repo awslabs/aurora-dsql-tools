@@ -1060,6 +1060,24 @@ const MYSQL_FIX_MATRIX: &[(&str, &str, &str)] = &[
          `vb` varbinary(255), `bit1` bit(1), PRIMARY KEY (`id`)) ENGINE=InnoDB;",
         "DROP TABLE IF EXISTS _my_bin;",
     ),
+    (
+        // PROBE: recast DEFAULTs must type-check at CREATE (DSQL validates the
+        // DEFAULT/type pairing; MySQL doesn't): bare-number/quoted/bit-literal
+        // booleans, bit -> bytea hex, dropped zero-date.
+        "defaults-recast",
+        "CREATE TABLE `_my_def` (`id` int NOT NULL, \
+         `a` tinyint(1) NOT NULL DEFAULT 0, `b` tinyint(1) DEFAULT '1', \
+         `f` bit(1) DEFAULT b'1', `m` bit(8) DEFAULT b'00000010', \
+         `d` datetime NOT NULL DEFAULT '0000-00-00 00:00:00', \
+         PRIMARY KEY (`id`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_def;",
+    ),
+    (
+        "unique-prefix", // UNIQUE KEY with a col(N) prefix -> full-column UNIQUE
+        "CREATE TABLE `_my_pfx` (`id` int NOT NULL, `name` varchar(200), \
+         PRIMARY KEY (`id`), UNIQUE KEY `uk_name` (`name`(20))) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_pfx;",
+    ),
 ];
 
 #[test]
