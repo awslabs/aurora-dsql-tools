@@ -202,11 +202,9 @@ pub(crate) fn split_statements(input: &str) -> Result<Vec<(usize, String)>, Stri
     split_statements_dialect(input, &PostgreSqlDialect {})
 }
 
-/// Dialect-generic statement splitter. The Postgres path uses
-/// [`split_statements`]; `fix_sql_mysql` reuses this with `MySqlDialect` so
-/// MySQL statement text is *sliced from the source bytes* (like the PG path)
-/// rather than rebuilt from tokens — rebuilding double-unescapes string
-/// literals and silently corrupts data (`'it''s'`, backslash paths).
+/// Dialect-generic statement splitter. `fix_sql_mysql` reuses this with
+/// `MySqlDialect` to slice statement text from the source bytes — rebuilding
+/// from tokens double-unescapes string literals and corrupts data.
 pub(crate) fn split_statements_dialect(
     input: &str,
     dialect: &dyn Dialect,
@@ -664,12 +662,9 @@ pub fn fix_sql(sql: &str) -> FixOutput {
 }
 
 /// The DSQL-compatibility gate, entered from already-split `(line, text)`
-/// statements. [`fix_sql`] splits Postgres input and calls this;
-/// `fix_sql_mysql` calls it directly with MySQL-translated statement texts
-/// carrying their *original source* line numbers, so gate diagnostics land on
-/// the right line without a post-hoc remap. Each `stmt_text` is parsed
-/// independently, so one unparseable statement can't disable the gate for the
-/// rest.
+/// statements. `fix_sql_mysql` calls this directly with source line numbers, so
+/// gate diagnostics need no remap. Each statement parses independently, so one
+/// unparseable statement can't disable the gate for the rest.
 pub(crate) fn fix_statements(mut stmts: Vec<(usize, String)>) -> FixOutput {
     let dialect = PostgreSqlDialect {};
     let mut all_diagnostics = Vec::new();
