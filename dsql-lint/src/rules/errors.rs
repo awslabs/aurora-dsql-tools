@@ -469,13 +469,13 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
                     FixResult::Unfixable,
                 ));
             }
-            // VALIDATE CONSTRAINT
+            // VALIDATE CONSTRAINT — supported only with ALTER TABLE ASYNC
             AlterTableOperation::ValidateConstraint { name } => {
                 diagnostics.push(error(
-                    LintRule::AtUnsupportedValidateConstraint,
+                    LintRule::ValidateConstraintAsync,
                     find_line(raw_sql, "validate constraint"),
-                    format!("ALTER TABLE VALIDATE CONSTRAINT '{name}' is not supported in DSQL."),
-                    "Add constraints as valid at creation time.",
+                    format!("VALIDATE CONSTRAINT '{name}' requires the ASYNC keyword in DSQL."),
+                    "Use `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT` instead. The validation runs as an asynchronous DDL job; monitor via sys.jobs.",
                     FixResult::Unfixable,
                 ));
             }

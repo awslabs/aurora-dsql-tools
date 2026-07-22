@@ -549,7 +549,7 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
             "ALTER TABLE _clust_base REPLICA IDENTITY FULL;",
             "REPLICA IDENTITY",
         ),
-        LintRule::AtUnsupportedValidateConstraint => fix(
+        LintRule::ValidateConstraintAsync => fix(
             "ALTER TABLE _clust_base VALIDATE CONSTRAINT _rej_c;",
             "VALIDATE CONSTRAINT",
         ),
