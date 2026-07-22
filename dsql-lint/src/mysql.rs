@@ -7,45 +7,55 @@
 //! Postgres pipeline is untouched: MySQL knowledge lives entirely in the
 //! normalize pass here.
 
+use core::ops::ControlFlow;
+
 use sqlparser::ast::{
-    CharacterLength, ColumnOption, ColumnOptionDef, CreateIndex, CreateTableOptions, DataType,
-    ExactNumberInfo, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, GeneratedAs, Ident,
-    IndexColumn, KeyOrIndexDisplay, ObjectName, ObjectNamePart, SequenceOptions, Statement,
+    visit_expressions_mut, CharacterLength, ColumnOption, CreateIndex, CreateTableOptions,
+    DataType, ExactNumberInfo, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, GeneratedAs,
+    Ident, IndexColumn, KeyOrIndexDisplay, ObjectName, ObjectNamePart, SequenceOptions, Statement,
     TableConstraint, TimezoneInfo, Value, ValueWithSpan,
 };
 use sqlparser::dialect::MySqlDialect;
+use sqlparser::keywords::Keyword;
 use sqlparser::parser::Parser;
 use sqlparser::tokenizer::{Span, Token, Tokenizer};
 
-use crate::lint::{fix_sql, Diagnostic, FixOutput, FixResult, LintRule};
+use crate::lint::{
+    fix_statements, split_statements_dialect, Diagnostic, FixOutput, FixResult, LintRule,
+};
+use crate::rules::errors::identity_with_cache;
 
 /// Translate MySQL-dialect DDL to DSQL-compatible SQL.
 ///
-/// Mirrors [`fix_sql`]'s signature for dialect dispatch. Parses each statement
-/// independently with `MySqlDialect`: a statement that fails to parse is
-/// dropped as MySQL-only noise *unless* it opens a `CREATE TABLE`, in which
-/// case its raw text is forwarded to [`fix_sql`] so a table sqlparser can't
-/// represent surfaces as a `ParseError` rather than silently vanishing.
-/// Surviving statements are normalized to Postgres-shaped AST and handed to
-/// [`fix_sql`] as the final DSQL gate.
+/// Mirrors [`fix_sql`]'s signature for dialect dispatch. The source is split
+/// into statements by *slicing the original bytes* (via
+/// [`split_statements_dialect`] with `MySqlDialect`), never by rebuilding from
+/// tokens — rebuilding double-unescapes string literals and silently corrupts
+/// data. Each statement is parsed independently: a parse failure is dropped as
+/// MySQL-only noise *unless* it opens a `CREATE TABLE`, in which case its raw
+/// text is forwarded so the gate reports a `ParseError` rather than letting the
+/// table vanish. Surviving statements are normalized to Postgres-shaped AST and
+/// handed to [`fix_statements`] as the final DSQL gate — with their *original
+/// source line numbers*, so gate diagnostics need no fragile post-hoc remap.
 pub fn fix_sql_mysql(sql: &str) -> FixOutput {
-    // Per-statement parsing: a whole-buffer parse_sql would abort on the first
-    // mysqldump noise statement sqlparser can't represent and throw away every
-    // good translation.
-    // Each normalized statement keeps its starting line in the original MySQL
-    // source so every diagnostic can point at the input file.
-    let mut normalized: Vec<(String, u64)> = Vec::new();
+    // (source_line, translated_statement_text) pairs fed to the gate. Slicing
+    // from source (not token rebuild) keeps string literals byte-exact.
+    let mut normalized: Vec<(usize, String)> = Vec::new();
     let mut mysql_diags: Vec<Diagnostic> = Vec::new();
-    for (stmt_sql, line) in split_mysql_statements(sql) {
+
+    let stmts = split_statements_dialect(sql, &MySqlDialect {})
+        .unwrap_or_else(|_| vec![(1, sql.to_string())]);
+
+    for (line, stmt_sql) in stmts {
         let mut parsed = match Parser::parse_sql(&MySqlDialect {}, &stmt_sql) {
             Ok(p) => p,
             // An unparseable CREATE TABLE is a table we can't translate, not
-            // noise — forward it so fix_sql reports a ParseError instead of
+            // noise — forward it so the gate reports a ParseError instead of
             // silently dropping the table. Other parse failures (`/*! ... */`
             // directives, out-of-scope CREATE VIEW/TRIGGER) are genuine noise.
             Err(_) => {
                 if opens_create_table(&stmt_sql) {
-                    normalized.push((stmt_sql, line));
+                    normalized.push((line, strip_trailing_semicolon(&stmt_sql)));
                 }
                 continue;
             }
@@ -54,37 +64,38 @@ pub fn fix_sql_mysql(sql: &str) -> FixOutput {
             if is_mysql_only_noise(stmt) {
                 continue;
             }
-            // Stamp this statement's source line onto the warnings it produced
-            // so diagnostics point at the original MySQL file, not line 0.
+            // A DML statement (INSERT/UPDATE/...) is data, not DDL. Its MySQL
+            // string escaping (backslash escapes) has no faithful Postgres
+            // re-emission here, so translating it risks silent corruption.
+            // Drop it and say so — never silently, never mangled. The loader
+            // strips data before calling us; a raw CLI dump gets a clear signal.
+            if is_dml(stmt) {
+                mysql_diags.push(dml_dropped_warning(line, stmt, &stmt_sql));
+                continue;
+            }
             let before = mysql_diags.len();
             let extra = normalize_statement(stmt, &mut mysql_diags);
+            // Stamp this statement's source line and text onto the warnings it
+            // produced, so diagnostics point at the original MySQL file and JSON
+            // consumers get a non-empty statement preview.
             for diag in &mut mysql_diags[before..] {
-                diag.line = line as usize;
+                diag.line = line;
+                diag.statement = stmt_sql.clone();
             }
-            normalized.push((stmt.to_string(), line));
+            normalized.push((line, stmt.to_string()));
             // A lifted CREATE INDEX inherits its CREATE TABLE's source line.
-            normalized.extend(extra.into_iter().map(|s| (s.to_string(), line)));
+            normalized.extend(extra.into_iter().map(|s| (line, s.to_string())));
         }
     }
 
-    // Shared DSQL gate, with the MySQL-translation warnings prepended — a
-    // lossy transform stays a `FixedWithWarning` the caller must review.
-    let stmts: Vec<String> = normalized.iter().map(|(s, _)| s.clone()).collect();
-    let mut out = fix_sql(&join_statements(&stmts));
-    // Gate diagnostics carry lines in the re-emitted buffer; remap them to the
-    // source so the whole diagnostics list shares one coordinate system.
-    let mut starts = Vec::with_capacity(stmts.len());
-    let mut next = 1usize;
-    for stmt in &stmts {
-        starts.push(next);
-        next += stmt.lines().count().max(1); // ";\n"-joined: each starts fresh
-    }
-    for diag in &mut out.diagnostics {
-        if let Some(idx) = starts.iter().rposition(|&s| s <= diag.line) {
-            diag.line = normalized[idx].1 as usize;
-        }
-    }
+    // Shared DSQL gate, entered per-statement with true source lines. The
+    // MySQL-translation warnings are prepended — a lossy transform stays a
+    // `FixedWithWarning` the caller must review.
+    let mut out = fix_statements(normalized);
     mysql_diags.extend(out.diagnostics);
+    // One coordinate system, one order: diagnostics sorted by source line so
+    // JSON/text consumers see them top-to-bottom regardless of producer.
+    mysql_diags.sort_by_key(|d| d.line);
     out.diagnostics = mysql_diags;
     out
 }
@@ -102,70 +113,85 @@ fn warn(rule: LintRule, message: &str, detail: String) -> Diagnostic {
     }
 }
 
-/// Whether a statement text opens a `CREATE TABLE` — distinguishes an
-/// untranslatable table (forwarded so fix_sql reports a ParseError) from
-/// droppable MySQL noise on a parse failure. `TABLE` must be the first object
-/// keyword after `CREATE` and its modifiers: a plain `contains("TABLE")`
-/// would false-match `CREATE ... VIEW ... FROM my_table` and forward a view
-/// as if it were a table.
+/// A DML statement (INSERT/UPDATE/DELETE) was dropped, not translated. Reported
+/// as `Unfixable` because there is no output for it — the user must load data
+/// through the loader's data path, not this DDL translator.
+fn dml_dropped_warning(line: usize, stmt: &Statement, stmt_sql: &str) -> Diagnostic {
+    let kind = match stmt {
+        Statement::Insert(_) => "INSERT",
+        Statement::Update { .. } => "UPDATE",
+        Statement::Delete(_) => "DELETE",
+        _ => "DML",
+    };
+    Diagnostic {
+        rule: LintRule::MysqlDataStatementDropped,
+        line,
+        statement: stmt_sql.to_string(),
+        message: format!(
+            "{kind} statement dropped: fix_sql_mysql translates DDL only, not row data."
+        ),
+        suggestion: "Load table data through the loader's data path; MySQL string escaping is not \
+                     faithfully translatable to DSQL here."
+            .to_string(),
+        fix_result: FixResult::Unfixable,
+    }
+}
+
+fn is_dml(stmt: &Statement) -> bool {
+    matches!(
+        stmt,
+        Statement::Insert(_) | Statement::Update { .. } | Statement::Delete(_)
+    )
+}
+
+fn strip_trailing_semicolon(s: &str) -> String {
+    s.trim().trim_end_matches(';').trim_end().to_string()
+}
+
+/// Whether a parse-failing statement opens a `CREATE TABLE` — distinguishes an
+/// untranslatable table (forwarded so the gate reports a ParseError) from
+/// droppable MySQL noise. Detection is on the *token stream*, not the raw text:
+/// mysqldump prefixes every table with a `-- Table structure for table x`
+/// comment, and a text `strip_prefix("CREATE")` would miss it and drop the
+/// whole table silently. `TABLE` must be the first object keyword after
+/// `CREATE` and its modifiers, so a `CREATE ... VIEW ... FROM my_table` is not
+/// mistaken for a table.
 fn opens_create_table(stmt_sql: &str) -> bool {
-    let head = stmt_sql.trim_start().to_ascii_uppercase();
-    let Some(rest) = head.strip_prefix("CREATE") else {
+    let Ok(tokens) = Tokenizer::new(&MySqlDialect {}, stmt_sql).tokenize() else {
         return false;
     };
-    // Skip modifier words (TEMPORARY, OR REPLACE, IF NOT EXISTS, mysqldump's
-    // view clauses); `=` (ALGORITHM=…) or `(` starts the body, so stop.
-    for word in rest.split_whitespace() {
-        if word.contains('=') || word.starts_with('(') {
-            return false;
-        }
-        match word {
-            "TEMPORARY" | "OR" | "REPLACE" | "IF" | "NOT" | "EXISTS" | "DEFINER" | "SQL"
-            | "SECURITY" | "ALGORITHM" | "UNDEFINED" | "MERGE" | "TEMPTABLE" | "INVOKER" => {
-                continue
-            }
-            "TABLE" => return true,
+    let mut words = tokens.iter().filter_map(|t| match t {
+        Token::Word(w) => Some(w),
+        _ => None,
+    });
+    if !words
+        .next()
+        .is_some_and(|w| w.keyword == Keyword::CREATE)
+    {
+        return false;
+    }
+    for w in words {
+        // Skip modifier keywords (TEMPORARY, OR REPLACE, IF NOT EXISTS, and
+        // mysqldump's view-definer clauses) until the first object keyword.
+        match w.keyword {
+            Keyword::TEMPORARY
+            | Keyword::OR
+            | Keyword::REPLACE
+            | Keyword::IF
+            | Keyword::NOT
+            | Keyword::EXISTS
+            | Keyword::DEFINER
+            | Keyword::SQL
+            | Keyword::SECURITY
+            | Keyword::ALGORITHM
+            | Keyword::UNDEFINED
+            | Keyword::MERGE
+            | Keyword::INVOKER => continue,
+            Keyword::TABLE => return true,
             _ => return false,
         }
     }
     false
-}
-
-/// Split a MySQL DDL string into individual statement texts on top-level `;`,
-/// using the MySQL tokenizer so a `;` inside a string/backtick/comment is not
-/// a boundary. Returns each trimmed, non-empty statement text with its
-/// starting line in the source, so diagnostics can point at the original file.
-fn split_mysql_statements(sql: &str) -> Vec<(String, u64)> {
-    let dialect = MySqlDialect {};
-    let Ok(tokens) = Tokenizer::new(&dialect, sql).tokenize_with_location() else {
-        // Tokenize failure is rare for DDL; fall back to the whole string so
-        // the caller still attempts a parse (and drops it if unparseable).
-        return vec![(sql.to_string(), 1)];
-    };
-    let mut out = Vec::new();
-    let mut current = String::new();
-    let mut line = 0u64; // 0 = no significant token seen yet
-    for tok in tokens {
-        match tok.token {
-            Token::SemiColon => {
-                if !current.trim().is_empty() {
-                    out.push((current.trim().to_string(), line.max(1)));
-                }
-                current.clear();
-                line = 0;
-            }
-            other => {
-                if line == 0 && !matches!(other, Token::Whitespace(_)) {
-                    line = tok.span.start.line;
-                }
-                current.push_str(&other.to_string());
-            }
-        }
-    }
-    if !current.trim().is_empty() {
-        out.push((current.trim().to_string(), line.max(1)));
-    }
-    out
 }
 
 /// MySQL-only statements to drop (LOCK/UNLOCK/SET/USE) — Postgres `fix_sql`
@@ -178,14 +204,6 @@ fn is_mysql_only_noise(stmt: &Statement) -> bool {
             | Statement::Set(_)
             | Statement::Use(_)
     )
-}
-
-fn join_statements(stmts: &[String]) -> String {
-    let mut out = stmts.join(";\n");
-    if !out.is_empty() {
-        out.push(';');
-    }
-    out
 }
 
 /// Rewrite one MySQL-dialect statement into Postgres-shaped AST in place.
@@ -203,6 +221,11 @@ fn normalize_statement(stmt: &mut Statement, diags: &mut Vec<Diagnostic>) -> Vec
         return Vec::new();
     };
     unquote_object_name(&mut ct.name);
+    // mysqldump records the table's next AUTO_INCREMENT value as a table option
+    // (`... AUTO_INCREMENT=1001`). Capture it before the options are dropped so
+    // the identity column can be seeded with `START WITH N` — otherwise the
+    // sequence restarts at 1 and new inserts collide with reloaded rows.
+    let auto_increment_seed = auto_increment_seed(&ct.table_options);
     for col in &mut ct.columns {
         let col_name = col.name.value.clone();
         unquote_ident(&mut col.name);
@@ -211,13 +234,16 @@ fn normalize_statement(stmt: &mut Statement, diags: &mut Vec<Diagnostic>) -> Vec
         // `bigint unsigned` would emit a "widened to NUMERIC" warning that
         // contradicts the BIGINT the identity rewrite actually produces.
         // bit(N)'s declared width is erased by the BYTEA rewrite but still
-        // needed to pad a recast DEFAULT literal; capture it first.
+        // needed to pad a recast DEFAULT literal; capture it first. Clamp to
+        // MySQL's max bit width (64): a malformed dump with `bit(2^64-1)` would
+        // otherwise overflow the byte-count multiply and try to allocate a
+        // gigantic padding string.
         let bit_width = match col.data_type {
-            DataType::Bit(w) => w,
+            DataType::Bit(w) => w.map(|w| w.min(64)),
             _ => None,
         };
         if col.options.iter().any(|opt| is_auto_increment(&opt.option)) {
-            normalize_auto_increment(col, &col_name, diags);
+            normalize_auto_increment(col, &col_name, auto_increment_seed, diags);
         } else {
             normalize_data_type(&mut col.data_type, &col_name, diags);
         }
@@ -232,7 +258,7 @@ fn normalize_statement(stmt: &mut Statement, diags: &mut Vec<Diagnostic>) -> Vec
     let mut extra = Vec::new();
     ct.constraints.retain_mut(|constraint| {
         if let TableConstraint::Index(idx) = constraint {
-            extra.push(lift_index(&table, idx));
+            extra.push(lift_index(&table, idx, diags));
             false
         } else {
             unquote_constraint(constraint, diags);
@@ -246,11 +272,15 @@ fn normalize_statement(stmt: &mut Statement, diags: &mut Vec<Diagnostic>) -> Vec
 }
 
 /// Replace `AUTO_INCREMENT` with `BIGINT GENERATED BY DEFAULT AS IDENTITY
-/// (CACHE 65536)`, per the AWS MySQL→DSQL guidance. `BY DEFAULT` mirrors MySQL
-/// semantics (an explicit value wins), so existing IDs reload.
+/// (CACHE 65536 [START WITH <seed>])`, per the AWS MySQL→DSQL guidance.
+/// `BY DEFAULT` mirrors MySQL semantics (an explicit value wins), so existing
+/// IDs reload. When mysqldump recorded the table's next AUTO_INCREMENT value,
+/// `seed` carries it and the identity is seeded so new inserts continue past
+/// the reloaded rows instead of restarting at 1.
 fn normalize_auto_increment(
     col: &mut sqlparser::ast::ColumnDef,
     col_name: &str,
+    seed: Option<u64>,
     diags: &mut Vec<Diagnostic>,
 ) {
     // Drop AUTO_INCREMENT and any DEFAULT: a column cannot carry both a DEFAULT
@@ -261,28 +291,65 @@ fn normalize_auto_increment(
         !is_auto_increment(&opt.option) && !matches!(opt.option, ColumnOption::Default(_))
     });
     col.data_type = DataType::BigInt(None);
-    // Lossy: the identity's sequence is NOT seeded to the source's current
-    // AUTO_INCREMENT value, so reload/backfill must reset it (setval) or new
-    // inserts collide with existing ids.
+
+    // Base identity shape shared with the Postgres SERIAL-idiom collapse
+    // (CACHE 65536); append `START WITH <seed>` when the dump gave one.
+    let mut identity = identity_with_cache(GeneratedAs::ByDefault, 65536);
+    if let (
+        Some(seed),
+        ColumnOption::Generated {
+            sequence_options: Some(opts),
+            ..
+        },
+    ) = (seed, &mut identity.option)
+    {
+        opts.push(SequenceOptions::StartWith(num_expr(seed), true));
+    }
+
+    // When seeded, this is a faithful translation of the counter; otherwise it
+    // resets to 1 and the caller must reset it before new inserts. Either way
+    // it's lossy enough to warn — the sequence state, cycle behavior, and
+    // per-connection allocation differ from MySQL.
+    let detail = match seed {
+        Some(seed) => format!(
+            "Column `{col_name}`: AUTO_INCREMENT became BIGINT GENERATED BY DEFAULT AS IDENTITY \
+             (CACHE 65536 START WITH {seed}), seeded from the dump's AUTO_INCREMENT={seed}. Verify \
+             the seed is past your largest existing id before relying on new inserts."
+        ),
+        None => format!(
+            "Column `{col_name}`: AUTO_INCREMENT became BIGINT GENERATED BY DEFAULT AS IDENTITY \
+             (CACHE 65536). The dump carried no AUTO_INCREMENT seed, so the sequence starts at 1 — \
+             after loading existing rows, reset it (ALTER TABLE ... ALTER COLUMN ... RESTART WITH N) \
+             or new inserts may collide with existing ids."
+        ),
+    };
     diags.push(warn(
         LintRule::MysqlAutoIncrementToIdentity,
         "AUTO_INCREMENT translated to a DSQL identity column.",
-        format!(
-            "Column `{col_name}`: AUTO_INCREMENT became BIGINT GENERATED BY DEFAULT AS IDENTITY \
-             (CACHE 65536). The identity sequence is not seeded to the source's next value — after \
-             loading existing rows, reset it with setval() or new inserts may collide with existing ids."
-        ),
+        detail,
     ));
-    col.options.push(ColumnOptionDef {
-        name: None,
-        option: ColumnOption::Generated {
-            generated_as: GeneratedAs::ByDefault,
-            sequence_options: Some(vec![SequenceOptions::Cache(num_expr(65536))]),
-            generation_expr: None,
-            generation_expr_mode: None,
-            generated_keyword: false,
-        },
-    });
+    col.options.push(identity);
+}
+
+/// Extract the `AUTO_INCREMENT=<n>` table option's seed value, if present.
+/// mysqldump emits it as a plain space-separated key/value option; a value that
+/// isn't a non-negative integer is ignored (no seed).
+fn auto_increment_seed(options: &CreateTableOptions) -> Option<u64> {
+    let opts = match options {
+        CreateTableOptions::Plain(o) | CreateTableOptions::With(o) => o,
+        _ => return None,
+    };
+    opts.iter().find_map(|opt| match opt {
+        sqlparser::ast::SqlOption::KeyValue {
+            key,
+            value:
+                Expr::Value(ValueWithSpan {
+                    value: Value::Number(n, _),
+                    ..
+                }),
+        } if key.value.eq_ignore_ascii_case("AUTO_INCREMENT") => n.parse().ok(),
+        _ => None,
+    })
 }
 
 /// Drop MySQL-only column options the lenient Postgres parser would otherwise
@@ -340,11 +407,19 @@ fn normalize_default(
         col.data_type,
         DataType::Timestamp(_, _) | DataType::Date | DataType::Time(_, _)
     );
+    let is_numeric = is_numeric_type(&col.data_type);
     let mut drop_default = false;
     for opt in &mut col.options {
         let ColumnOption::Default(expr) = &mut opt.option else {
             continue;
         };
+        // Type-agnostic recasts first: a MySQL default literal whose *spelling*
+        // is wrong in Postgres regardless of the column type.
+        // `DEFAULT "hi"` parses as a double-quoted string, which Postgres reads
+        // as a quoted *identifier* (`column "hi" does not exist`) — convert to a
+        // single-quoted string literal.
+        recast_double_quoted_string(expr);
+
         if is_bool {
             drop_default |= !recast_bool_default(expr);
         } else if is_bytea {
@@ -355,6 +430,12 @@ fn normalize_default(
                     drop_default |= has_zero_date_segment(s);
                 }
             }
+        } else if is_numeric {
+            // `DEFAULT 0x02` parses as a hex-string literal; Postgres re-emits
+            // it as `X'02'`, a *bit-string* literal, type-incompatible with an
+            // integer/decimal column. MySQL reads `0x..` in a numeric context
+            // as its integer value — recast to a decimal number.
+            drop_default |= !recast_hex_numeric_default(expr);
         }
     }
     if drop_default {
@@ -415,19 +496,77 @@ fn recast_bytea_default(expr: &mut Expr, bit_width: Option<u64>) -> bool {
             if s.is_empty() || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return false;
             }
-            let mut h = s.to_lowercase();
-            if h.len() % 2 == 1 {
-                h.insert(0, '0');
-            }
-            while h.len() < min_bytes * 2 {
-                h.insert_str(0, "00");
-            }
-            format!("\\x{h}")
+            hex_to_bytea_literal(&s.to_lowercase(), min_bytes)
         }
         _ => return false,
     };
     v.value = Value::SingleQuotedString(hex);
     true
+}
+
+/// Assemble a Postgres bytea hex literal (`\xNN..`) from raw lowercase hex
+/// digits: pad to an even digit count (whole bytes) and to at least `min_bytes`
+/// bytes, MSB-first. Shared by the bit-literal and hex-literal bytea recasts.
+fn hex_to_bytea_literal(hex_digits: &str, min_bytes: usize) -> String {
+    let mut h = hex_digits.to_string();
+    if h.len() % 2 == 1 {
+        h.insert(0, '0');
+    }
+    while h.len() < min_bytes * 2 {
+        h.insert_str(0, "00");
+    }
+    format!("\\x{h}")
+}
+
+/// Convert a `DEFAULT "..."` (MySQL double-quoted string) into a single-quoted
+/// string literal. In MySQL `"..."` is a string; Postgres reads it as a quoted
+/// identifier, so a `DEFAULT "hi"` on a varchar column fails at apply with
+/// `column "hi" does not exist`. Leaves every other value shape untouched.
+fn recast_double_quoted_string(expr: &mut Expr) {
+    if let Expr::Value(v) = expr {
+        if let Value::DoubleQuotedString(s) = &v.value {
+            v.value = Value::SingleQuotedString(s.clone());
+        }
+    }
+}
+
+/// Recast a hex-string DEFAULT (`0x02`) on a numeric column to its decimal
+/// value: Postgres re-emits `HexStringLiteral` as a bit-string `X'02'`, which
+/// is type-incompatible with an integer/decimal column, whereas MySQL treats
+/// `0x..` in a numeric context as the integer it encodes. Returns false when
+/// the hex doesn't fit u64 (dropped + warned rather than silently wrong).
+fn recast_hex_numeric_default(expr: &mut Expr) -> bool {
+    let Expr::Value(v) = expr else { return true };
+    let Value::HexStringLiteral(s) = &v.value else {
+        return true;
+    };
+    match u64::from_str_radix(s, 16) {
+        Ok(n) => {
+            v.value = Value::Number(n.to_string(), false);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Whether a (post-rewrite) Postgres type is an exact/approximate numeric type
+/// — the types for which a MySQL hex-string default must become a decimal.
+fn is_numeric_type(ty: &DataType) -> bool {
+    matches!(
+        ty,
+        DataType::TinyInt(_)
+            | DataType::SmallInt(_)
+            | DataType::Int(_)
+            | DataType::Integer(_)
+            | DataType::BigInt(_)
+            | DataType::Numeric(_)
+            | DataType::Decimal(_)
+            | DataType::Dec(_)
+            | DataType::Float(_)
+            | DataType::Real
+            | DataType::Double(_)
+            | DataType::DoublePrecision
+    )
 }
 
 /// MySQL zero-in-date sentinels (`0000-00-00`, `2004-00-15`, `2004-01-00`,
@@ -445,14 +584,16 @@ fn bits_to_bytea_hex(bits: &str, min_bytes: usize) -> Option<String> {
     if bits.is_empty() || !bits.bytes().all(|b| b == b'0' || b == b'1') {
         return None;
     }
-    let width = bits.len().div_ceil(8).max(min_bytes) * 8;
+    // Group the bits into whole bytes (MSB-first) and render each as two hex
+    // digits, then let the shared helper apply the min-byte padding.
+    let width = bits.len().div_ceil(8) * 8;
     let padded = format!("{bits:0>width$}");
-    let mut hex = String::from("\\x");
+    let mut hex = String::new();
     for chunk in padded.as_bytes().chunks(8) {
         let byte = chunk.iter().fold(0u8, |acc, b| (acc << 1) | (b - b'0'));
         hex.push_str(&format!("{byte:02x}"));
     }
-    Some(hex)
+    Some(hex_to_bytea_literal(&hex, min_bytes))
 }
 
 /// Strip backticks inside a column's expression-bearing options (`DEFAULT
@@ -484,10 +625,44 @@ fn is_auto_increment(option: &ColumnOption) -> bool {
 /// Build a `CREATE INDEX <name> ON <table> (cols)` from a lifted inline
 /// secondary `KEY`/`INDEX`. The existing `fix_sql` IndexAsync rule rewrites it
 /// to `CREATE INDEX ASYNC` for DSQL.
-fn lift_index(table: &ObjectName, idx: &mut sqlparser::ast::IndexConstraint) -> Statement {
+///
+/// MySQL index names are scoped per table; Postgres/DSQL share one schema-wide
+/// index namespace. mysqldump routinely names a KEY after its column
+/// (`KEY user_id (user_id)`), so the same name recurs across tables and a
+/// second bare `CREATE INDEX user_id` would fail at apply ("relation already
+/// exists"). Qualify the lifted name with the table (`{table}_{name}`) to keep
+/// it unique, and warn — the index's name changed, which callers referencing it
+/// by name (e.g. index hints, `DROP INDEX`) must know about.
+fn lift_index(
+    table: &ObjectName,
+    idx: &mut sqlparser::ast::IndexConstraint,
+    diags: &mut Vec<Diagnostic>,
+) -> Statement {
     let name = idx.name.take().map(|mut n| {
         unquote_ident(&mut n);
-        ObjectName(vec![ObjectNamePart::Identifier(n)])
+        let table_leaf = object_name_leaf(table);
+        let qualified = format!("{table_leaf}_{}", n.value);
+        diags.push(warn(
+            LintRule::MysqlIndexRenamed,
+            "Secondary index renamed to stay unique in DSQL's schema-wide index namespace.",
+            format!(
+                "Index `{}` on table `{table_leaf}` was lifted to `CREATE INDEX {qualified}` \
+                 (MySQL index names are per-table; DSQL's are schema-wide, so the original name \
+                 could collide with an identically-named index on another table). Update any \
+                 index hints or DROP INDEX statements that referenced the old name.",
+                n.value
+            ),
+        ));
+        let quote_style = if needs_double_quote(&qualified) {
+            Some('"')
+        } else {
+            None
+        };
+        ObjectName(vec![ObjectNamePart::Identifier(Ident {
+            value: qualified,
+            quote_style,
+            span: Span::empty(),
+        })])
     });
     let mut columns = std::mem::take(&mut idx.columns);
     for col in &mut columns {
@@ -509,6 +684,19 @@ fn lift_index(table: &ObjectName, idx: &mut sqlparser::ast::IndexConstraint) -> 
         index_options: vec![],
         alter_options: vec![],
     })
+}
+
+/// The last (unqualified) identifier of an object name — `db`.`t` → `t`. Used
+/// to prefix a lifted index name with just the table, not the schema.
+fn object_name_leaf(name: &ObjectName) -> String {
+    name.0
+        .iter()
+        .rev()
+        .find_map(|part| match part {
+            ObjectNamePart::Identifier(id) => Some(id.value.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 /// Whether a single-part object name equals `target` (ASCII case-insensitive).
@@ -678,49 +866,45 @@ fn unquote_constraint(constraint: &mut TableConstraint, diags: &mut Vec<Diagnost
         }
     }
 
-    let (name, index_name, columns, is_uniquifying): (
-        &mut Option<Ident>,
-        Option<&mut Option<Ident>>,
-        &mut [IndexColumn],
-        bool,
-    ) = match constraint {
-        TableConstraint::PrimaryKey(c) => {
-            (&mut c.name, Some(&mut c.index_name), &mut c.columns, true)
-        }
-        TableConstraint::Unique(c) => (&mut c.name, Some(&mut c.index_name), &mut c.columns, true),
-        TableConstraint::Index(c) => (&mut c.name, None, &mut c.columns, false),
-        TableConstraint::ForeignKey(c) => {
-            unquote_opt_ident(&mut c.name);
-            unquote_object_name(&mut c.foreign_table);
-            for col in &mut c.columns {
-                unquote_ident(col);
+    // Secondary `KEY`/`INDEX` constraints (`TableConstraint::Index`) never
+    // reach here — they're lifted to standalone CREATE INDEX statements before
+    // this runs. The remaining name-and-column-bearing constraints are
+    // PRIMARY KEY and UNIQUE, both of which enforce uniqueness, so a dropped
+    // prefix always changes semantics and always warns.
+    let (name, index_name, columns): (&mut Option<Ident>, &mut Option<Ident>, &mut [IndexColumn]) =
+        match constraint {
+            TableConstraint::PrimaryKey(c) => (&mut c.name, &mut c.index_name, &mut c.columns),
+            TableConstraint::Unique(c) => (&mut c.name, &mut c.index_name, &mut c.columns),
+            TableConstraint::ForeignKey(c) => {
+                unquote_opt_ident(&mut c.name);
+                unquote_object_name(&mut c.foreign_table);
+                for col in &mut c.columns {
+                    unquote_ident(col);
+                }
+                for col in &mut c.referred_columns {
+                    unquote_ident(col);
+                }
+                return;
             }
-            for col in &mut c.referred_columns {
-                unquote_ident(col);
+            TableConstraint::Check(c) => {
+                unquote_opt_ident(&mut c.name);
+                unquote_expr(&mut c.expr);
+                return;
             }
-            return;
-        }
-        TableConstraint::Check(c) => {
-            unquote_opt_ident(&mut c.name);
-            unquote_expr(&mut c.expr);
-            return;
-        }
-        // Remaining variants (FulltextOrSpatial, *UsingIndex) carry idents too,
-        // but mysqldump's default CREATE TABLE does not emit them. Leave them
-        // for fix_sql to reject explicitly rather than silently half-handle.
-        _ => return,
-    };
+            // Remaining variants (FulltextOrSpatial, *UsingIndex) carry idents
+            // too, but mysqldump's default CREATE TABLE does not emit them.
+            // Leave them for fix_sql to reject explicitly rather than silently
+            // half-handle.
+            _ => return,
+        };
     unquote_opt_ident(name);
-    if let Some(index_name) = index_name {
-        unquote_opt_ident(index_name);
-    }
+    unquote_opt_ident(index_name);
     for col in columns {
         // Dropping a prefix inside PRIMARY KEY/UNIQUE weakens the constraint:
         // values distinct beyond the first N characters were duplicates in
         // MySQL but coexist here, so future inserts MySQL would have rejected
-        // now succeed. Plain KEY prefixes stay silent (an index prefix is a
-        // storage detail).
-        if unquote_index_column(col) && is_uniquifying {
+        // now succeed.
+        if unquote_index_column(col) {
             diags.push(warn(
                 LintRule::MysqlIndexPrefixDropped,
                 "Index prefix length dropped inside a PRIMARY KEY/UNIQUE constraint.",
@@ -763,37 +947,20 @@ fn unquote_index_column(col: &mut IndexColumn) -> bool {
     dropped_prefix
 }
 
-/// Recursively strip backticks from identifiers in an expression (CHECK
-/// predicates, indexed-column expressions). Covers the shapes a mysqldump
-/// CREATE TABLE realistically emits; unhandled variants are left for the
-/// Postgres `fix_sql` parse to reject explicitly.
+/// Strip backticks from every identifier in an expression (CHECK predicates,
+/// indexed-column expressions, function arguments, …). Walks the whole `Expr`
+/// tree via sqlparser's visitor, so a backtick buried in any expression shape
+/// (`json_valid(`j`)`, casts, subscripts) is reached — a hand-rolled match
+/// covered only a handful of variants and left the rest to fail the parse.
 fn unquote_expr(expr: &mut Expr) {
-    match expr {
-        Expr::Identifier(ident) => unquote_ident(ident),
-        Expr::CompoundIdentifier(parts) => parts.iter_mut().for_each(unquote_ident),
-        Expr::Nested(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => unquote_expr(inner),
-        Expr::UnaryOp { expr, .. } => unquote_expr(expr),
-        Expr::BinaryOp { left, right, .. } => {
-            unquote_expr(left);
-            unquote_expr(right);
+    let _: ControlFlow<()> = visit_expressions_mut(expr, |e| {
+        match e {
+            Expr::Identifier(ident) => unquote_ident(ident),
+            Expr::CompoundIdentifier(parts) => parts.iter_mut().for_each(unquote_ident),
+            _ => {}
         }
-        Expr::Between {
-            expr, low, high, ..
-        } => {
-            unquote_expr(expr);
-            unquote_expr(low);
-            unquote_expr(high);
-        }
-        Expr::InList { expr, list, .. } => {
-            unquote_expr(expr);
-            list.iter_mut().for_each(unquote_expr);
-        }
-        Expr::Like { expr, pattern, .. } => {
-            unquote_expr(expr);
-            unquote_expr(pattern);
-        }
-        _ => {}
-    }
+        ControlFlow::Continue(())
+    });
 }
 
 fn unquote_opt_ident(ident: &mut Option<Ident>) {
@@ -810,13 +977,58 @@ fn unquote_object_name(name: &mut ObjectName) {
     }
 }
 
-/// Postgres folds unquoted identifiers to lower case; mysqldump already emits
-/// the canonical case, so leaving identifiers unquoted matches the source
-/// table/column names in practice.
+/// Convert a backtick-quoted MySQL identifier to its DSQL form. Postgres folds
+/// unquoted identifiers to lower case and rejects reserved words as bare names,
+/// so dropping the backtick is only safe when the name is already all-lowercase
+/// and not reserved. Otherwise re-quote as `"..."`: `` `Order` `` → `"Order"`,
+/// `` `user` `` → `"user"`. A bare `order`/`Order`/`Users` would either fail the
+/// parse or silently fold to a different name that no longer matches the source.
 fn unquote_ident(ident: &mut Ident) {
-    if ident.quote_style == Some('`') {
+    if ident.quote_style != Some('`') {
+        return;
+    }
+    if needs_double_quote(&ident.value) {
+        ident.quote_style = Some('"');
+    } else {
         ident.quote_style = None;
     }
+}
+
+/// Whether an identifier must be double-quoted to survive as-is in Postgres:
+/// it has an uppercase letter (bare form would fold to lowercase, changing the
+/// name) or it collides with a Postgres reserved word.
+fn needs_double_quote(value: &str) -> bool {
+    value.chars().any(|c| c.is_ascii_uppercase()) || is_pg_reserved_word(value)
+}
+
+/// Postgres reserved keywords that cannot appear as a bare column or table
+/// name. Covers BOTH reserved categories from the PostgreSQL keyword appendix:
+/// plain "reserved" AND "reserved (can be function or type name)" — the latter
+/// may name a function/type but is still rejected as a bare column/table name,
+/// so it must be quoted too. sqlparser's own keyword lists don't model
+/// Postgres's reserved/non-reserved split, so this is the explicit set.
+/// Non-reserved words (`name`, `value`, `type`, …) are deliberately absent so
+/// the common case stays unquoted. Matched case-insensitively.
+fn is_pg_reserved_word(value: &str) -> bool {
+    const RESERVED: &[&str] = &[
+        // "reserved"
+        "all", "analyse", "analyze", "and", "any", "array", "as", "asc", "asymmetric", "both",
+        "case", "cast", "check", "collate", "column", "constraint", "create", "current_catalog",
+        "current_date", "current_role", "current_time", "current_timestamp", "current_user",
+        "default", "deferrable", "desc", "distinct", "do", "else", "end", "except", "false",
+        "fetch", "for", "foreign", "from", "grant", "group", "having", "in", "initially",
+        "intersect", "into", "lateral", "leading", "limit", "localtime", "localtimestamp", "not",
+        "null", "offset", "on", "only", "or", "order", "placing", "primary", "references",
+        "returning", "select", "session_user", "some", "symmetric", "system_user", "table",
+        "then", "to", "trailing", "true", "union", "unique", "user", "using", "variadic", "when",
+        "where", "window", "with",
+        // "reserved (can be function or type name)" — still invalid as a bare
+        // column/table name.
+        "authorization", "binary", "collation", "concurrently", "cross", "current_schema",
+        "freeze", "full", "ilike", "inner", "is", "isnull", "join", "left", "like", "natural",
+        "notnull", "outer", "overlaps", "right", "similar", "tablesample", "verbose",
+    ];
+    RESERVED.contains(&value.to_ascii_lowercase().as_str())
 }
 
 #[cfg(test)]
@@ -1796,4 +2008,352 @@ mod tests {
             out.diagnostics
         );
     }
+
+    // ─── Follow-up regression tests (PR #90 review bugs) ──────────────────
+
+    /// Bug 1: a `''`-escaped apostrophe in a DEFAULT must survive verbatim.
+    /// The old token-rebuild splitter re-emitted `'it's'` (unterminated), which
+    /// degraded the whole table to a ParseError. Slicing from source keeps the
+    /// original bytes so the AST re-escapes correctly.
+    #[test]
+    fn default_with_escaped_quote_survives() {
+        let out = fix_sql_mysql("CREATE TABLE `t` (`c` varchar(20) DEFAULT 'it''s');");
+        assert_clean_dsql(&out);
+        assert!(
+            out.sql.contains("'it''s'"),
+            "escaped apostrophe must round-trip:\n{}",
+            out.sql
+        );
+    }
+
+    /// Bug 1: mysqldump escapes backslashes (`'C:\\data\\new'`, value
+    /// `C:\data\new`). The old token-rebuild splitter double-unescaped it into
+    /// `C:data<newline>ew`; slicing from source hands the byte-exact literal to
+    /// the parser, which re-emits the correct value.
+    #[test]
+    fn default_with_backslash_survives() {
+        let out = fix_sql_mysql(r"CREATE TABLE `t` (`c` varchar(50) DEFAULT 'C:\\data\\new');");
+        assert_clean_dsql(&out);
+        assert!(
+            out.sql.contains(r"'C:\data\new'"),
+            "escaped backslashes must decode to single literal backslashes:\n{}",
+            out.sql
+        );
+    }
+
+    /// Bug 2: one statement that fails to tokenize/parse must NOT disable the
+    /// gate for its siblings. A bad forwarded table surfaces a ParseError while
+    /// the following good table is still fully translated (index lifted, etc.).
+    #[test]
+    fn one_bad_statement_does_not_disable_gate() {
+        let out = fix_sql_mysql(
+            "CREATE TABLE zf (c int zerofill);\n\
+             CREATE TABLE `b` (`id` int, `v` int, PRIMARY KEY (`id`), KEY `k` (`v`));",
+        );
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| matches!(d.rule, crate::LintRule::ParseError)),
+            "the unparseable table must still report a ParseError:\n{:?}",
+            out.diagnostics
+        );
+        let u = out.sql.to_uppercase();
+        assert!(
+            u.contains("CREATE INDEX ASYNC"),
+            "the good sibling's index must still be lifted + ASYNC'd:\n{}",
+            out.sql
+        );
+        assert!(!out.sql.contains('`'), "no backticks survive:\n{}", out.sql);
+    }
+
+    /// Bug 3: reserved-word and mixed-case identifiers must be re-quoted as
+    /// `"..."`, not emitted bare. A bare `order`/`user`/`group` fails the parse;
+    /// a bare `Users` folds to lowercase `users` and no longer matches the source
+    /// table name.
+    #[test]
+    fn reserved_and_mixed_case_identifiers_requoted() {
+        let out = fix_sql_mysql(
+            "CREATE TABLE `order` (`user` varchar(50), `group` int);\n\
+             CREATE TABLE `Users` (`id` int);",
+        );
+        assert_clean_dsql(&out);
+        for quoted in [r#""order""#, r#""user""#, r#""group""#, r#""Users""#] {
+            assert!(
+                out.sql.contains(quoted),
+                "{quoted} must be double-quoted, got:\n{}",
+                out.sql
+            );
+        }
+    }
+
+    /// Bug 3: an all-lowercase, non-reserved identifier must stay bare — over-
+    /// quoting common names like `name`/`value` would be needless churn.
+    #[test]
+    fn ordinary_identifiers_stay_bare() {
+        let out = fix_sql_mysql("CREATE TABLE `t` (`name` varchar(50), `value` int);");
+        assert_clean_dsql(&out);
+        assert!(
+            !out.sql.contains('"'),
+            "ordinary lowercase names must not be quoted:\n{}",
+            out.sql
+        );
+    }
+
+    /// Bug 3: the "reserved (can be function or type name)" category is still
+    /// invalid as a bare column/table name and must be quoted. These are common
+    /// MySQL column names the lenient PG gate would accept bare but a real DSQL
+    /// cluster rejects, so a no-ParseError check can't catch the miss.
+    #[test]
+    fn function_or_type_name_reserved_words_requoted() {
+        // `binary` is also exercised here but omitted from assert_clean_dsql's
+        // scope: its banned-substring probe would false-match the quoted column
+        // name `"binary"` (a valid identifier, not the MySQL BINARY type).
+        let out = fix_sql_mysql(
+            "CREATE TABLE `t` (`left` int, `right` int, `join` int, `is` int, \
+             `natural` int, `full` int);",
+        );
+        assert_clean_dsql(&out);
+        for quoted in [
+            r#""left""#,
+            r#""right""#,
+            r#""join""#,
+            r#""is""#,
+            r#""natural""#,
+            r#""full""#,
+        ] {
+            assert!(
+                out.sql.contains(quoted),
+                "{quoted} (reserved, function/type-name category) must be quoted, got:\n{}",
+                out.sql
+            );
+        }
+        // `binary` as a column name must be quoted (checked directly, since the
+        // clean-DSQL probe can't distinguish it from the BINARY type keyword).
+        let out2 = fix_sql_mysql("CREATE TABLE `t` (`binary` int);");
+        assert!(
+            out2.sql.contains(r#""binary""#),
+            "`binary` column must be double-quoted, got:\n{}",
+            out2.sql
+        );
+        assert!(
+            !out2.diagnostics
+                .iter()
+                .any(|d| matches!(d.rule, crate::LintRule::ParseError)),
+            "quoted `binary` column must parse cleanly:\n{:?}",
+            out2.diagnostics
+        );
+    }
+
+    /// Bug 4: lifted secondary-index names are qualified with the table so two
+    /// tables with the same MySQL index name (`user_id`) don't collide in DSQL's
+    /// schema-wide index namespace. The rename is surfaced as a warning.
+    #[test]
+    fn lifted_index_names_qualified_and_warned() {
+        let out = fix_sql_mysql(
+            "CREATE TABLE `t1` (`user_id` int, KEY `user_id` (`user_id`));\n\
+             CREATE TABLE `t2` (`user_id` int, KEY `user_id` (`user_id`));",
+        );
+        assert_clean_dsql(&out);
+        let u = out.sql.to_uppercase();
+        assert!(
+            u.contains("T1_USER_ID") && u.contains("T2_USER_ID"),
+            "index names must be table-qualified:\n{}",
+            out.sql
+        );
+        assert_eq!(
+            out.diagnostics
+                .iter()
+                .filter(|d| matches!(d.rule, crate::LintRule::MysqlIndexRenamed))
+                .count(),
+            2,
+            "each rename must warn:\n{:?}",
+            out.diagnostics
+        );
+    }
+
+    /// Bug 5: mysqldump prefixes every table with a `-- Table structure ...`
+    /// comment. An unparseable CREATE TABLE behind such a comment must still be
+    /// detected (token-level, not text `strip_prefix`) and surface a ParseError,
+    /// not silently vanish.
+    #[test]
+    fn commented_unparseable_create_table_surfaces_error() {
+        let out = fix_sql_mysql(
+            "--\n-- Table structure for table `zf`\n--\nCREATE TABLE zf (c int zerofill);",
+        );
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| matches!(d.rule, crate::LintRule::ParseError)),
+            "comment-prefixed unparseable table must not vanish:\n{}\n{:?}",
+            out.sql,
+            out.diagnostics
+        );
+    }
+
+    /// Bug 6: an INSERT (row data) is dropped with an explicit unfixable
+    /// diagnostic — never silently, never with corrupted/backticked output. The
+    /// surrounding DDL still translates.
+    #[test]
+    fn insert_dropped_with_diagnostic() {
+        let out = fix_sql_mysql(
+            "CREATE TABLE `t` (`id` int, `name` varchar(50));\n\
+             INSERT INTO `t` VALUES (1,'alice'),(2,'bob''s');",
+        );
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| matches!(d.rule, crate::LintRule::MysqlDataStatementDropped)),
+            "INSERT must produce a data-dropped diagnostic:\n{:?}",
+            out.diagnostics
+        );
+        assert!(
+            !out.sql.to_uppercase().contains("INSERT"),
+            "no INSERT text in the DDL output:\n{}",
+            out.sql
+        );
+        assert!(
+            out.sql.to_uppercase().contains("CREATE TABLE"),
+            "the CREATE TABLE still translates:\n{}",
+            out.sql
+        );
+    }
+
+    /// Bug 7: a hex-string default on a numeric column becomes its decimal value.
+    /// Re-emitted verbatim, `HexStringLiteral` prints as `X'02'` (a bit-string),
+    /// type-incompatible with an integer column.
+    #[test]
+    fn hex_default_on_numeric_becomes_decimal() {
+        let out = fix_sql_mysql("CREATE TABLE `t` (`f` bigint DEFAULT 0x02);");
+        assert_clean_dsql(&out);
+        assert!(
+            out.sql.to_uppercase().contains("DEFAULT 2"),
+            "0x02 on a numeric column must become decimal 2:\n{}",
+            out.sql
+        );
+        assert!(
+            !out.sql.to_uppercase().contains("X'02'"),
+            "no bit-string literal survives:\n{}",
+            out.sql
+        );
+    }
+
+    /// Bug 8: a double-quoted default is a string in MySQL but a quoted
+    /// identifier in Postgres; recast to a single-quoted string literal.
+    #[test]
+    fn double_quoted_default_becomes_string_literal() {
+        let out = fix_sql_mysql("CREATE TABLE `t` (`s` varchar(10) DEFAULT \"hi\");");
+        assert_clean_dsql(&out);
+        assert!(
+            out.sql.contains("DEFAULT 'hi'"),
+            "double-quoted default must become a single-quoted literal:\n{}",
+            out.sql
+        );
+    }
+
+    /// Bug 9: an absurd `bit(N)` width must not overflow/panic — the width is
+    /// clamped to MySQL's max (64 bits = 8 bytes) before padding a recast
+    /// default.
+    #[test]
+    fn oversized_bit_width_does_not_panic() {
+        let out = fix_sql_mysql(
+            "CREATE TABLE `t` (`b` bit(18446744073709551615) DEFAULT b'1');",
+        );
+        assert_clean_dsql(&out);
+        assert!(
+            out.sql.contains(r"'\x0000000000000001'"),
+            "bit width clamped to 8 bytes:\n{}",
+            out.sql
+        );
+    }
+
+    /// Bug 10: a backtick buried inside a function call in a CHECK expression is
+    /// stripped by the visitor walk (the old hand-rolled match missed
+    /// `Expr::Function`).
+    #[test]
+    fn backtick_in_check_function_stripped() {
+        let out = fix_sql_mysql(
+            "CREATE TABLE `t` (`j` text, CONSTRAINT `c` CHECK (json_valid(`j`)));",
+        );
+        assert_clean_dsql(&out);
+        assert!(
+            out.sql.to_lowercase().contains("json_valid(j)"),
+            "backtick inside the function arg must be stripped:\n{}",
+            out.sql
+        );
+    }
+
+    /// Bug 12: mysqldump's `AUTO_INCREMENT=N` table option seeds the identity
+    /// with `START WITH N` so new inserts continue past reloaded rows, and the
+    /// warning reflects the seed rather than telling the user to reset manually.
+    #[test]
+    fn auto_increment_table_seed_becomes_start_with() {
+        let out = fix_sql_mysql(
+            "CREATE TABLE `t` (`id` int NOT NULL AUTO_INCREMENT, PRIMARY KEY(`id`)) \
+             ENGINE=InnoDB AUTO_INCREMENT=1001;",
+        );
+        assert_clean_dsql(&out);
+        assert!(
+            out.sql.to_uppercase().contains("START WITH 1001"),
+            "the AUTO_INCREMENT seed must become START WITH:\n{}",
+            out.sql
+        );
+        assert!(
+            has_warning(&out, "seeded from the dump"),
+            "the seed warning must mention it was seeded:\n{:?}",
+            out.diagnostics
+        );
+    }
+
+    /// Bug 12 (no seed): without an `AUTO_INCREMENT=N` option the identity has no
+    /// START WITH and the warning tells the user to reset it before new inserts.
+    #[test]
+    fn auto_increment_without_seed_warns_to_reset() {
+        let out = fix_sql_mysql(
+            "CREATE TABLE `t` (`id` int NOT NULL AUTO_INCREMENT, PRIMARY KEY(`id`));",
+        );
+        assert_clean_dsql(&out);
+        assert!(
+            !out.sql.to_uppercase().contains("START WITH"),
+            "no seed means no START WITH:\n{}",
+            out.sql
+        );
+        assert!(
+            has_warning(&out, "no AUTO_INCREMENT seed"),
+            "the unseeded warning must tell the user to reset:\n{:?}",
+            out.diagnostics
+        );
+    }
+
+    /// Bug 13: diagnostics are sorted by source line regardless of which
+    /// producer (translation warning vs gate warning) emitted them.
+    #[test]
+    fn diagnostics_sorted_by_source_line() {
+        let out = fix_sql_mysql(
+            "CREATE TABLE `a` (`x` int unsigned);\n\
+             CREATE TABLE `b` (`k` enum('a','b'), KEY `i` (`k`));",
+        );
+        let lines: Vec<usize> = out.diagnostics.iter().map(|d| d.line).collect();
+        let mut sorted = lines.clone();
+        sorted.sort();
+        assert_eq!(lines, sorted, "diagnostics must be line-sorted: {lines:?}");
+    }
+
+    /// Bug 13: MySQL-translation warnings carry a non-empty statement preview so
+    /// JSON consumers don't get `""`.
+    #[test]
+    fn translation_warnings_carry_statement_preview() {
+        let out = fix_sql_mysql("CREATE TABLE `t` (`k` enum('a','b'));");
+        let enum_diag = out
+            .diagnostics
+            .iter()
+            .find(|d| matches!(d.rule, crate::LintRule::MysqlEnumToVarchar))
+            .expect("enum warning present");
+        assert!(
+            !enum_diag.statement.is_empty(),
+            "translation warning must carry a statement preview"
+        );
+    }
 }
+
+
+

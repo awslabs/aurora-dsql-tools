@@ -720,7 +720,9 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
         | LintRule::MysqlAutoIncrementToIdentity
         | LintRule::MysqlOnUpdateDropped
         | LintRule::MysqlInvalidDefaultDropped
-        | LintRule::MysqlIndexPrefixDropped => None,
+        | LintRule::MysqlIndexPrefixDropped
+        | LintRule::MysqlIndexRenamed
+        | LintRule::MysqlDataStatementDropped => None,
     }
 }
 
