@@ -16,8 +16,8 @@ repositories {
 
 dependencies {
     // Flyway Core - provided by Flyway runtime
-    compileOnly 'org.flywaydb:flyway-core:11.3.0'
-    compileOnly 'org.flywaydb:flyway-database-postgresql:11.3.0'
+    compileOnly 'org.flywaydb:flyway-core:13.0.0'
+    compileOnly 'org.flywaydb:flyway-database-postgresql:13.0.0'
 
     // PostgreSQL JDBC Driver - provided by runtime
     compileOnly 'org.postgresql:postgresql:42.7.13'
@@ -27,8 +27,8 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
     // Testing - Integration Tests (need actual Flyway and DSQL dependencies)
-    testImplementation 'org.flywaydb:flyway-core:11.3.0'
-    testImplementation 'org.flywaydb:flyway-database-postgresql:11.3.0'
+    testImplementation 'org.flywaydb:flyway-core:13.0.0'
+    testImplementation 'org.flywaydb:flyway-database-postgresql:13.0.0'
     testImplementation 'software.amazon.dsql:aurora-dsql-jdbc-connector:1.5.0'
     testImplementation 'software.amazon.awssdk:dsql:2.33.8'
     testImplementation 'org.postgresql:postgresql:42.7.13'
