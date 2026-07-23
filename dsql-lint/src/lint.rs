@@ -2,7 +2,7 @@
 
 use sqlparser::{
     ast::Statement,
-    dialect::PostgreSqlDialect,
+    dialect::{Dialect, PostgreSqlDialect},
     parser::Parser,
     tokenizer::{Token, Tokenizer},
 };
@@ -140,6 +140,8 @@ pub enum LintRule {
     MysqlOnUpdateDropped,
     MysqlInvalidDefaultDropped,
     MysqlIndexPrefixDropped,
+    MysqlIndexRenamed,
+    MysqlDataStatementDropped,
     ParseError,
 }
 
@@ -197,8 +199,17 @@ fn loc_to_byte(input: &str, offsets: &[usize], line: u64, col: u64) -> usize {
 /// apples-to-oranges diff between what the lint engine sees per statement
 /// and what the grammar oracle sees per statement.
 pub(crate) fn split_statements(input: &str) -> Result<Vec<(usize, String)>, String> {
-    let dialect = PostgreSqlDialect {};
-    let all_tokens = Tokenizer::new(&dialect, input)
+    split_statements_dialect(input, &PostgreSqlDialect {})
+}
+
+/// Dialect-generic statement splitter. `fix_sql_mysql` reuses this with
+/// `MySqlDialect` to slice statement text from the source bytes — rebuilding
+/// from tokens double-unescapes string literals and corrupts data.
+pub(crate) fn split_statements_dialect(
+    input: &str,
+    dialect: &dyn Dialect,
+) -> Result<Vec<(usize, String)>, String> {
+    let all_tokens = Tokenizer::new(dialect, input)
         .tokenize_with_location()
         .map_err(|e| e.to_string())?;
 
@@ -631,27 +642,33 @@ pub struct FixOutput {
 }
 
 pub fn fix_sql(sql: &str) -> FixOutput {
-    let dialect = PostgreSqlDialect {};
-    let mut all_diagnostics = Vec::new();
-    let mut fixed_parts: Vec<(usize, String)> = Vec::new();
-
-    let mut stmts = match split_statements(sql) {
+    let stmts = match split_statements(sql) {
         Ok(s) => s,
         Err(e) => {
-            all_diagnostics.push(Diagnostic {
-                rule: LintRule::ParseError,
-                line: 1,
-                statement: String::new(),
-                message: format!("Failed to tokenize SQL: {e}"),
-                suggestion: "Fix the SQL syntax and try again.".to_string(),
-                fix_result: FixResult::Unfixable,
-            });
             return FixOutput {
                 sql: sql.to_string(),
-                diagnostics: all_diagnostics,
+                diagnostics: vec![Diagnostic {
+                    rule: LintRule::ParseError,
+                    line: 1,
+                    statement: String::new(),
+                    message: format!("Failed to tokenize SQL: {e}"),
+                    suggestion: "Fix the SQL syntax and try again.".to_string(),
+                    fix_result: FixResult::Unfixable,
+                }],
             };
         }
     };
+    fix_statements(stmts)
+}
+
+/// The DSQL-compatibility gate, entered from already-split `(line, text)`
+/// statements. `fix_sql_mysql` calls this directly with source line numbers, so
+/// gate diagnostics need no remap. Each statement parses independently, so one
+/// unparseable statement can't disable the gate for the rest.
+pub(crate) fn fix_statements(mut stmts: Vec<(usize, String)>) -> FixOutput {
+    let dialect = PostgreSqlDialect {};
+    let mut all_diagnostics = Vec::new();
+    let mut fixed_parts: Vec<(usize, String)> = Vec::new();
 
     // Pre-passes: collapse multi-statement idioms BEFORE the per-statement
     // loop, so the loop never emits Unfixable diagnostics on statements

@@ -122,7 +122,7 @@ dsql-lint --fix --dialect mysql -o schema-dsql.sql schema.sql
 
 > **`--dialect mysql` requires `--fix`.** MySQL DDL must be translated before DSQL can accept it, so there is no lint-only MySQL mode (only the default `postgres` dialect supports lint-only reporting).
 
-> **Out of scope** — triggers, views, functions/procedures, and MySQL-specific extensions (`FULLTEXT`/spatial indexes and types). `dsql-lint` handles `CREATE TABLE`/`DROP TABLE` and column definitions; other statements (`LOCK TABLES`, session `SET`, executable `/*! ... */` directives) are dropped as noise.
+> **Out of scope** — triggers, views, functions/procedures, and MySQL-specific extensions (`FULLTEXT`/spatial indexes and types). `dsql-lint` handles `CREATE TABLE`/`DROP TABLE` and column definitions; other statements (`LOCK TABLES`, session `SET`, executable `/*! ... */` directives) are dropped as noise. Row data (`INSERT`/`UPDATE`/`DELETE`) is not translated — it is dropped with an `ERROR (unfixable)` diagnostic rather than emitted, because MySQL string escaping cannot be re-encoded faithfully here; load data through a dedicated data path.
 
 As with the Postgres path, `FIXED` means the rewrite is faithful; a lossy translation (e.g. `enum` → `VARCHAR`, unsigned → signed, `AUTO_INCREMENT` → identity) emits a `WARNING` explaining what changed. Review every `WARNING` before applying the migration.
 
