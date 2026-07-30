@@ -53,9 +53,30 @@ jar {
     }
 }
 
+// The version reported at runtime: generated from the project version.
+def generateVersionProperties = tasks.register('generateVersionProperties', WriteProperties) {
+    destinationFile = layout.buildDirectory
+            .file('generated/version/software/amazon/dsql/flyway/version.properties')
+    property 'version', project.version
+}
+
+sourceSets.main.resources.srcDir(layout.buildDirectory.dir('generated/version'))
+
+// Every consumer of the main resources needs to wait for the generated file
+tasks.named('processResources') {
+    dependsOn(generateVersionProperties)
+}
+
+tasks.named('sourcesJar') {
+    dependsOn(generateVersionProperties)
+}
+
 test {
     useJUnitPlatform()
     exclude '**/*IntegrationTest.class'
+
+    // Lets the unit tests assert the runtime version matches the build version
+    systemProperty 'project.version', project.version
 }
 
 tasks.register('integrationTest', Test) {
