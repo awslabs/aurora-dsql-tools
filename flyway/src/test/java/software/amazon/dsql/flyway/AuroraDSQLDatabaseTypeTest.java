@@ -7,6 +7,7 @@ package software.amazon.dsql.flyway;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Unit tests for AuroraDSQLDatabaseType.
@@ -108,11 +109,16 @@ class AuroraDSQLDatabaseTypeTest {
     }
 
     @Test
-    @DisplayName("Should return plugin version")
+    @DisplayName("Should return the build's plugin version")
     void returnsPluginVersion() {
         String version = databaseType.getPluginVersion(null);
         assertNotNull(version);
-        assertEquals("1.0.0", version);
+        assertNotEquals("unknown", version, "version.properties was not generated or packaged");
+
+        String expected = System.getProperty("project.version");
+        assumeTrue(expected != null && !expected.isBlank(),
+            "project.version is only set by the Gradle test task");
+        assertEquals(expected, version);
     }
 
     @Test
