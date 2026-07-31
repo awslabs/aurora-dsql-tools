@@ -26,14 +26,14 @@ The plugin is available on [Maven Central](https://central.sonatype.com/artifact
 <dependency>
     <groupId>software.amazon.dsql</groupId>
     <artifactId>aurora-dsql-flyway-support</artifactId>
-    <version>1.0.1</version>
+    <version>1.0.2</version>
 </dependency>
 ```
 
 ### Gradle
 
 ```groovy
-implementation 'software.amazon.dsql:aurora-dsql-flyway-support:1.0.1'
+implementation 'software.amazon.dsql:aurora-dsql-flyway-support:1.0.2'
 ```
 
 You'll also need these dependencies:
@@ -202,7 +202,7 @@ RUN echo '<?xml version="1.0" encoding="UTF-8"?>\n\
         <dependency>\n\
             <groupId>software.amazon.dsql</groupId>\n\
             <artifactId>aurora-dsql-flyway-support</artifactId>\n\
-            <version>1.0.1</version>\n\
+            <version>1.0.2</version>\n\
         </dependency>\n\
         <dependency>\n\
             <groupId>software.amazon.dsql</groupId>\n\
@@ -291,7 +291,7 @@ For EKS/IRSA, ensure these environment variables are set:
 ./gradlew build
 ```
 
-Output: `build/libs/aurora-dsql-flyway-support-1.0.1.jar`
+Output: `build/libs/aurora-dsql-flyway-support-1.0.2.jar`
 
 ### Running Tests
 
