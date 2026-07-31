@@ -30,7 +30,7 @@ dependencies {
     testImplementation 'org.flywaydb:flyway-core:13.0.0'
     testImplementation 'org.flywaydb:flyway-database-postgresql:13.0.0'
     testImplementation 'software.amazon.dsql:aurora-dsql-jdbc-connector:1.5.0'
-    testImplementation 'software.amazon.awssdk:dsql:2.33.8'
+    testImplementation 'software.amazon.awssdk:dsql:2.49.5'
     testImplementation 'org.postgresql:postgresql:42.7.13'
 }
 
