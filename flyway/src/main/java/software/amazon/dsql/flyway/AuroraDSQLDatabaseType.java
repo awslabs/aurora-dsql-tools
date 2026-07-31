@@ -94,8 +94,7 @@ public class AuroraDSQLDatabaseType extends PostgreSQLDatabaseType {
         return new AuroraDSQLDatabase(configuration, jdbcConnectionFactory, statementInterceptor);
     }
 
-    @Override
     public String getPluginVersion(Configuration config) {
-        return "1.0.0";
+        return AuroraDSQLDatabase.PLUGIN_VERSION;
     }
 }
