@@ -136,7 +136,7 @@ publishing {
     }
 }
 
-if ('UPLOAD'.equals(System.getenv('JRELEASER_MAVENCENTRAL_STAGE'))) {
+if (System.getenv('JRELEASER_MAVENCENTRAL_STAGE')) {
     jreleaser {
         signing {
             active = 'ALWAYS'
