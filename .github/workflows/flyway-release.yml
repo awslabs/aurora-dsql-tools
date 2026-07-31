@@ -7,6 +7,19 @@ on:
   push:
     tags:
       - 'flyway/v*'
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: 'Maven Central deployment stage'
+        required: true
+        type: choice
+        options:
+          - FULL
+          - PUBLISH
+      deploymentId:
+        description: 'Deployment ID required for PUBLISH'
+        required: false
+        type: string
 
 defaults:
   run:
@@ -25,13 +38,18 @@ jobs:
           java-version: '21'
           distribution: 'corretto'
 
-      - name: Deploy to Central Portal
+      - name: Build release artifacts
+        if: github.event_name == 'push' || inputs.stage == 'FULL'
         run: |
           ./gradlew build
           ./gradlew publish
+
+      - name: Deploy to Central Portal
+        run: |
           ./gradlew jreleaserDeploy
         env:
-          JRELEASER_MAVENCENTRAL_STAGE: 'UPLOAD'
+          JRELEASER_MAVENCENTRAL_STAGE: ${{ inputs.stage || 'FULL' }}
+          JRELEASER_MAVENCENTRAL_DEPLOYMENT_ID: ${{ inputs.deploymentId }}
           JRELEASER_GPG_PUBLIC_KEY: ${{ secrets.GPG_PUBLIC_KEY }}
           JRELEASER_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
           JRELEASER_GPG_SECRET_KEY: ${{ secrets.GPG_SECRET_KEY }}
