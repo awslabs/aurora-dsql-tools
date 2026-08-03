@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
 
     steps:
       - name: Checkout
@@ -34,7 +35,7 @@ jobs:
           README="flyway/README.md"
 
           # Update Maven dependency version
-          sed -i -E "s|(<artifactId>aurora-dsql-flyway-support</artifactId>\s*<version>)[^<]+(</version>)|\1${VERSION}\2|g" "$README"
+          sed -i -E "/<artifactId>aurora-dsql-flyway-support<\\/artifactId>/{n;s|<version>[^<]+</version>|<version>${VERSION}</version>|;}" "$README"
 
           # Update Gradle dependency version
           sed -i -E "s|(implementation 'software\.amazon\.dsql:aurora-dsql-flyway-support:)[^']+(')|\\1${VERSION}\\2|g" "$README"
@@ -45,9 +46,12 @@ jobs:
           echo "Updated README to version $VERSION"
           git diff "$README"
 
-      - name: Commit and push
+      - name: Commit and open pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          BRANCH="automation/flyway-readme-v${VERSION}-${GITHUB_RUN_ID}"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -57,6 +61,12 @@ jobs:
             exit 0
           fi
 
+          git switch -c "$BRANCH"
           git add flyway/README.md
           git commit -m "Update flyway README version references to ${VERSION}"
-          git push origin main
+          git push origin "$BRANCH"
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "Update Flyway README to ${VERSION}" \
+            --body "Updates Flyway README version references after the ${VERSION} release."
