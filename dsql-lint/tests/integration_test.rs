@@ -532,6 +532,19 @@ fn suggested_async_index_is_valid() {
     );
 }
 
+#[test]
+fn async_validate_constraint_is_valid() {
+    // The ASYNC form is the correct DSQL syntax and must lint clean.
+    let sql = "ALTER TABLE ASYNC t VALIDATE CONSTRAINT c1;";
+    let diags = lint_sql(sql);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.rule == LintRule::ValidateConstraintAsync),
+        "ALTER TABLE ASYNC ... VALIDATE CONSTRAINT should be valid, got: {diags:?}"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // 4. FALSE-POSITIVE MATRIX
 // ═══════════════════════════════════════════════════════════════════════

@@ -415,6 +415,13 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
         }
     });
 
+    // VALIDATE CONSTRAINT is supported only with the ASYNC keyword
+    // (`ALTER TABLE ASYNC ... VALIDATE CONSTRAINT`). Capture the statement's
+    // async flag up front; the per-op loop borrows `operations` mutably, so
+    // the fix (setting `alter_table.r#async = true`) is applied after the loop.
+    let already_async = alter_table.r#async;
+    let mut fix_validate_async = false;
+
     // Mutable pass: check columns (needs &mut for fix mutations) and
     // read-only checks for everything else.
     for op in &mut alter_table.operations {
@@ -469,15 +476,21 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
                     FixResult::Unfixable,
                 ));
             }
-            // VALIDATE CONSTRAINT — supported only with ALTER TABLE ASYNC
+            // VALIDATE CONSTRAINT — supported only with ALTER TABLE ASYNC.
+            // The valid `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT` form passes
+            // clean; the non-async form is auto-fixed by adding ASYNC (the fix
+            // flips the statement flag after this loop, see below).
             AlterTableOperation::ValidateConstraint { name } => {
-                diagnostics.push(error(
-                    LintRule::ValidateConstraintAsync,
-                    find_line(raw_sql, "validate constraint"),
-                    format!("VALIDATE CONSTRAINT '{name}' requires the ASYNC keyword in DSQL."),
-                    "Use `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT` instead. The validation runs as an asynchronous DDL job; monitor via sys.jobs.",
-                    FixResult::Unfixable,
-                ));
+                if !already_async {
+                    fix_validate_async = true;
+                    diagnostics.push(error(
+                        LintRule::ValidateConstraintAsync,
+                        find_line(raw_sql, "validate constraint"),
+                        format!("VALIDATE CONSTRAINT '{name}' requires the ASYNC keyword in DSQL."),
+                        "Use `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT` instead.",
+                        FixResult::FixedWithWarning("Added ASYNC to ALTER TABLE — VALIDATE CONSTRAINT runs as a background DDL job and is NOT complete when the statement returns; wait via sys.jobs before relying on it, and validation can still fail later if existing rows violate the constraint".to_string()),
+                    ));
+                }
             }
             // Rewrite rules
             AlterTableOperation::EnableRule { .. }
@@ -494,6 +507,12 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
             }
             _ => {}
         }
+    }
+
+    // Apply the VALIDATE CONSTRAINT fix: add ASYNC to the statement so the
+    // rewritten SQL is `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT`.
+    if fix_validate_async {
+        alter_table.r#async = true;
     }
 }
 

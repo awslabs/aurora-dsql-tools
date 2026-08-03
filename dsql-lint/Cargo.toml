@@ -1,6 +1,6 @@
 [package]
 name = "dsql-lint"
-version = "0.2.12"
+version = "0.2.13"
 edition = "2021"
 rust-version = "1.80"
 description = "Lint SQL files for Aurora DSQL compatibility"
@@ -24,7 +24,7 @@ grammar-diff = ["serde", "dep:earlgrey", "dep:indexmap"]
 
 [dependencies]
 # `visitor` powers the recursive backtick-stripping walk in the MySQL path.
-sqlparser = { package = "sqlparser-dsql", version = "0.62.1", features = ["visitor"] }
+sqlparser = { package = "sqlparser-dsql", version = "0.62.2", features = ["visitor"] }
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 strum = { version = "0.26", features = ["derive"] }
@@ -47,4 +47,3 @@ required-features = ["serde"]
 name = "grammar-diff"
 path = "src/bin/grammar_diff.rs"
 required-features = ["grammar-diff"]
-

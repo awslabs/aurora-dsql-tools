@@ -51,6 +51,11 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "FixedWithWarning",
     ),
     (
+        "validate-constraint-async",
+        "ALTER TABLE t VALIDATE CONSTRAINT c1;",
+        "FixedWithWarning",
+    ),
+    (
         "index-concurrently",
         "CREATE INDEX CONCURRENTLY idx ON t(col);",
         "FixedWithWarning",
@@ -356,6 +361,11 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
         "index-concurrently",
         "CREATE INDEX CONCURRENTLY idx ON t(col);",
         "CREATE INDEX ASYNC idx ON t(col);\n",
+    ),
+    (
+        "validate-constraint-async",
+        "ALTER TABLE t VALIDATE CONSTRAINT c1;",
+        "ALTER TABLE ASYNC t VALIDATE CONSTRAINT c1;\n",
     ),
     (
         "index-using-btree",
