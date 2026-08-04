@@ -18,7 +18,8 @@ import java.util.logging.Logger;
  * Aurora DSQL connection implementation for Flyway.
  *
  * <p>Overrides PostgreSQL connection behavior: skips SET ROLE (DSQL uses IAM auth),
- * bypasses advisory locks (DSQL uses OCC), and returns DSQL-compatible schemas.</p>
+ * bypasses advisory locks (DSQL uses OCC, with conflicts retried by
+ * {@link AuroraDSQLRetryingStrategy}), and returns DSQL-compatible schemas.</p>
  */
 public class AuroraDSQLConnection extends PostgreSQLConnection {
 
@@ -43,7 +44,11 @@ public class AuroraDSQLConnection extends PostgreSQLConnection {
 
     /**
      * Executes the callable without advisory locks (not supported by DSQL).
-     * DSQL's optimistic concurrency control handles conflicts.
+     * <p>Optimistic concurrency conflicts are retried by {@link AuroraDSQLRetryingStrategy}, not
+     * here. Do not add retry logic to this method: Flyway records a failed migration in
+     * {@code flyway_schema_history} inside this callable and rethrows
+     * {@code FlywayMigrateException}, so by the time an exception reaches this frame the failure is
+     * already persisted and retrying would not clear it.</p>
      */
     @Override
     public <T> T lock(Table table, Callable<T> callable) {
@@ -51,6 +56,8 @@ public class AuroraDSQLConnection extends PostgreSQLConnection {
         try {
             return callable.call();
         } catch (SQLException e) {
+            // Not the migration-failure path. Flyway wraps those in FlywayMigrateException,
+            // a RuntimeException, which the next catch rethrows untouched.
             throw new FlywaySqlException("Unable to execute migration", e);
         } catch (RuntimeException e) {
             throw e;

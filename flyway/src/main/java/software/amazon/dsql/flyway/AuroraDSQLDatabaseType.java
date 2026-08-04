@@ -5,6 +5,8 @@
 package software.amazon.dsql.flyway;
 
 import org.flywaydb.core.api.configuration.Configuration;
+import org.flywaydb.core.internal.database.DatabaseExecutionStrategy;
+import org.flywaydb.core.internal.database.DefaultExecutionStrategy;
 import org.flywaydb.core.internal.database.base.Database;
 import org.flywaydb.core.internal.jdbc.JdbcConnectionFactory;
 import org.flywaydb.core.internal.jdbc.StatementInterceptor;
@@ -92,6 +94,20 @@ public class AuroraDSQLDatabaseType extends PostgreSQLDatabaseType {
                                    JdbcConnectionFactory jdbcConnectionFactory,
                                    StatementInterceptor statementInterceptor) {
         return new AuroraDSQLDatabase(configuration, jdbcConnectionFactory, statementInterceptor);
+    }
+
+    /**
+     * Retries statements that hit DSQL's optimistic concurrency conflict (SQLSTATE 40001 / OC001).
+     *
+     * <p>The inherited default strategy does not retry anything, which leaves a transient conflict
+     * recorded as a permanently failed migration. See {@link AuroraDSQLRetryingStrategy}.</p>
+     */
+    @Override
+    public DatabaseExecutionStrategy createExecutionStrategy(Connection connection) {
+        if (connection == null) {
+            return new DefaultExecutionStrategy();
+        }
+        return new AuroraDSQLRetryingStrategy();
     }
 
     public String getPluginVersion(Configuration config) {
