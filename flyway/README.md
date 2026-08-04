@@ -10,6 +10,7 @@ This plugin adapts Flyway for Aurora DSQL's distributed architecture:
 - **IAM authentication**: Role-based access via IAM replaces PostgreSQL's `SET ROLE`
 - **Optimistic concurrency**: DSQL uses OCC instead of advisory locks. Run migrations from a single instance to avoid conflicts
 - **Async indexes required**: Use `CREATE INDEX ASYNC` in all migrations (see [Writing DSQL-Compatible Migrations](#writing-dsql-compatible-migrations))
+- **Unique index builds are awaited**: `CREATE UNIQUE INDEX ASYNC` blocks until the index is active (see [Index Creation](#index-creation))
 
 ### Not Yet Supported
 
@@ -158,6 +159,81 @@ CREATE INDEX ASYNC idx_users_email ON users(email);
 ```
 
 See [Asynchronous indexes in Aurora DSQL](https://docs.aws.amazon.com/aurora-dsql/latest/userguide/working-with-create-index-async.html) for details.
+
+#### Unique indexes
+
+DSQL builds indexes in the background, so `CREATE INDEX ASYNC` normally returns before the index
+exists. Creating a unique index modifies the system catalog, which can cause active sessions, including
+the one creating the index, to fail with a concurrency error (`OC001`). For other connections this is
+probably not a problem and they can retry.  For the Flyway connection itself, however, it is inconvenient,
+as Flyway typically handles errors in migrations by stopping and waiting for manual cleanup, and as
+DSQL cannot run migrations (with multiple DDL statements) in a transaction it can leave the
+database in an unexpected state.
+
+This plugin therefore treats `CREATE UNIQUE INDEX ASYNC` specially. It captures the `job_id`
+returned by the statement and calls `sys.wait_for_job()` on it, so the migration does not continue
+until the index is active:
+
+```sql
+-- The migration blocks here until the index has finished building.
+CREATE UNIQUE INDEX ASYNC idx_users_email ON users(email);
+```
+
+It is worth being aware of the following:
+
+- The index creation can be slow; index creation on an empty table seems to take tens of seconds,
+  and is presumably much longer on a large table. Migration timeouts may need to be set accordingly.
+- The statement is non-transactional. DSQL rejects `CALL sys.wait_for_job` inside a
+  transaction block, so the plugin marks the statement as non-transactional, which makes Flyway
+  run the whole migration script outside a transaction. This mirrors how Flyway handles
+  PostgreSQL's `CREATE INDEX CONCURRENTLY`. If you are not already running with
+  `flyway.executeInTransaction=false` and the file contains
+  other statements, Flyway will report *"Detected both transactional and non-transactional
+  statements within the same migration"*. Such a file could not have worked on DSQL anyway; put
+  the index in its own migration, or set `executeInTransaction=false`.
+
+If a unique index build **fails** - most often because the table already contains duplicates - the
+migration fails with the reason reported by DSQL:
+
+```
+Aurora DSQL failed to build index public.idx_users_email (job zd6ip2vvlfc55dlp54fvlvfiay):
+found duplicate key(s) while validating index uniqueness. DSQL leaves a failed index in place
+but INVALID; drop it and recreate it once the cause is resolved.
+```
+
+Note that DSQL does not remove the failed index definition. Drop it with `DROP INDEX`, remove the
+duplicate rows, then re-run the migration.
+
+Non-unique `CREATE INDEX ASYNC` statements are not modified as they should not cause errors in
+other connections.
+
+#### Turning the wait off
+
+Waiting for unique index creation is enabled by default. To disable it, set the following configuration
+option:
+
+```properties
+# flyway.conf
+flyway.dsql.waitForUniqueIndexBuilds=false
+```
+
+Or in Java:
+
+```java
+import software.amazon.dsql.flyway.AuroraDSQLConfigurationExtension;
+
+FluentConfiguration configuration = Flyway.configure().dataSource(dataSource);
+configuration.getPluginRegister()
+    // getPlugin() is deprecated in favour of getExact() in newer Flyway, but getExact()
+    // does not exist in Flyway 11. Use getPlugin() unless you are pinned to Flyway 13+.
+    .getPlugin(AuroraDSQLConfigurationExtension.class)
+    .setWaitForUniqueIndexBuilds(false);
+
+Flyway flyway = configuration.load();
+```
+
+Or if you have Flyway configured to read environment variables, you can set
+`FLYWAY_DSQL_WAIT_FOR_UNIQUE_INDEX_BUILDS=false`.
 
 ### Data Modification
 
@@ -330,6 +406,12 @@ CREATE INDEX idx_name ON table(column);
 -- After
 CREATE INDEX ASYNC idx_name ON table(column);
 ```
+
+### "Detected both transactional and non-transactional statements within the same migration"
+
+A migration file mixes `CREATE UNIQUE INDEX ASYNC` (which must run outside a transaction) with
+other statements. Such a file cannot work on DSQL regardless, since DSQL allows only one DDL per
+transaction. Either move the index into its own migration file, or set `flyway.executeInTransaction=false`.
 
 ### "ddl and dml are not supported in the same transaction"
 
