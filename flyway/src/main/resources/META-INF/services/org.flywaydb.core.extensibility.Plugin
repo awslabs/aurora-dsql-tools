@@ -1,1 +1,2 @@
 software.amazon.dsql.flyway.AuroraDSQLDatabaseType
+software.amazon.dsql.flyway.AuroraDSQLConfigurationExtension

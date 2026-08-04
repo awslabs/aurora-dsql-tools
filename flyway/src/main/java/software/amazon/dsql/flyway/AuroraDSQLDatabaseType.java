@@ -4,10 +4,13 @@
  */
 package software.amazon.dsql.flyway;
 
+import org.flywaydb.core.api.ResourceProvider;
 import org.flywaydb.core.api.configuration.Configuration;
 import org.flywaydb.core.internal.database.base.Database;
 import org.flywaydb.core.internal.jdbc.JdbcConnectionFactory;
 import org.flywaydb.core.internal.jdbc.StatementInterceptor;
+import org.flywaydb.core.internal.parser.Parser;
+import org.flywaydb.core.internal.parser.ParsingContext;
 import org.flywaydb.database.postgresql.PostgreSQLDatabaseType;
 
 import java.sql.Connection;
@@ -92,6 +95,14 @@ public class AuroraDSQLDatabaseType extends PostgreSQLDatabaseType {
                                    JdbcConnectionFactory jdbcConnectionFactory,
                                    StatementInterceptor statementInterceptor) {
         return new AuroraDSQLDatabase(configuration, jdbcConnectionFactory, statementInterceptor);
+    }
+
+    @Override
+    public Parser createParser(Configuration configuration,
+                               ResourceProvider resourceProvider,
+                               ParsingContext parsingContext) {
+        // Recognises CREATE UNIQUE INDEX ASYNC so the migration waits for the index build.
+        return new AuroraDSQLParser(configuration, parsingContext);
     }
 
     public String getPluginVersion(Configuration config) {
