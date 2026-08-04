@@ -8,7 +8,7 @@ plugins {
 }
 
 group = 'software.amazon.dsql'
-version = '1.0.2'
+version = '2.0.0'
 
 repositories {
     mavenCentral()
@@ -22,8 +22,13 @@ dependencies {
     // PostgreSQL JDBC Driver - provided by runtime
     compileOnly 'org.postgresql:postgresql:42.7.13'
 
+    // Aurora DSQL JDBC Connector - provides the OCC retry contract (OCCRetry/OCCRetryConfig)
+    // used by the OCC retry decorator. Provided by the runtime; users supply the driver.
+    compileOnly 'software.amazon.dsql:aurora-dsql-jdbc-connector:1.5.0'
+
     // Testing - Unit Tests
     testImplementation 'org.junit.jupiter:junit-jupiter:6.1.2'
+    testImplementation 'org.assertj:assertj-core:3.26.3'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
     // Testing - Integration Tests (need actual Flyway and DSQL dependencies)

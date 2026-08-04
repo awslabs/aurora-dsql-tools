@@ -4,6 +4,9 @@
  */
 package software.amazon.dsql.flyway;
 
+import org.flywaydb.core.api.configuration.FluentConfiguration;
+import org.flywaydb.core.internal.jdbc.ExecutionTemplate;
+import org.flywaydb.core.internal.sqlscript.SqlScriptExecutorFactory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
 import static org.junit.jupiter.api.Assertions.*;
@@ -134,8 +137,89 @@ class AuroraDSQLDatabaseTypeTest {
     @DisplayName("Should return PostgreSQL driver class for transformed URLs")
     void returnsPostgresDriverClassForTransformedUrl() {
         String driverClass = databaseType.getDriverClass(
-            "jdbc:postgresql://abc123.dsql.us-east-1.on.aws:5432/postgres", 
+            "jdbc:postgresql://abc123.dsql.us-east-1.on.aws:5432/postgres",
             null);
         assertEquals("org.postgresql.Driver", driverClass);
+    }
+
+    @Test
+    @DisplayName("Should NOT handle a DSQL pattern outside the host")
+    void doesNotHandleDsqlPatternOutsideHost() {
+        // The DSQL pattern must match the host only: a ".dsql." in the database name or a query
+        // parameter must not hijack an ordinary PostgreSQL URL (priority 1 would win selection).
+        assertFalse(databaseType.handlesJDBCUrl("jdbc:postgresql://localhost:5432/app.dsql.production"));
+        assertFalse(databaseType.handlesJDBCUrl("jdbc:postgresql://localhost:5432/app?ApplicationName=.dsql."));
+    }
+
+    @Test
+    @DisplayName("Should wrap the transactional template with the OCC-retry decorator")
+    void wrapsTransactionalTemplateWithOccRetryDecorator() {
+        // The commit-wrapping seam must return our OCC-retry decorator, otherwise a commit-time
+        // DSQL conflict is never retried. Base PostgreSQL just news up a TransactionalExecutionTemplate
+        // holding the connection (no I/O), so a null connection is fine for the type check.
+        ExecutionTemplate template = databaseType.createTransactionalExecutionTemplate(null, true);
+        assertTrue(template instanceof AuroraDSQLExecutionTemplate);
+    }
+
+    @Test
+    @DisplayName("Should wrap the SQL-script executor factory for async-index waiting")
+    void wrapsSqlScriptExecutorFactoryForAsyncIndexWait() {
+        // The SQL-script executor seam must return our wrapper so CREATE INDEX ASYNC waits.
+        // Base PostgreSQL builds the delegate factory lazily (no I/O until an executor is made),
+        // so null collaborators are fine for the type check.
+        SqlScriptExecutorFactory factory = databaseType.createSqlScriptExecutorFactory(null, null, null);
+        assertTrue(factory instanceof AuroraDSQLSqlScriptExecutorFactory);
+    }
+
+    @Test
+    @DisplayName("maxRetryDelayMillis converts seconds to millis")
+    void maxRetryDelayConvertsSecondsToMillis() {
+        // Guards the seconds->millis conversion: dropping the *1000 would make backoff 1000x too short.
+        assertEquals(30_000L, AuroraDSQLDatabaseType.maxRetryDelayMillis(30));
+    }
+
+    @Test
+    @DisplayName("maxRetryDelayMillis floors at the minimum")
+    void maxRetryDelayFloorsAtMinimum() {
+        // A zero or negative configured cap must not disable backoff; it floors at 100ms.
+        assertEquals(100L, AuroraDSQLDatabaseType.maxRetryDelayMillis(0));
+        assertEquals(100L, AuroraDSQLDatabaseType.maxRetryDelayMillis(-5));
+    }
+
+    @Test
+    @DisplayName("resolveOccRetryKnobs falls back to defaults when config is null")
+    void resolveKnobsFallsBackToDefaultsWhenConfigNull() {
+        assertArrayEquals(new int[]{0, 5}, AuroraDSQLDatabaseType.resolveOccRetryKnobs(null));
+    }
+
+    @Test
+    @DisplayName("resolveOccRetryKnobs reads configured extension values")
+    void resolveKnobsReadsConfiguredExtensionValues() {
+        // Drives the real resolution path: FluentConfiguration auto-registers the extension via
+        // ServiceLoader, so this proves configured values actually reach the transactional template.
+        FluentConfiguration config = new FluentConfiguration();
+        AuroraDSQLConfigurationExtension ext =
+                config.getPluginRegister().getPlugin(AuroraDSQLConfigurationExtension.class);
+        ext.setOccMaxRetries(3);
+        ext.setOccMaxRetryDelaySeconds(10);
+        assertArrayEquals(new int[]{3, 10}, AuroraDSQLDatabaseType.resolveOccRetryKnobs(config));
+    }
+
+    @Test
+    @DisplayName("resolveOccRetryKnobs clamps negative retries to zero")
+    void resolveKnobsClampsNegativeRetriesToZero() {
+        FluentConfiguration config = new FluentConfiguration();
+        config.getPluginRegister().getPlugin(AuroraDSQLConfigurationExtension.class).setOccMaxRetries(-1);
+        assertEquals(0, AuroraDSQLDatabaseType.resolveOccRetryKnobs(config)[0]);
+    }
+
+    @Test
+    @DisplayName("resolveOccRetryKnobs clamps excessive retries to the connector max")
+    void resolveKnobsClampsExcessiveRetriesToConnectorMax() {
+        // OCCRetryConfig.build() rejects maxRetries > 100; the clamp keeps an oversized config value
+        // from failing the migration when building the retry config.
+        FluentConfiguration config = new FluentConfiguration();
+        config.getPluginRegister().getPlugin(AuroraDSQLConfigurationExtension.class).setOccMaxRetries(500);
+        assertEquals(100, AuroraDSQLDatabaseType.resolveOccRetryKnobs(config)[0]);
     }
 }
