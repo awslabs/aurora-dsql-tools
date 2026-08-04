@@ -8,7 +8,7 @@ This plugin adapts Flyway for Aurora DSQL's distributed architecture:
 
 - **One DDL per transaction**: Each schema change runs in its own transaction automatically
 - **IAM authentication**: Role-based access via IAM replaces PostgreSQL's `SET ROLE`
-- **Optimistic concurrency**: DSQL uses OCC instead of advisory locks. Run migrations from a single instance to avoid conflicts
+- **Optimistic concurrency**: DSQL uses OCC instead of advisory locks. Transient conflicts (SQLSTATE `40001`, `OC001`) are retried automatically with exponential backoff. For example, these might occur  when bootstrapping a new cluster, where many DDL statements land in sequence. Use write migrations idempotently (`IF NOT EXISTS`)
 - **Async indexes required**: Use `CREATE INDEX ASYNC` in all migrations (see [Writing DSQL-Compatible Migrations](#writing-dsql-compatible-migrations))
 
 ### Not Yet Supported
