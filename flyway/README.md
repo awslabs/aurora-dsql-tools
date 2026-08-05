@@ -8,8 +8,8 @@ This plugin adapts Flyway for Aurora DSQL's distributed architecture:
 
 - **One DDL per transaction**: Each schema change runs in its own transaction automatically
 - **IAM authentication**: Role-based access via IAM replaces PostgreSQL's `SET ROLE`
-- **Optimistic concurrency**: DSQL uses OCC instead of advisory locks. Run migrations from a single instance to avoid conflicts
-- **Async indexes required**: Use `CREATE INDEX ASYNC` in all migrations (see [Writing DSQL-Compatible Migrations](#writing-dsql-compatible-migrations))
+- **Optimistic concurrency**: DSQL uses OCC instead of advisory locks, and surfaces conflicts (`OC000` / `OC001` / `40001`) at commit time. The plugin can retry the migration transaction on a conflict; this is opt-in, off by default (see [Configuration](#configuration)). Run migrations from a single instance
+- **Async indexes required**: Use `CREATE INDEX ASYNC` in all migrations, with an optional wait for the build (see [Configuration](#configuration) and [Writing DSQL-Compatible Migrations](#writing-dsql-compatible-migrations))
 
 ### Not Yet Supported
 
@@ -26,14 +26,14 @@ The plugin is available on [Maven Central](https://central.sonatype.com/artifact
 <dependency>
     <groupId>software.amazon.dsql</groupId>
     <artifactId>aurora-dsql-flyway-support</artifactId>
-    <version>1.0.2</version>
+    <version>2.0.0</version>
 </dependency>
 ```
 
 ### Gradle
 
 ```groovy
-implementation 'software.amazon.dsql:aurora-dsql-flyway-support:1.0.2'
+implementation 'software.amazon.dsql:aurora-dsql-flyway-support:2.0.0'
 ```
 
 You'll also need these dependencies:
@@ -43,7 +43,7 @@ You'll also need these dependencies:
 <dependency>
     <groupId>software.amazon.dsql</groupId>
     <artifactId>aurora-dsql-jdbc-connector</artifactId>
-    <version>1.3.0</version>
+    <version>1.5.0</version>
 </dependency>
 
 <!-- Flyway -->
@@ -179,6 +179,32 @@ Be aware of these per-transaction limits when writing migrations:
 
 For a complete list of PostgreSQL features not available in Aurora DSQL, see [Unsupported PostgreSQL features](https://docs.aws.amazon.com/aurora-dsql/latest/userguide/working-with-postgresql-compatibility-unsupported-features.html) in the Aurora DSQL documentation.
 
+## Configuration
+
+Parameters live under the `flyway.dsql.` namespace, set through any Flyway surface (config file, CLI flag, environment variable, or the Java API). In `flyway.conf`:
+
+```properties
+flyway.dsql.occMaxRetries=3
+flyway.dsql.occMaxRetryDelaySeconds=5
+flyway.dsql.awaitAsyncIndexes=false
+```
+
+| Parameter | Default | Description |
+|---|---|---|
+| `occMaxRetries` | `0` | Max retries of a migration transaction that fails with an OCC conflict. `0` disables retry; set a positive value to enable it. |
+| `occMaxRetryDelaySeconds` | `5` | Upper bound on the exponential backoff between OCC retries. |
+| `awaitAsyncIndexes` | `false` | When `true`, wait for `CREATE INDEX ASYNC` builds to complete before the migration returns. |
+
+Equivalent environment variables: `FLYWAY_DSQL_OCC_MAX_RETRIES`, `FLYWAY_DSQL_OCC_MAX_RETRY_DELAY_SECONDS`, `FLYWAY_DSQL_AWAIT_ASYNC_INDEXES`.
+
+### Asynchronous indexes
+
+`CREATE INDEX ASYNC` returns immediately with a runtime `job_id` and builds the index in the background, so a plain migration reports success while the index is still building. With `awaitAsyncIndexes=true`, a SQL migration running `CREATE INDEX ASYNC` blocks (via `sys.wait_for_job`) until the build finishes; if it fails, the migration fails.
+
+- **Off by default** — fire-and-forget is faster for a pure performance index. Enable the wait when a later migration needs the index built, or a failed build should fail the deploy. The wait runs after the script finishes, so it gates a later migration, not an earlier statement in the same file.
+- **SQL migrations only** — Java migrations can capture the `job_id` and call `sys.wait_for_job` themselves.
+- **A failed build leaves an `INVALID` index** — neither DSQL nor the migration drops it. Drop it before rerunning; `IF NOT EXISTS` can silently accept the `INVALID` index.
+
 ## Docker Setup
 
 Use a multi-stage Docker build to download all dependencies automatically:
@@ -202,12 +228,12 @@ RUN echo '<?xml version="1.0" encoding="UTF-8"?>\n\
         <dependency>\n\
             <groupId>software.amazon.dsql</groupId>\n\
             <artifactId>aurora-dsql-flyway-support</artifactId>\n\
-            <version>1.0.2</version>\n\
+            <version>2.0.0</version>\n\
         </dependency>\n\
         <dependency>\n\
             <groupId>software.amazon.dsql</groupId>\n\
             <artifactId>aurora-dsql-jdbc-connector</artifactId>\n\
-            <version>1.3.0</version>\n\
+            <version>1.5.0</version>\n\
         </dependency>\n\
         <dependency>\n\
             <groupId>org.postgresql</groupId>\n\
@@ -291,7 +317,7 @@ For EKS/IRSA, ensure these environment variables are set:
 ./gradlew build
 ```
 
-Output: `build/libs/aurora-dsql-flyway-support-1.0.2.jar`
+Output: `build/libs/aurora-dsql-flyway-support-2.0.0.jar`
 
 ### Running Tests
 
@@ -365,7 +391,7 @@ The Aurora DSQL JDBC Connector automatically handles IAM token generation and re
 
 - Java 21+
 - Flyway 11.3+
-- Aurora DSQL JDBC Connector 1.3.0+
+- Aurora DSQL JDBC Connector 1.5.0+
 - PostgreSQL JDBC Driver 42.7.x
 
 ## Security
