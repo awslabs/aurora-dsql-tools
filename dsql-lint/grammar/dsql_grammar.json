@@ -2427,8 +2427,41 @@
       "repetition": null
     },
     "opt_column_storage": {
-      "choices": [],
+      "choices": [
+        [
+          {
+            "text": "column_storage",
+            "token_type": "NonTerminal"
+          }
+        ]
+      ],
       "optional": true,
+      "repetition": null
+    },
+    "column_storage": {
+      "choices": [
+        [
+          {
+            "text": "STORAGE",
+            "token_type": "Terminal"
+          },
+          {
+            "text": "PLAIN",
+            "token_type": "Terminal"
+          }
+        ],
+        [
+          {
+            "text": "STORAGE",
+            "token_type": "Terminal"
+          },
+          {
+            "text": "DEFAULT",
+            "token_type": "Terminal"
+          }
+        ]
+      ],
+      "optional": false,
       "repetition": null
     },
     "OptTemp": {
@@ -3792,6 +3825,28 @@
             "token_type": "NonTerminal"
           },
           {
+            "text": "SET",
+            "token_type": "Terminal"
+          },
+          {
+            "text": "column_storage",
+            "token_type": "NonTerminal"
+          }
+        ],
+        [
+          {
+            "text": "ALTER",
+            "token_type": "Terminal"
+          },
+          {
+            "text": "opt_column",
+            "token_type": "NonTerminal"
+          },
+          {
+            "text": "ColId",
+            "token_type": "NonTerminal"
+          },
+          {
             "text": "alter_identity_column_option_list",
             "token_type": "NonTerminal"
           }
@@ -3845,6 +3900,62 @@
           },
           {
             "text": "EXISTS",
+            "token_type": "Terminal"
+          }
+        ],
+        [
+          {
+            "text": "ENABLE",
+            "token_type": "Terminal"
+          },
+          {
+            "text": "TRIGGER",
+            "token_type": "Terminal"
+          },
+          {
+            "text": "ALL",
+            "token_type": "Terminal"
+          }
+        ],
+        [
+          {
+            "text": "ENABLE",
+            "token_type": "Terminal"
+          },
+          {
+            "text": "TRIGGER",
+            "token_type": "Terminal"
+          },
+          {
+            "text": "USER",
+            "token_type": "Terminal"
+          }
+        ],
+        [
+          {
+            "text": "DISABLE",
+            "token_type": "Terminal"
+          },
+          {
+            "text": "TRIGGER",
+            "token_type": "Terminal"
+          },
+          {
+            "text": "ALL",
+            "token_type": "Terminal"
+          }
+        ],
+        [
+          {
+            "text": "DISABLE",
+            "token_type": "Terminal"
+          },
+          {
+            "text": "TRIGGER",
+            "token_type": "Terminal"
+          },
+          {
+            "text": "USER",
             "token_type": "Terminal"
           }
         ],
@@ -6143,6 +6254,52 @@
           {
             "text": "opt_drop_behavior__in__DropStmt",
             "token_type": "NonTerminal"
+          }
+        ],
+        [
+          {
+            "text": "DROP",
+            "token_type": "Terminal"
+          },
+          {
+            "text": "object_type_name_on_any_name",
+            "token_type": "NonTerminal"
+          },
+          {
+            "text": "IF",
+            "token_type": "Terminal"
+          },
+          {
+            "text": "EXISTS",
+            "token_type": "Terminal"
+          },
+          {
+            "text": "name",
+            "token_type": "NonTerminal"
+          },
+          {
+            "text": "ON",
+            "token_type": "Terminal"
+          },
+          {
+            "text": "any_name",
+            "token_type": "NonTerminal"
+          },
+          {
+            "text": "opt_drop_behavior__in__DropStmt",
+            "token_type": "NonTerminal"
+          }
+        ]
+      ],
+      "optional": false,
+      "repetition": null
+    },
+    "object_type_name_on_any_name": {
+      "choices": [
+        [
+          {
+            "text": "TRIGGER",
+            "token_type": "Terminal"
           }
         ]
       ],
