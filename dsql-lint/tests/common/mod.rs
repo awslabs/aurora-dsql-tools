@@ -80,6 +80,144 @@ pub const CLEAN_STATEMENTS: &[(&str, &str, &str, &str)] = &[
         "ALTER TABLE _clean_base DROP COLUMN IF EXISTS description;",
     ),
     (
+        "alter-drop-col",
+        "ALTER TABLE _clean_base DROP COLUMN description;",
+        "ALTER TABLE _clean_base ADD COLUMN description TEXT;",
+        "",
+    ),
+    (
+        "alter-set-storage-plain",
+        "ALTER TABLE _clean_base ALTER COLUMN name SET STORAGE PLAIN;",
+        "",
+        "",
+    ),
+    (
+        "alter-set-storage-external",
+        "ALTER TABLE _clean_base ALTER COLUMN name SET STORAGE EXTERNAL;",
+        "",
+        "",
+    ),
+    (
+        "alter-set-storage-extended",
+        "ALTER TABLE _clean_base ALTER COLUMN name SET STORAGE EXTENDED;",
+        "",
+        "",
+    ),
+    (
+        "alter-set-storage-main",
+        "ALTER TABLE _clean_base ALTER COLUMN name SET STORAGE MAIN;",
+        "",
+        "",
+    ),
+    (
+        "alter-set-storage-default",
+        "ALTER TABLE _clean_base ALTER name SET STORAGE DEFAULT;",
+        "",
+        "",
+    ),
+    (
+        "create-column-storage-plain",
+        "CREATE TABLE _clean_storage_plain (payload TEXT STORAGE PLAIN);",
+        "",
+        "DROP TABLE IF EXISTS _clean_storage_plain;",
+    ),
+    (
+        "create-column-storage-external",
+        "CREATE TABLE _clean_storage_external (payload TEXT STORAGE EXTERNAL);",
+        "",
+        "DROP TABLE IF EXISTS _clean_storage_external;",
+    ),
+    (
+        "create-column-storage-extended",
+        "CREATE TABLE _clean_storage_extended (payload TEXT STORAGE EXTENDED);",
+        "",
+        "DROP TABLE IF EXISTS _clean_storage_extended;",
+    ),
+    (
+        "create-column-storage-main",
+        "CREATE TABLE _clean_storage_main (payload TEXT STORAGE MAIN);",
+        "",
+        "DROP TABLE IF EXISTS _clean_storage_main;",
+    ),
+    (
+        "create-column-storage-default",
+        "CREATE TABLE _clean_storage_default (payload TEXT STORAGE DEFAULT);",
+        "",
+        "DROP TABLE IF EXISTS _clean_storage_default;",
+    ),
+    (
+        "add-column-storage-plain",
+        "ALTER TABLE _clean_base ADD COLUMN storage_plain TEXT STORAGE PLAIN;",
+        "",
+        "ALTER TABLE _clean_base DROP COLUMN storage_plain;",
+    ),
+    (
+        "add-column-storage-external",
+        "ALTER TABLE _clean_base ADD COLUMN storage_external TEXT STORAGE EXTERNAL;",
+        "",
+        "ALTER TABLE _clean_base DROP COLUMN storage_external;",
+    ),
+    (
+        "add-column-storage-extended",
+        "ALTER TABLE _clean_base ADD COLUMN storage_extended TEXT STORAGE EXTENDED;",
+        "",
+        "ALTER TABLE _clean_base DROP COLUMN storage_extended;",
+    ),
+    (
+        "add-column-storage-main",
+        "ALTER TABLE _clean_base ADD COLUMN storage_main TEXT STORAGE MAIN;",
+        "",
+        "ALTER TABLE _clean_base DROP COLUMN storage_main;",
+    ),
+    (
+        "add-column-storage-default",
+        "ALTER TABLE _clean_base ADD COLUMN storage_default TEXT STORAGE DEFAULT;",
+        "",
+        "ALTER TABLE _clean_base DROP COLUMN storage_default;",
+    ),
+    (
+        "alter-enable-trigger-all",
+        "ALTER TABLE _clean_base ENABLE TRIGGER ALL;",
+        "",
+        "",
+    ),
+    (
+        "alter-disable-trigger-all",
+        "ALTER TABLE _clean_base DISABLE TRIGGER ALL;",
+        "",
+        "",
+    ),
+    (
+        "alter-enable-trigger-user",
+        "ALTER TABLE _clean_base ENABLE TRIGGER USER;",
+        "",
+        "",
+    ),
+    (
+        "alter-disable-trigger-user",
+        "ALTER TABLE _clean_base DISABLE TRIGGER USER;",
+        "",
+        "",
+    ),
+    (
+        "drop-trigger-if-exists",
+        "DROP TRIGGER IF EXISTS _missing_trg ON _clean_base;",
+        "",
+        "",
+    ),
+    (
+        "drop-trigger-if-exists-cascade",
+        "DROP TRIGGER IF EXISTS _missing_trg ON _clean_base CASCADE;",
+        "",
+        "",
+    ),
+    (
+        "drop-trigger-if-exists-restrict",
+        "DROP TRIGGER IF EXISTS _missing_trg ON _clean_base RESTRICT;",
+        "",
+        "",
+    ),
+    (
         "insert",
         "INSERT INTO _clean_base (id, name) VALUES (1, 'test');",
         "",
@@ -227,8 +365,6 @@ pub const FALSE_POSITIVE_CASES: &[(&str, &str)] = &[
     ("ALTER ROLE r RESET ALL;", "ALTER ROLE"),
     ("ALTER ROLE r RESET work_mem;", "ALTER ROLE"),
     // ALTER TABLE ENABLE/DISABLE TRIGGER is supported in DSQL
-    ("ALTER TABLE t ENABLE TRIGGER ALL;", "TRIGGER"),
-    ("ALTER TABLE t DISABLE TRIGGER ALL;", "TRIGGER"),
     ("ALTER TABLE t ENABLE ALWAYS TRIGGER trg1;", "TRIGGER"),
     ("ALTER TABLE t ENABLE REPLICA TRIGGER trg1;", "TRIGGER"),
     // DROP VIEW (non-materialized) is supported on DSQL
@@ -259,7 +395,6 @@ pub const ADDITIONAL_ERROR_CASES: &[(&str, &str)] = &[
     ("CREATE SEQUENCE s;", "CACHE"),
     ("CREATE SEQUENCE s INCREMENT 1;", "CACHE"),
     // ALTER TABLE operations
-    ("ALTER TABLE t DROP COLUMN name;", "DROP COLUMN"),
     ("ALTER TABLE t ALTER COLUMN name TYPE TEXT;", "ALTER COLUMN"),
     (
         "ALTER TABLE t ALTER COLUMN name SET NOT NULL;",
@@ -305,6 +440,8 @@ pub const ADDITIONAL_ERROR_CASES: &[(&str, &str)] = &[
     // (e.g. stashing the name elsewhere when `prepare: true`) doesn't silently
     // drop coverage. The no-PREPARE form is exercised by the rule fixture.
     ("DEALLOCATE PREPARE _foo;", "DEALLOCATE"),
+    // DROP TRIGGER requires IF EXISTS and an ON target.
+    ("DROP TRIGGER IF EXISTS _rej_trg;", "DROP TRIGGER"),
 ];
 
 /// Additional false-positive guards. Mirror in
@@ -320,7 +457,7 @@ pub const ADDITIONAL_FALSE_POSITIVES: &[(&str, &str)] = &[
     ("CREATE SEQUENCE s CACHE 1;", "CACHE clause"),
     ("CREATE SEQUENCE s CACHE 65536;", "CACHE clause"),
     // Supported ALTER TABLE operations should not error
-    ("ALTER TABLE t ADD COLUMN name TEXT;", "DROP COLUMN"),
+    ("ALTER TABLE t DROP COLUMN name;", "DROP COLUMN"),
     ("ALTER TABLE t OWNER TO new_owner;", "DROP"),
     ("ALTER TABLE t RENAME COLUMN a TO b;", "ALTER COLUMN"),
     // ALTER COLUMN DROP NOT NULL / SET DEFAULT / DROP DEFAULT are now
@@ -368,6 +505,13 @@ pub const ADDITIONAL_FALSE_POSITIVES: &[(&str, &str)] = &[
 ];
 
 use dsql_lint::LintRule;
+
+#[allow(dead_code)]
+pub const ADDITIONAL_CLUSTER_REJECTION_CASES: &[(&str, &str, LintRule)] = &[(
+    "drop-trigger-without-on",
+    "DROP TRIGGER IF EXISTS _rej_trg;",
+    LintRule::UnsupportedDropTrigger,
+)];
 
 /// One example per `LintRule` variant: SQL that triggers the rule, the
 /// expected error substring, and optional setup/cleanup SQL for cluster
@@ -502,9 +646,6 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
         ),
 
         // ─── ALTER TABLE per-arm rules ────────────────────────────────────
-        LintRule::AtUnsupportedDropColumn => {
-            fix("ALTER TABLE _clust_base DROP COLUMN col;", "DROP COLUMN")
-        }
         LintRule::AtUnsupportedAlterColumnSetType => fix(
             "ALTER TABLE _clust_base ALTER COLUMN col TYPE TEXT;",
             "TYPE is not supported",
@@ -549,9 +690,11 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
             "ALTER TABLE _clust_base REPLICA IDENTITY FULL;",
             "REPLICA IDENTITY",
         ),
-        LintRule::ValidateConstraintAsync => fix(
-            "ALTER TABLE _clust_base VALIDATE CONSTRAINT _rej_c;",
+        LintRule::ValidateConstraintAsync => fix_with(
+            "ALTER TABLE _rej_validate VALIDATE CONSTRAINT _rej_c;",
             "VALIDATE CONSTRAINT",
+            "CREATE TABLE _rej_validate (id INT, CONSTRAINT _rej_c CHECK (id > 0));",
+            "DROP TABLE IF EXISTS _rej_validate;",
         ),
         LintRule::AtUnsupportedRewriteRule => fix(
             "ALTER TABLE _clust_base DISABLE RULE _rej_rule;",
