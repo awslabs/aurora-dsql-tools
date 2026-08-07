@@ -624,6 +624,37 @@ fn clean_statements_accepted_by_cluster() {
     );
 }
 
+#[test]
+fn additional_rejection_cases_rejected_by_cluster() {
+    let cx = ClusterScope::new("additional_rejections");
+    cx.exec("CREATE TABLE _clust_base (id INT, col INT);")
+        .expect("base table setup");
+
+    let mut failures = Vec::new();
+
+    for (label, sql, rule) in common::ADDITIONAL_CLUSTER_REJECTION_CASES {
+        let diags = lint_sql(sql);
+        if !diags.iter().any(|d| d.rule == *rule) {
+            failures.push(format!(
+                "[{label}] expected `{rule:?}` diagnostic\n  SQL: {sql}\n  Got: {diags:?}"
+            ));
+            continue;
+        }
+
+        if cx.exec(sql).is_ok() {
+            failures.push(format!(
+                "[{label}] expected DSQL to reject statement, but it succeeded\n  SQL: {sql}"
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "Additional rejection failures against DSQL cluster:\n\n{}",
+        failures.join("\n\n")
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // 5. INDEX CREATION METHODS — verify ASYNC works, CREATE INDEX ASYNC
 //    with UNIQUE, IF NOT EXISTS, etc.

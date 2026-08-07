@@ -8,6 +8,75 @@ CREATE VIEW _clean_view AS SELECT 1;
 -- label: alter-add-col
 ALTER TABLE _clean_base ADD COLUMN description TEXT;
 
+-- label: alter-drop-col
+ALTER TABLE _clean_base DROP COLUMN description;
+
+-- label: alter-set-storage-plain
+ALTER TABLE _clean_base ALTER COLUMN name SET STORAGE PLAIN;
+
+-- label: alter-set-storage-external
+ALTER TABLE _clean_base ALTER COLUMN name SET STORAGE EXTERNAL;
+
+-- label: alter-set-storage-extended
+ALTER TABLE _clean_base ALTER COLUMN name SET STORAGE EXTENDED;
+
+-- label: alter-set-storage-main
+ALTER TABLE _clean_base ALTER COLUMN name SET STORAGE MAIN;
+
+-- label: alter-set-storage-default
+ALTER TABLE _clean_base ALTER name SET STORAGE DEFAULT;
+
+-- label: create-column-storage-plain
+CREATE TABLE _clean_storage_plain (payload TEXT STORAGE PLAIN);
+
+-- label: create-column-storage-external
+CREATE TABLE _clean_storage_external (payload TEXT STORAGE EXTERNAL);
+
+-- label: create-column-storage-extended
+CREATE TABLE _clean_storage_extended (payload TEXT STORAGE EXTENDED);
+
+-- label: create-column-storage-main
+CREATE TABLE _clean_storage_main (payload TEXT STORAGE MAIN);
+
+-- label: create-column-storage-default
+CREATE TABLE _clean_storage_default (payload TEXT STORAGE DEFAULT);
+
+-- label: add-column-storage-plain
+ALTER TABLE _clean_base ADD COLUMN storage_plain TEXT STORAGE PLAIN;
+
+-- label: add-column-storage-external
+ALTER TABLE _clean_base ADD COLUMN storage_external TEXT STORAGE EXTERNAL;
+
+-- label: add-column-storage-extended
+ALTER TABLE _clean_base ADD COLUMN storage_extended TEXT STORAGE EXTENDED;
+
+-- label: add-column-storage-main
+ALTER TABLE _clean_base ADD COLUMN storage_main TEXT STORAGE MAIN;
+
+-- label: add-column-storage-default
+ALTER TABLE _clean_base ADD COLUMN storage_default TEXT STORAGE DEFAULT;
+
+-- label: alter-enable-trigger-all
+ALTER TABLE _clean_base ENABLE TRIGGER ALL;
+
+-- label: alter-disable-trigger-all
+ALTER TABLE _clean_base DISABLE TRIGGER ALL;
+
+-- label: alter-enable-trigger-user
+ALTER TABLE _clean_base ENABLE TRIGGER USER;
+
+-- label: alter-disable-trigger-user
+ALTER TABLE _clean_base DISABLE TRIGGER USER;
+
+-- label: drop-trigger-if-exists
+DROP TRIGGER IF EXISTS _missing_trg ON _clean_base;
+
+-- label: drop-trigger-if-exists-cascade
+DROP TRIGGER IF EXISTS _missing_trg ON _clean_base CASCADE;
+
+-- label: drop-trigger-if-exists-restrict
+DROP TRIGGER IF EXISTS _missing_trg ON _clean_base RESTRICT;
+
 -- label: insert
 INSERT INTO _clean_base (id, name) VALUES (1, 'test');
 

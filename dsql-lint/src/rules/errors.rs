@@ -480,17 +480,15 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
             // The valid `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT` form passes
             // clean; the non-async form is auto-fixed by adding ASYNC (the fix
             // flips the statement flag after this loop, see below).
-            AlterTableOperation::ValidateConstraint { name } => {
-                if !already_async {
-                    fix_validate_async = true;
-                    diagnostics.push(error(
-                        LintRule::ValidateConstraintAsync,
-                        find_line(raw_sql, "validate constraint"),
-                        format!("VALIDATE CONSTRAINT '{name}' requires the ASYNC keyword in DSQL."),
-                        "Use `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT` instead.",
-                        FixResult::FixedWithWarning("Added ASYNC to ALTER TABLE — VALIDATE CONSTRAINT runs as a background DDL job and is NOT complete when the statement returns; wait via sys.jobs before relying on it, and validation can still fail later if existing rows violate the constraint".to_string()),
-                    ));
-                }
+            AlterTableOperation::ValidateConstraint { name } if !already_async => {
+                fix_validate_async = true;
+                diagnostics.push(error(
+                    LintRule::ValidateConstraintAsync,
+                    find_line(raw_sql, "validate constraint"),
+                    format!("VALIDATE CONSTRAINT '{name}' requires the ASYNC keyword in DSQL."),
+                    "Use `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT` instead.",
+                    FixResult::FixedWithWarning("Added ASYNC to ALTER TABLE — VALIDATE CONSTRAINT runs as a background DDL job and is NOT complete when the statement returns; wait via sys.jobs before relying on it, and validation can still fail later if existing rows violate the constraint".to_string()),
+                ));
             }
             // Rewrite rules
             AlterTableOperation::EnableRule { .. }
@@ -573,18 +571,7 @@ fn check_alter_table_operations(
             suggestion,
             needle,
         } = match op {
-            AlterTableOperation::DropColumn { column_names, .. } => {
-                let names: Vec<_> = column_names.iter().map(|n| n.to_string()).collect();
-                UnsupportedOp {
-                    rule: LintRule::AtUnsupportedDropColumn,
-                    msg: format!(
-                        "ALTER TABLE DROP COLUMN ({}) is not supported in DSQL.",
-                        names.join(", ")
-                    ),
-                    suggestion: "Recreate the table without the column, then migrate data.",
-                    needle: "drop column",
-                }
-            }
+            AlterTableOperation::DropColumn { .. } => continue,
             AlterTableOperation::AlterColumn {
                 column_name,
                 op: alter_op,
@@ -611,10 +598,10 @@ fn check_alter_table_operations(
                     suggestion: "Define identity columns at table creation time.",
                     needle: "identity",
                 },
-                // Supported by DSQL — not flagged.
                 AlterColumnOperation::DropNotNull
                 | AlterColumnOperation::SetDefault { .. }
-                | AlterColumnOperation::DropDefault => continue,
+                | AlterColumnOperation::DropDefault
+                | AlterColumnOperation::SetStorage { .. } => continue,
             },
             AlterTableOperation::AddConstraint { constraint, .. } => match constraint {
                 TableConstraint::Check(_) => UnsupportedOp {
@@ -1310,13 +1297,13 @@ fn check_unsupported_statements(
             ));
         }
 
-        Statement::DropTrigger(t) => {
+        Statement::DropTrigger(t) if !t.if_exists || t.table_name.is_none() => {
             let label = format!(" '{}'", t.trigger_name);
             diagnostics.push(error(
                 LintRule::UnsupportedDropTrigger,
                 find_line(raw_sql, "drop trigger"),
                 format!("DROP TRIGGER{label} is not supported in DSQL."),
-                "Triggers are not supported in DSQL; remove trigger management from migrations.",
+                "Use DROP TRIGGER IF EXISTS name ON table.",
                 FixResult::Unfixable,
             ));
         }

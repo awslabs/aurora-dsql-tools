@@ -24,7 +24,7 @@ grammar-diff = ["serde", "dep:earlgrey", "dep:indexmap"]
 
 [dependencies]
 # `visitor` powers the recursive backtick-stripping walk in the MySQL path.
-sqlparser = { package = "sqlparser-dsql", version = "0.62.2", features = ["visitor"] }
+sqlparser = { package = "sqlparser-dsql", version = "0.62.4", features = ["visitor"] }
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 strum = { version = "0.26", features = ["derive"] }

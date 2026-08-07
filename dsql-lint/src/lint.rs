@@ -65,7 +65,6 @@ pub enum LintRule {
     TransactionIsolation,
     SetTransaction,
     // ALTER TABLE operations — one variant per rejected operation arm.
-    AtUnsupportedDropColumn,
     AtUnsupportedAlterColumnSetType,
     AtUnsupportedAlterColumnSetNotNull,
     AtUnsupportedAlterColumnAddGenerated,
