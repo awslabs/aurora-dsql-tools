@@ -308,7 +308,7 @@ jobs:
           dotnet-version: "8.0.x"
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.NUGET_PUBLISH_IAM_ROLE }}
           role-session-name: dsql-lint-nuget-publish
@@ -383,7 +383,7 @@ jobs:
           dotnet-version: "8.0.x"
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.NUGET_PUBLISH_IAM_ROLE }}
           role-session-name: dsql-lint-nuget-runtime-publish
@@ -461,7 +461,7 @@ jobs:
         run: rustup update stable && rustup default stable
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.CRATES_PUBLISH_IAM_ROLE }}
           role-session-name: dsql-lint-crates-publish
