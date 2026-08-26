@@ -381,16 +381,6 @@ const FIX_MATRIX: &[(&str, &str, &str)] = &[
     ),
     // Tier 2 — FixedWithWarning
     (
-        "column-fk",
-        "CREATE TABLE _clust_fk1 (id INT, cid INT REFERENCES _clust_base(id));",
-        "DROP TABLE IF EXISTS _clust_fk1;",
-    ),
-    (
-        "table-fk",
-        "CREATE TABLE _clust_fk2 (id INT, cid INT, FOREIGN KEY (cid) REFERENCES _clust_base(id));",
-        "DROP TABLE IF EXISTS _clust_fk2;",
-    ),
-    (
         "temp-table",
         "CREATE TEMP TABLE _clust_temp (id INT);",
         "DROP TABLE IF EXISTS _clust_temp;",
@@ -442,19 +432,14 @@ const FIX_MATRIX: &[(&str, &str, &str)] = &[
         "ALTER TABLE _clust_base DROP COLUMN IF EXISTS extra_data;",
     ),
     (
-        "alter-add-col-fk",
-        "ALTER TABLE _clust_base ADD COLUMN extra_ref INT REFERENCES _clust_base(id);",
-        "ALTER TABLE _clust_base DROP COLUMN IF EXISTS extra_ref;",
-    ),
-    (
         "alter-fk-only",
         "ALTER TABLE _clust_base ADD CONSTRAINT _clust_fk FOREIGN KEY (col) REFERENCES _clust_base(id);",
-        "",
+        "ALTER TABLE _clust_base DROP CONSTRAINT IF EXISTS _clust_fk;",
     ),
     (
         "alter-mixed-fk-col",
         "ALTER TABLE _clust_base ADD CONSTRAINT _clust_fk2 FOREIGN KEY (col) REFERENCES _clust_base(id), ADD COLUMN mix_col INT;",
-        "ALTER TABLE _clust_base DROP COLUMN IF EXISTS mix_col;",
+        "ALTER TABLE _clust_base DROP CONSTRAINT IF EXISTS _clust_fk2; ALTER TABLE _clust_base DROP COLUMN IF EXISTS mix_col;",
     ),
     (
         "begin-read-committed",
@@ -480,7 +465,7 @@ fn run_cleanup_stmts(cx: &ClusterScope, cleanup_sql: &str) {
 #[test]
 fn fix_matrix_against_cluster() {
     let cx = ClusterScope::new("fix_matrix");
-    cx.exec("CREATE TABLE _clust_base (id INT, col INT);")
+    cx.exec("CREATE TABLE _clust_base (id INT PRIMARY KEY, col INT);")
         .expect("base table setup");
 
     let mut failures = Vec::new();
@@ -648,7 +633,7 @@ fn drop_primary_key_constraint_rejected_by_cluster() {
 #[test]
 fn additional_rejection_cases_rejected_by_cluster() {
     let cx = ClusterScope::new("additional_rejections");
-    cx.exec("CREATE TABLE _clust_base (id INT, col INT);")
+    cx.exec("CREATE TABLE _clust_base (id INT PRIMARY KEY, col INT);")
         .expect("base table setup");
 
     let mut failures = Vec::new();
@@ -832,7 +817,7 @@ fn lint_rule_fixtures_validated_on_cluster() {
     let reset_with_setup = |fix: &common::RuleFixture, phase: &str| -> Result<(), String> {
         cx.reset()
             .map_err(|e| format!("{phase} reset failed: {e}"))?;
-        cx.exec("CREATE TABLE _clust_base (id INT, col INT);")
+        cx.exec("CREATE TABLE _clust_base (id INT PRIMARY KEY, col INT);")
             .map_err(|e| format!("{phase} _clust_base setup failed: {e}"))?;
         if !fix.setup_sql.is_empty() {
             cx.exec(fix.setup_sql).map_err(|e| {

@@ -233,10 +233,10 @@ fn dialect_mysql_without_fix_is_usage_error() {
 }
 
 #[test]
-fn fix_fk_removal_shows_warning_count() {
+fn fix_async_index_rewrite_shows_warning_count() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("input.sql");
-    std::fs::write(&input, "CREATE TABLE t (id INT, cid INT REFERENCES c(id));").unwrap();
+    std::fs::write(&input, "CREATE INDEX idx_t_id ON t(id);").unwrap();
 
     let output = dsql_lint_bin()
         .arg("--fix")
@@ -244,7 +244,6 @@ fn fix_fk_removal_shows_warning_count() {
         .output()
         .unwrap();
 
-    // FK removal is FixedWithWarning → exit 3
     assert_eq!(output.status.code(), Some(3));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -286,7 +285,7 @@ fn fix_clean_file_shows_plain_message() {
 }
 
 #[test]
-fn fix_empty_output_shows_distinct_message() {
+fn fix_alter_fk_adds_not_valid_with_warning() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("input.sql");
     std::fs::write(
@@ -301,13 +300,16 @@ fn fix_empty_output_shows_distinct_message() {
         .output()
         .unwrap();
 
-    // ALTER TABLE FK removal is FixedWithWarning → exit 3
     assert_eq!(output.status.code(), Some(3));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Fixed output is empty"),
-        "Expected empty-output message, got: {stderr}"
+        stderr.contains("warning(s)"),
+        "Expected warning-output message, got: {stderr}"
     );
+    let fixed = std::fs::read_to_string(dir.path().join("input-fixed.sql")).unwrap();
+    assert!(fixed.contains("ADD CONSTRAINT"));
+    assert!(fixed.contains("FOREIGN KEY"));
+    assert!(fixed.contains("NOT VALID"));
 }
 
 #[test]
