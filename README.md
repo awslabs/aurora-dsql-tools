@@ -23,7 +23,7 @@ This monorepo contains developer tools for [Amazon Aurora DSQL](https://aws.amaz
 
 | Package | Description | Maven Central |
 |---------|-------------|---------------|
-| [flyway](./flyway/) | Flyway database support for Aurora DSQL | [![Maven Central](https://img.shields.io/maven-central/v/software.amazon.dsql/aurora-dsql-flyway-support)](https://central.sonatype.com/artifact/software.amazon.dsql/aurora-dsql-flyway-support) |
+| [flyway](./flyway/) | Legacy Flyway adapter for existing users. New projects should use a compatible released version of the [official Flyway community module](https://github.com/flyway/flyway-community-db-support/tree/main/flyway-database-dsql). | [![Maven Central](https://img.shields.io/maven-central/v/software.amazon.dsql/aurora-dsql-flyway-support)](https://central.sonatype.com/artifact/software.amazon.dsql/aurora-dsql-flyway-support) |
 | [pgdump-proxy](./pgdump-proxy/) | Wire proxy that lets stock `pg_dump` / `psql` read an Aurora DSQL cluster | — |
 
 ## Documentation
@@ -32,7 +32,7 @@ See the README in each tool's directory for detailed usage instructions:
 
 - [dsql-lint documentation](./dsql-lint/README.md)
 - [SQLTools Driver documentation](./vscode/sqltools-driver/README.md)
-- [Flyway support documentation](./flyway/README.md)
+- [Legacy Flyway adapter documentation](./flyway/README.md)
 - [pg_dump proxy documentation](./pgdump-proxy/README.md)
 
 ## Versioning

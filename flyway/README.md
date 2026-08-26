@@ -1,6 +1,32 @@
-# Aurora DSQL Flyway Support
+# Aurora DSQL Flyway Support (Legacy Adapter)
 
 Flyway database plugin for [Amazon Aurora DSQL](https://docs.aws.amazon.com/aurora-dsql/).
+
+> [!IMPORTANT]
+> New projects should use the official
+> [`org.flywaydb:flyway-database-dsql`](https://github.com/flyway/flyway-community-db-support/tree/main/flyway-database-dsql)
+> community module at a released version compatible with their Flyway
+> runtime. This adapter is deprecated and maintained only for critical
+> security and compatibility fixes. Existing coordinates and runtime behavior
+> are unchanged. Do not load both adapters in the same Flyway runtime.
+
+## Migrating to the Official Module
+
+Existing users do not need to switch immediately. When you are ready:
+
+1. Test the dependency change in a non-production environment.
+2. Remove `software.amazon.dsql:aurora-dsql-flyway-support`.
+3. Add a published `org.flywaydb:flyway-database-dsql` version compatible
+   with your Flyway runtime.
+4. Keep your existing JDBC URL, migration files, schema-history table, and `flyway.dsql.*`
+   configuration. Keep the Aurora DSQL JDBC connector on the runtime classpath
+   when using `jdbc:aws-dsql:postgresql://`.
+5. Run `flyway info` and `flyway validate` before `flyway migrate`.
+
+If the official artifact is not yet available from your configured package
+repository, remain on this adapter until a compatible released version can be
+resolved. Never add the official module alongside this adapter: both register
+Aurora DSQL support for the same Flyway runtime.
 
 ## DSQL-Specific Behavior
 
@@ -16,9 +42,10 @@ This plugin adapts Flyway for Aurora DSQL's distributed architecture:
 - `flyway undo` (Flyway Teams feature) - untested with DSQL
 - `flyway baseline` - use `baselineOnMigrate=true` instead (see [Troubleshooting](#ddl-and-dml-are-not-supported-in-the-same-transaction))
 
-## Installation
+## Existing AWS Adapter Installation
 
-The plugin is available on [Maven Central](https://central.sonatype.com/artifact/software.amazon.dsql/aurora-dsql-flyway-support).
+Existing users can continue resolving this adapter from
+[Maven Central](https://central.sonatype.com/artifact/software.amazon.dsql/aurora-dsql-flyway-support).
 
 ### Maven
 
@@ -205,7 +232,7 @@ Equivalent environment variables: `FLYWAY_DSQL_OCC_MAX_RETRIES`, `FLYWAY_DSQL_OC
 - **SQL migrations only** — Java migrations can capture the `job_id` and call `sys.wait_for_job` themselves.
 - **A failed build leaves an `INVALID` index** — neither DSQL nor the migration drops it. Drop it before rerunning; `IF NOT EXISTS` can silently accept the `INVALID` index.
 
-## Docker Setup
+## Docker Setup for the Existing AWS Adapter
 
 Use a multi-stage Docker build to download all dependencies automatically:
 
