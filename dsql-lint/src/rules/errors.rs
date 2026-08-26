@@ -1,9 +1,10 @@
 use sqlparser::ast::{
     AlterColumnOperation, AlterFunctionKind, AlterFunctionOperation, AlterRoleOperation,
-    AlterTableOperation, ColumnDef, ColumnOption, ColumnOptionDef, CopyTarget, CreateTableOptions,
-    DataType, DeclareType, Expr, GeneratedAs, IndexOption, ObjectType, RoleOption, SequenceOptions,
-    Set, SqlOption, Statement, TableConstraint, TransactionIsolationLevel, TransactionMode,
-    UnaryOperator, Value, ValueWithSpan,
+    AlterTableOperation, ColumnDef, ColumnOption, ColumnOptionDef, ConstraintReferenceMatchKind,
+    CopyTarget, CreateTableOptions, DataType, DeclareType, Expr, ForeignKeyConstraint, GeneratedAs,
+    IndexOption, ObjectType, RoleOption, SequenceOptions, Set, SqlOption, Statement,
+    TableConstraint, TransactionIsolationLevel, TransactionMode, UnaryOperator, Value,
+    ValueWithSpan,
 };
 use sqlparser::tokenizer::Span;
 
@@ -70,6 +71,40 @@ fn error(
     }
 }
 
+fn check_foreign_key(
+    foreign_key: &ForeignKeyConstraint,
+    raw_sql: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if matches!(
+        foreign_key.match_kind,
+        Some(ConstraintReferenceMatchKind::Partial)
+    ) {
+        diagnostics.push(error(
+            LintRule::ForeignKeyMatchPartial,
+            find_line(raw_sql, "match partial"),
+            "PostgreSQL does not implement foreign key MATCH PARTIAL; Aurora DSQL inherits this behavior.",
+            "Use MATCH SIMPLE or MATCH FULL.",
+            FixResult::Unfixable,
+        ));
+    }
+
+    if let Some(enforced) = foreign_key
+        .characteristics
+        .as_ref()
+        .and_then(|characteristics| characteristics.enforced)
+    {
+        let clause = if enforced { "ENFORCED" } else { "NOT ENFORCED" };
+        diagnostics.push(error(
+            LintRule::ForeignKeyEnforced,
+            find_line(raw_sql, "enforced"),
+            format!("Foreign key {clause} is not supported in DSQL."),
+            "Remove the enforcement clause. Aurora DSQL foreign keys are always enforced.",
+            FixResult::Unfixable,
+        ));
+    }
+}
+
 /// Check a single column definition for unsupported types and constraints.
 /// `in_alter_table`: true when called from ALTER TABLE ADD COLUMN context.
 /// DSQL does not allow constraints on ALTER TABLE ADD COLUMN, so fixes that
@@ -81,6 +116,7 @@ fn check_column(
     in_alter_table: bool,
 ) {
     let col_name_lower = col.name.to_string().to_lowercase();
+    let col_name = col.name.to_string();
 
     // SERIAL variants
     if let DataType::Custom(name, _) = &col.data_type {
@@ -174,22 +210,11 @@ fn check_column(
         }
     }
 
-    // FK removal — retain everything that's NOT a foreign key
-    let col_name = col.name.to_string();
-    col.options.retain(|opt_def| {
-        if matches!(opt_def.option, ColumnOption::ForeignKey(_)) {
-            diagnostics.push(error(
-                LintRule::ForeignKey,
-                find_line(raw_sql, &col_name_lower),
-                format!("Column `{}` has a FOREIGN KEY (REFERENCES) constraint, which is not supported in DSQL.", col_name),
-                "Remove the REFERENCES clause. Enforce referential integrity in application code.",
-                FixResult::FixedWithWarning(format!("Removed FOREIGN KEY constraint from column `{}`", col_name)),
-            ));
-            false
-        } else {
-            true
+    for option in &col.options {
+        if let ColumnOption::ForeignKey(foreign_key) = &option.option {
+            check_foreign_key(foreign_key, raw_sql, diagnostics);
         }
-    });
+    }
 
     // COLLATE clause — DSQL rejects per-column COLLATE entirely (the database
     // collation is C). Strip the clause. C/POSIX are byte-order equivalents
@@ -243,20 +268,11 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
             check_column(col, raw_sql, diagnostics, false);
         }
 
-        ct.constraints.retain(|constraint| {
-            if matches!(constraint, TableConstraint::ForeignKey(_)) {
-                diagnostics.push(error(
-                    LintRule::ForeignKey,
-                    find_line(raw_sql, "foreign key"),
-                    "Table-level FOREIGN KEY constraint is not supported in DSQL.",
-                    "Remove the FOREIGN KEY constraint. Enforce referential integrity in application code.",
-                    FixResult::FixedWithWarning("Removed table-level FOREIGN KEY constraint".into()),
-                ));
-                false
-            } else {
-                true
+        for constraint in &ct.constraints {
+            if let TableConstraint::ForeignKey(foreign_key) = constraint {
+                check_foreign_key(foreign_key, raw_sql, diagnostics);
             }
-        });
+        }
 
         if ct.temporary {
             ct.temporary = false;
@@ -393,28 +409,6 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
         return;
     };
 
-    // Mutable pass: remove FK constraints
-    alter_table.operations.retain(|op| {
-        match op {
-            AlterTableOperation::AddConstraint {
-                constraint: TableConstraint::ForeignKey(_),
-                ..
-            } => {
-                diagnostics.push(error(
-                    LintRule::ForeignKey,
-                    find_line(raw_sql, "foreign key"),
-                    "ALTER TABLE ADD CONSTRAINT with FOREIGN KEY is not supported in DSQL.",
-                    "Remove the FOREIGN KEY constraint. Enforce referential integrity in application code.",
-                    FixResult::FixedWithWarning(
-                        "Removed ALTER TABLE ADD FOREIGN KEY constraint".into(),
-                    ),
-                ));
-                false
-            }
-            _ => true,
-        }
-    });
-
     // VALIDATE CONSTRAINT is supported only with the ASYNC keyword
     // (`ALTER TABLE ASYNC ... VALIDATE CONSTRAINT`). Capture the statement's
     // async flag up front; the per-op loop borrows `operations` mutably, so
@@ -428,6 +422,24 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
         match op {
             AlterTableOperation::AddColumn { column_def, .. } => {
                 check_column(column_def, raw_sql, diagnostics, true);
+            }
+            AlterTableOperation::AddConstraint {
+                constraint: TableConstraint::ForeignKey(foreign_key),
+                not_valid,
+            } => {
+                check_foreign_key(foreign_key, raw_sql, diagnostics);
+                if !*not_valid {
+                    *not_valid = true;
+                    diagnostics.push(error(
+                        LintRule::ForeignKeyNotValid,
+                        find_line(raw_sql, "foreign key"),
+                        "FOREIGN KEY constraints added with ALTER TABLE require NOT VALID in DSQL.",
+                        "Add NOT VALID, then validate existing rows with `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT`, capture the returned job_id, and wait with `CALL sys.wait_for_job(job_id)`.",
+                        FixResult::FixedWithWarning(
+                            "Added NOT VALID to the foreign key. The constraint applies to new writes immediately, but existing rows are not validated until ALTER TABLE ASYNC ... VALIDATE CONSTRAINT completes".to_string(),
+                        ),
+                    ));
+                }
             }
             AlterTableOperation::AddConstraint {
                 constraint: TableConstraint::PrimaryKeyUsingIndex { .. },
@@ -514,7 +526,7 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
     }
 }
 
-/// ALTER TABLE ADD COLUMN with inline DEFAULT or NOT NULL.
+/// ALTER TABLE ADD COLUMN with inline constraints.
 fn check_add_column_constraints(
     stmt: &mut Statement,
     raw_sql: &str,
@@ -539,6 +551,23 @@ fn check_add_column_constraints(
                         column_def.name.value
                     ),
                     "Split into steps: CREATE TABLE with the column, or ADD COLUMN without constraints then backfill.",
+                    FixResult::Unfixable,
+                ));
+            }
+
+            if column_def
+                .options
+                .iter()
+                .any(|opt| matches!(opt.option, ColumnOption::ForeignKey(_)))
+            {
+                diagnostics.push(error(
+                    LintRule::AddColumnConstraint,
+                    find_line(raw_sql, &column_def.name.value.to_lowercase()),
+                    format!(
+                        "ADD COLUMN '{}' with an inline foreign key is not supported in DSQL.",
+                        column_def.name.value
+                    ),
+                    "Add the column first. Then add the foreign key with NOT VALID and validate it asynchronously.",
                     FixResult::Unfixable,
                 ));
             }
@@ -623,14 +652,8 @@ fn check_alter_table_operations(
                     suggestion: "Add PRIMARY KEY constraints at table creation time.",
                     needle: "add constraint",
                 },
-                // ForeignKey handled by check_alter_table; other variants skipped.
+                // ForeignKey is handled by check_alter_table; other variants are skipped.
                 _ => continue,
-            },
-            AlterTableOperation::DropConstraint { name, .. } => UnsupportedOp {
-                rule: LintRule::AtUnsupportedDropConstraint,
-                msg: format!("ALTER TABLE DROP CONSTRAINT '{name}' is not supported in DSQL."),
-                suggestion: "Recreate the table without the constraint.",
-                needle: "drop constraint",
             },
             _ => continue,
         };
@@ -1550,16 +1573,17 @@ mod tests {
     }
 
     #[test]
-    fn serial_with_references_reports_both() {
+    fn serial_with_supported_references_reports_only_serial() {
         let sql = "CREATE TABLE t (id SERIAL REFERENCES other(id));";
         let diags = parse_and_check(sql);
         assert!(
             diags.iter().any(|d| d.message.contains("SERIAL")),
             "Should report SERIAL error: {diags:?}"
         );
-        assert!(
-            diags.iter().any(|d| d.message.contains("FOREIGN KEY")),
-            "Should also report FOREIGN KEY error: {diags:?}"
+        assert_eq!(
+            diags.len(),
+            1,
+            "Supported foreign key should be clean: {diags:?}"
         );
     }
 
@@ -1574,19 +1598,12 @@ mod tests {
     }
 
     #[test]
-    fn multiple_references_report_distinct_lines() {
-        let sql =
-            "CREATE TABLE t (\n    a INT REFERENCES foo(id),\n    b INT REFERENCES bar(id)\n);";
+    fn supported_fk_actions_are_clean() {
+        let sql = "CREATE TABLE t (\n    a INT REFERENCES foo(id) ON DELETE CASCADE,\n    b INT REFERENCES bar(id) ON DELETE SET NULL\n);";
         let diags = parse_and_check(sql);
-        let fk_lines: Vec<usize> = diags
-            .iter()
-            .filter(|d| d.message.contains("FOREIGN KEY"))
-            .map(|d| d.line)
-            .collect();
-        assert_eq!(fk_lines.len(), 2, "Expected 2 FK diagnostics: {diags:?}");
-        assert_ne!(
-            fk_lines[0], fk_lines[1],
-            "FK diagnostics should report different lines, got {fk_lines:?}"
+        assert!(
+            diags.is_empty(),
+            "Supported FK actions were flagged: {diags:?}"
         );
     }
 

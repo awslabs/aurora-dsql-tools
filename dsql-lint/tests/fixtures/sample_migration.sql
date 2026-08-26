@@ -13,7 +13,7 @@ CREATE TABLE users (
     name TEXT
 );
 
--- FOREIGN KEY (error)
+-- Supported inline FOREIGN KEY
 CREATE TABLE orders (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID,

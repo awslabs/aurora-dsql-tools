@@ -24,8 +24,9 @@ EXIT CODES:
   3  Fix mode only: all issues fixed, but some produced warnings
 
 CI USAGE:
-  Exit code 3 means the fix succeeded but produced warnings (e.g., removed
-  foreign keys). In shell scripts with set -e or CI pipelines, handle it:
+  Exit code 3 means the fix succeeded but produced warnings (e.g., a
+  synchronous index became asynchronous). In shell scripts with set -e or CI
+  pipelines, handle it:
 
     dsql-lint --fix input.sql; rc=$?
     if [ $rc -eq 1 ]; then echo 'unfixable errors'; exit 1; fi

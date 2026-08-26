@@ -404,7 +404,6 @@ pub const ADDITIONAL_ERROR_CASES: &[(&str, &str)] = &[
     // belong in ADDITIONAL_FALSE_POSITIVES, not here.
     ("ALTER TABLE t ADD CONSTRAINT c CHECK (id > 0);", "CHECK"),
     ("ALTER TABLE t ADD CONSTRAINT c UNIQUE (name);", "UNIQUE"),
-    ("ALTER TABLE t DROP CONSTRAINT c;", "DROP CONSTRAINT"),
     // Identity column without CACHE — CREATE TABLE
     (
         "CREATE TABLE t (id BIGINT GENERATED ALWAYS AS IDENTITY);",
@@ -560,15 +559,27 @@ const fn fix_with(
 }
 
 #[allow(dead_code)]
+#[allow(deprecated)]
 pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
     match rule {
         // ─── Single-purpose rules ─────────────────────────────────────────
         LintRule::SerialType => fix("CREATE TABLE _r (id SERIAL PRIMARY KEY);", "SERIAL"),
         LintRule::ArrayType => fix("CREATE TABLE _r (id INT, tags TEXT[]);", "array"),
-        LintRule::ForeignKey => fix(
-            "CREATE TABLE _r (id INT, cid INT REFERENCES _clust_base(id));",
-            "FOREIGN KEY",
+        LintRule::ForeignKeyMatchPartial => fix(
+            "CREATE TABLE _r (id INT, cid INT, FOREIGN KEY (cid) REFERENCES _clust_base(id) MATCH PARTIAL);",
+            "MATCH PARTIAL",
         ),
+        LintRule::ForeignKeyEnforced => fix(
+            "CREATE TABLE _r (id INT, cid INT, FOREIGN KEY (cid) REFERENCES _clust_base(id) ENFORCED);",
+            "ENFORCED",
+        ),
+        LintRule::ForeignKeyNotValid => fix_with(
+            "ALTER TABLE _clust_base ADD CONSTRAINT _r_fk FOREIGN KEY (col) REFERENCES _clust_base(id);",
+            "NOT VALID",
+            "",
+            "ALTER TABLE _clust_base DROP CONSTRAINT IF EXISTS _r_fk;",
+        ),
+        LintRule::ForeignKey | LintRule::AtUnsupportedDropConstraint => None,
         LintRule::TempTable => fix("CREATE TEMP TABLE _r (id INT);", "TEMPORARY"),
         LintRule::PartitionBy => fix(
             "CREATE TABLE _r (id INT, d DATE) PARTITION BY RANGE (d);",
@@ -669,10 +680,6 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
         LintRule::AtUnsupportedAddPrimaryKey => fix(
             "ALTER TABLE _clust_base ADD CONSTRAINT _rej_pk PRIMARY KEY (id);",
             "ADD PRIMARY KEY",
-        ),
-        LintRule::AtUnsupportedDropConstraint => fix(
-            "ALTER TABLE _clust_base DROP CONSTRAINT _rej_c;",
-            "DROP CONSTRAINT",
         ),
         LintRule::AtUnsupportedPrimaryKeyUsingIndex => fix(
             "ALTER TABLE _clust_base ADD CONSTRAINT _rej_pk PRIMARY KEY USING INDEX _clust_base_pkey;",

@@ -220,7 +220,7 @@ fn normalize_statement(stmt: &mut Statement, diags: &mut Vec<Diagnostic>) -> Vec
         unquote_column_option_exprs(col);
     }
     // DSQL has no inline secondary index, so lift KEY/INDEX to CREATE INDEX;
-    // PK/UNIQUE stay inline, FK/FULLTEXT pass through for fix_sql to reject.
+    // PK/UNIQUE/FK stay inline; FULLTEXT passes through for fix_sql to reject.
     let table = ct.name.clone();
     let table_leaf = object_name_leaf(&table);
     let mut extra = Vec::new();
@@ -878,6 +878,10 @@ fn unquote_constraint(
             TableConstraint::Unique(c) => (&mut c.name, &mut c.index_name, &mut c.columns),
             TableConstraint::ForeignKey(c) => {
                 unquote_opt_ident(&mut c.name);
+                // MySQL's optional FOREIGN KEY index_name is not part of
+                // PostgreSQL/DSQL foreign-key syntax. DSQL creates the
+                // supporting index automatically.
+                c.index_name = None;
                 unquote_object_name(&mut c.foreign_table);
                 for col in &mut c.columns {
                     unquote_ident(col);
@@ -1557,13 +1561,23 @@ mod tests {
 
     /// FOREIGN KEY backticks (constraint name, FK columns, referenced table and
     /// columns) must all be stripped so they never reach the Postgres parser.
-    /// The FK itself is removed by the existing fix_sql ForeignKey rule.
+    /// The FK itself is preserved by the DSQL compatibility pass.
     #[test]
     fn unquotes_foreign_key_backticks() {
         let sql = "CREATE TABLE `t` (`id` int, `cid` int, \
                    CONSTRAINT `fk_c` FOREIGN KEY (`cid`) REFERENCES `other` (`id`));";
         let out = fix_sql_mysql(sql);
         assert_clean_dsql(&out);
+    }
+
+    #[test]
+    fn drops_mysql_foreign_key_index_name() {
+        let sql = "CREATE TABLE `t` (`id` int, `cid` int, \
+                   FOREIGN KEY `fk_index` (`cid`) REFERENCES `other` (`id`));";
+        let out = fix_sql_mysql(sql);
+        assert_clean_dsql(&out);
+        assert!(!out.sql.contains("fk_index"), "unexpected SQL: {}", out.sql);
+        assert!(out.sql.to_uppercase().contains("FOREIGN KEY"));
     }
 
     /// A backtick-quoted CHECK constraint name must be unquoted.
