@@ -17,6 +17,11 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "CREATE INDEX ASYNC idx ON t USING btree(col);",
         "Fixed",
     ),
+    (
+        "index-asc",
+        "CREATE INDEX ASYNC idx ON t(col ASC);",
+        "Fixed",
+    ),
     ("seq-missing-cache", "CREATE SEQUENCE s;", "Fixed"),
     (
         "identity-missing-cache",
@@ -58,6 +63,11 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
     (
         "index-concurrently",
         "CREATE INDEX CONCURRENTLY idx ON t(col);",
+        "FixedWithWarning",
+    ),
+    (
+        "index-desc",
+        "CREATE INDEX ASYNC idx ON t(col DESC);",
         "FixedWithWarning",
     ),
     // Sequence widening to BIGINT changes the consumable range.
@@ -391,6 +401,16 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
         "index-using-no-async-after-cols",
         "CREATE INDEX idx ON t(col) USING btree;",
         "CREATE INDEX ASYNC idx ON t(col);\n",
+    ),
+    (
+        "index-asc",
+        "CREATE INDEX ASYNC idx ON t(col ASC);",
+        "CREATE INDEX ASYNC idx ON t(col);\n",
+    ),
+    (
+        "index-desc-nulls-first",
+        "CREATE INDEX ASYNC idx ON t(col DESC NULLS FIRST);",
+        "CREATE INDEX ASYNC idx ON t(col NULLS FIRST);\n",
     ),
     // Sequence fixes
     (

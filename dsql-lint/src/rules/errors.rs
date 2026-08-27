@@ -1,9 +1,9 @@
 use sqlparser::ast::{
     AlterColumnOperation, AlterFunctionKind, AlterFunctionOperation, AlterRoleOperation,
     AlterTableOperation, ColumnDef, ColumnOption, ColumnOptionDef, CopyTarget, CreateTableOptions,
-    DataType, DeclareType, Expr, GeneratedAs, IndexOption, ObjectType, RoleOption, SequenceOptions,
-    Set, SqlOption, Statement, TableConstraint, TransactionIsolationLevel, TransactionMode,
-    UnaryOperator, Value, ValueWithSpan,
+    DataType, DeclareType, Expr, GeneratedAs, IndexOption, ObjectType, OrderBySort, RoleOption,
+    SequenceOptions, Set, SqlOption, Statement, TableConstraint, TransactionIsolationLevel,
+    TransactionMode, UnaryOperator, Value, ValueWithSpan,
 };
 use sqlparser::tokenizer::Span;
 
@@ -601,6 +601,8 @@ fn check_alter_table_operations(
                 AlterColumnOperation::DropNotNull
                 | AlterColumnOperation::SetDefault { .. }
                 | AlterColumnOperation::DropDefault
+                | AlterColumnOperation::DropIdentity { .. }
+                | AlterColumnOperation::DropExpression { .. }
                 | AlterColumnOperation::SetStorage { .. } => continue,
             },
             AlterTableOperation::AddConstraint { constraint, .. } => match constraint {
@@ -626,12 +628,7 @@ fn check_alter_table_operations(
                 // ForeignKey handled by check_alter_table; other variants skipped.
                 _ => continue,
             },
-            AlterTableOperation::DropConstraint { name, .. } => UnsupportedOp {
-                rule: LintRule::AtUnsupportedDropConstraint,
-                msg: format!("ALTER TABLE DROP CONSTRAINT '{name}' is not supported in DSQL."),
-                suggestion: "Recreate the table without the constraint.",
-                needle: "drop constraint",
-            },
+            AlterTableOperation::DropConstraint { .. } => continue,
             _ => continue,
         };
         diagnostics.push(error(
@@ -712,18 +709,28 @@ fn check_create_index(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec
         ));
     }
 
-    // Expression indexes — Unfixable
-    for col in &ci.columns {
-        if !matches!(&col.column.expr, Expr::Identifier(_)) {
-            diagnostics.push(error(
-                LintRule::IndexExpression,
-                find_line(raw_sql, "index"),
-                "Expression indexes are not supported in DSQL. Only simple column references are allowed.",
-                "Add a stored computed column and index that instead, or handle in application layer.",
-                FixResult::Unfixable,
-            ));
-            break;
-        }
+    for col in &mut ci.columns {
+        let direction = match &col.column.options.sort {
+            Some(OrderBySort::Asc) => "ASC",
+            Some(OrderBySort::Desc) => "DESC",
+            _ => continue,
+        };
+        col.column.options.sort = None;
+        let fix_result = if direction == "ASC" {
+            FixResult::Fixed("Removed explicit ASC index-key direction".to_string())
+        } else {
+            FixResult::FixedWithWarning(
+                "Removed DESC index-key direction; DSQL does not support descending index keys"
+                    .to_string(),
+            )
+        };
+        diagnostics.push(error(
+            LintRule::IndexSortDirection,
+            find_line(raw_sql, &direction.to_lowercase()),
+            format!("Index key sort direction {direction} is not supported in DSQL."),
+            "Remove explicit ASC or DESC. NULLS FIRST/LAST may be retained.",
+            fix_result,
+        ));
     }
 
     // Partial indexes — Unfixable

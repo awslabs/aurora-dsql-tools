@@ -141,11 +141,6 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "USING",
     ),
     (
-        "index-expr",
-        "CREATE INDEX ASYNC idx ON t (lower(name));",
-        "Expression",
-    ),
-    (
         "index-concurrently",
         "CREATE INDEX CONCURRENTLY idx ON t(col);",
         "CONCURRENTLY",
@@ -430,18 +425,6 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "alter-validate-constraint",
         "ALTER TABLE t VALIDATE CONSTRAINT c1;",
         "VALIDATE CONSTRAINT",
-    ),
-    // Mixed expression index (simple + expression column)
-    (
-        "index-mixed-expr",
-        "CREATE INDEX ASYNC idx ON t (col, lower(name));",
-        "Expression",
-    ),
-    // CompoundIdentifier in index (composite-type field access = expression)
-    (
-        "index-compound-id",
-        "CREATE INDEX ASYNC idx ON t(a.b);",
-        "Expression",
     ),
     // ENABLE/DISABLE RULE
     (

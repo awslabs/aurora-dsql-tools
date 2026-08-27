@@ -625,6 +625,27 @@ fn clean_statements_accepted_by_cluster() {
 }
 
 #[test]
+fn drop_primary_key_constraint_rejected_by_cluster() {
+    let cx = ClusterScope::new("drop_pk_constraint");
+    cx.exec(
+        "CREATE TABLE _drop_pk_constraint (
+            id UUID,
+            CONSTRAINT _drop_pk_constraint_pkey PRIMARY KEY (id)
+        );",
+    )
+    .expect("table setup");
+
+    assert!(
+        cx.exec(
+            "ALTER TABLE _drop_pk_constraint
+             DROP CONSTRAINT _drop_pk_constraint_pkey;"
+        )
+        .is_err(),
+        "DSQL should reject dropping a primary key constraint"
+    );
+}
+
+#[test]
 fn additional_rejection_cases_rejected_by_cluster() {
     let cx = ClusterScope::new("additional_rejections");
     cx.exec("CREATE TABLE _clust_base (id INT, col INT);")
