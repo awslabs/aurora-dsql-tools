@@ -68,6 +68,30 @@ pub const SUPPORTED_TYPES: &[(&str, &str)] = &[
 ///   (e.g. create a table before inserting into it).
 pub const CLEAN_STATEMENTS: &[(&str, &str, &str, &str)] = &[
     (
+        "expression-collation-c",
+        "SELECT 'a' COLLATE \"C\";",
+        "",
+        "",
+    ),
+    (
+        "expression-collation-posix",
+        "SELECT 'a' COLLATE \"POSIX\";",
+        "",
+        "",
+    ),
+    (
+        "expression-collation-default",
+        "SELECT 'a' COLLATE \"default\";",
+        "",
+        "",
+    ),
+    (
+        "expression-collation-pg-catalog",
+        "SELECT 'a' COLLATE pg_catalog.\"C\";",
+        "",
+        "",
+    ),
+    (
         "create-view",
         "CREATE VIEW _clean_view AS SELECT 1;",
         "",
@@ -572,11 +596,23 @@ pub const ADDITIONAL_FALSE_POSITIVES: &[(&str, &str)] = &[
 use dsql_lint::LintRule;
 
 #[allow(dead_code)]
-pub const ADDITIONAL_CLUSTER_REJECTION_CASES: &[(&str, &str, LintRule)] = &[(
-    "drop-trigger-without-on",
-    "DROP TRIGGER IF EXISTS _rej_trg;",
-    LintRule::UnsupportedDropTrigger,
-)];
+pub const ADDITIONAL_CLUSTER_REJECTION_CASES: &[(&str, &str, LintRule)] = &[
+    (
+        "drop-trigger-without-on",
+        "DROP TRIGGER IF EXISTS _rej_trg;",
+        LintRule::UnsupportedDropTrigger,
+    ),
+    (
+        "expression-locale-collation",
+        "SELECT 'a' COLLATE \"en_US.utf8\";",
+        LintRule::Collation,
+    ),
+    (
+        "expression-wrong-schema-collation",
+        "SELECT 'a' COLLATE public.\"C\";",
+        LintRule::Collation,
+    ),
+];
 
 /// One example per `LintRule` variant: SQL that triggers the rule, the
 /// expected error substring, and optional setup/cleanup SQL for cluster

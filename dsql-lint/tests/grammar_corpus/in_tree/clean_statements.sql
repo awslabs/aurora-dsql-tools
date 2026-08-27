@@ -2,6 +2,18 @@
 -- Mirrors a curated array in dsql-lint's integration tests. Do not edit by hand.
 -- Source: tests/common/mod.rs::CLEAN_STATEMENTS
 
+-- label: expression-collation-c
+SELECT 'a' COLLATE "C";
+
+-- label: expression-collation-posix
+SELECT 'a' COLLATE "POSIX";
+
+-- label: expression-collation-default
+SELECT 'a' COLLATE "default";
+
+-- label: expression-collation-pg-catalog
+SELECT 'a' COLLATE pg_catalog."C";
+
 -- label: create-view
 CREATE VIEW _clean_view AS SELECT 1;
 

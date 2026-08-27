@@ -576,6 +576,20 @@ fn additional_error_detection_matrix() {
 }
 
 #[test]
+fn locale_expression_collation_is_rejected() {
+    for sql in [
+        "SELECT name COLLATE \"en_US\" FROM t;",
+        "SELECT name COLLATE public.\"C\" FROM t;",
+    ] {
+        let diags = lint_sql(sql);
+        assert!(
+            diags.iter().any(|d| d.rule == LintRule::Collation),
+            "Expected Collation diagnostic for:\n  {sql}\n  got: {diags:?}"
+        );
+    }
+}
+
+#[test]
 fn additional_false_positive_matrix() {
     for (sql, unexpected) in common::ADDITIONAL_FALSE_POSITIVES {
         let diags = lint_sql(sql);
