@@ -1,9 +1,11 @@
+use core::ops::ControlFlow;
+
 use sqlparser::ast::{
-    AlterColumnOperation, AlterFunctionKind, AlterFunctionOperation, AlterRoleOperation,
-    AlterTableOperation, ColumnDef, ColumnOption, ColumnOptionDef, CopyTarget, CreateTableOptions,
-    DataType, DeclareType, Expr, GeneratedAs, IndexOption, ObjectType, OrderBySort, RoleOption,
-    SequenceOptions, Set, SqlOption, Statement, TableConstraint, TransactionIsolationLevel,
-    TransactionMode, UnaryOperator, Value, ValueWithSpan,
+    visit_expressions, AlterColumnOperation, AlterFunctionKind, AlterFunctionOperation,
+    AlterRoleOperation, AlterTableOperation, ColumnDef, ColumnOption, ColumnOptionDef, CopyTarget,
+    CreateTableOptions, DataType, DeclareType, Expr, GeneratedAs, IndexOption, ObjectType,
+    OrderBySort, RoleOption, SequenceOptions, Set, SqlOption, Statement, TableConstraint,
+    TransactionIsolationLevel, TransactionMode, UnaryOperator, Value, ValueWithSpan,
 };
 use sqlparser::tokenizer::Span;
 
@@ -386,6 +388,43 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
     check_sequence_cache_missing(stmt, raw_sql, diagnostics);
     check_identity_cache_missing(stmt, raw_sql, diagnostics);
     check_alter_table_operations(stmt, raw_sql, diagnostics);
+    check_expression_collations(stmt, raw_sql, diagnostics);
+}
+
+fn check_expression_collations(stmt: &Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
+    let _: ControlFlow<()> = visit_expressions(stmt, |expr| {
+        if let Expr::Collate { collation, .. } = expr {
+            let name = collation.to_string();
+            let supported_name = collation
+                .0
+                .last()
+                .and_then(|part| part.as_ident())
+                .is_some_and(|ident| {
+                    matches!(
+                        ident.value.to_ascii_uppercase().as_str(),
+                        "C" | "POSIX" | "DEFAULT"
+                    )
+                });
+            let supported_namespace = match collation.0.as_slice() {
+                [_] => true,
+                [schema, _] => schema
+                    .as_ident()
+                    .is_some_and(|ident| ident.value.eq_ignore_ascii_case("pg_catalog")),
+                _ => false,
+            };
+            let supported = supported_name && supported_namespace;
+            if !supported {
+                diagnostics.push(error(
+                    LintRule::Collation,
+                    find_line(raw_sql, "collate"),
+                    format!("Expression collation {name} is not available in DSQL."),
+                    "Use C, POSIX, or default collation, or remove the COLLATE clause.",
+                    FixResult::Unfixable,
+                ));
+            }
+        }
+        ControlFlow::Continue(())
+    });
 }
 
 fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
