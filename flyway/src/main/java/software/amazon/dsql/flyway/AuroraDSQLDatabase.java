@@ -74,8 +74,8 @@ public class AuroraDSQLDatabase extends PostgreSQLDatabase {
 
     @Override
     public String getRawCreateScript(Table table, boolean baseline) {
-        // DSQL doesn't support ALTER TABLE ADD CONSTRAINT, so we need to define
-        // the primary key constraint inline in the CREATE TABLE statement.
+        // DSQL doesn't support adding primary key constraints with ALTER TABLE,
+        // so define the primary key inline in the CREATE TABLE statement.
         // 
         // IMPORTANT: DSQL only allows ONE DDL statement per transaction.
         // We cannot include CREATE INDEX here - it must be done separately.
