@@ -35,9 +35,6 @@ CREATE TABLE t (id UUID PRIMARY KEY, inherits_from TEXT);
 -- label: USING
 CREATE INDEX ASYNC idx ON t(col);
 
--- label: Expression
-CREATE INDEX ASYNC idx ON t(col);
-
 -- label: Partial
 CREATE INDEX ASYNC idx ON t(col);
 
@@ -61,9 +58,6 @@ CREATE SEQUENCE s CACHE 1;
 
 -- label: invalid
 CREATE SEQUENCE s CACHE 65536;
-
--- label: Expression
-CREATE INDEX ASYNC idx ON t(col);
 
 -- label: without ASYNC
 CREATE INDEX CONCURRENTLY idx ON t(col);
