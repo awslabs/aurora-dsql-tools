@@ -31,6 +31,31 @@ fn supported_types_produce_zero_errors() {
     }
 }
 
+#[test]
+fn supported_foreign_key_forms_produce_zero_errors() {
+    let cases = [
+        "CREATE TABLE child (parent_id INT REFERENCES parent);",
+        "CREATE TABLE child (parent_id INT REFERENCES parent(id) ON DELETE CASCADE ON UPDATE SET NULL DEFERRABLE INITIALLY DEFERRED);",
+        "CREATE TABLE child (parent_id INT DEFAULT 1 REFERENCES parent(id) ON DELETE SET DEFAULT ON UPDATE RESTRICT);",
+        "CREATE TABLE child (a INT, b INT, FOREIGN KEY (a, b) REFERENCES parent(a, b) MATCH FULL);",
+        "CREATE TABLE node (id INT PRIMARY KEY, parent_id INT REFERENCES node(id));",
+        "ALTER TABLE child ADD CONSTRAINT child_parent_fkey FOREIGN KEY (parent_id) REFERENCES parent(id) NOT VALID;",
+        "ALTER TABLE child ALTER CONSTRAINT child_parent_fkey DEFERRABLE INITIALLY IMMEDIATE;",
+        "ALTER TABLE child ALTER CONSTRAINT child_parent_fkey NOT DEFERRABLE;",
+        "ALTER TABLE child DROP CONSTRAINT child_parent_fkey;",
+        "SET CONSTRAINTS ALL DEFERRED;",
+        "SET CONSTRAINTS child_parent_fkey IMMEDIATE;",
+    ];
+
+    for sql in cases {
+        let diags = lint_sql(sql);
+        assert!(
+            diags.is_empty(),
+            "Supported foreign key SQL triggered errors:\n  SQL: {sql}\n  Errors: {diags:?}"
+        );
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // 2. ERROR DETECTION MATRIX
 // ═══════════════════════════════════════════════════════════════════════
@@ -70,16 +95,21 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "CREATE TABLE t (id SERIAL2 PRIMARY KEY);",
         "SERIAL2",
     ),
-    // Foreign keys — column-level and table-level
+    // Unsupported foreign key forms
     (
-        "fk",
-        "CREATE TABLE t (id INT, cid INT REFERENCES c(id));",
-        "FOREIGN KEY",
+        "fk-match",
+        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id) MATCH PARTIAL);",
+        "MATCH PARTIAL",
     ),
     (
-        "fk",
-        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id));",
-        "FOREIGN KEY",
+        "fk-enforced",
+        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id) ENFORCED);",
+        "ENFORCED",
+    ),
+    (
+        "fk-not-enforced",
+        "CREATE TABLE t (id INT, cid INT REFERENCES c(id) NOT ENFORCED);",
+        "NOT ENFORCED",
     ),
     // Temp tables
     ("temp", "CREATE TEMP TABLE t (id INT);", "TEMPORARY"),
@@ -141,11 +171,6 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "USING",
     ),
     (
-        "index-expr",
-        "CREATE INDEX ASYNC idx ON t (lower(name));",
-        "Expression",
-    ),
-    (
         "index-concurrently",
         "CREATE INDEX CONCURRENTLY idx ON t(col);",
         "CONCURRENTLY",
@@ -169,12 +194,12 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
     (
         "alter-fk-column",
         "ALTER TABLE t ADD COLUMN cid INT REFERENCES c(id);",
-        "FOREIGN KEY",
+        "ADD COLUMN",
     ),
     (
         "alter-fk-constraint",
         "ALTER TABLE t ADD CONSTRAINT fk_c FOREIGN KEY (cid) REFERENCES c(id);",
-        "FOREIGN KEY",
+        "NOT VALID",
     ),
     // INHERITS clause
     (
@@ -431,18 +456,6 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "ALTER TABLE t VALIDATE CONSTRAINT c1;",
         "VALIDATE CONSTRAINT",
     ),
-    // Mixed expression index (simple + expression column)
-    (
-        "index-mixed-expr",
-        "CREATE INDEX ASYNC idx ON t (col, lower(name));",
-        "Expression",
-    ),
-    // CompoundIdentifier in index (composite-type field access = expression)
-    (
-        "index-compound-id",
-        "CREATE INDEX ASYNC idx ON t(a.b);",
-        "Expression",
-    ),
     // ENABLE/DISABLE RULE
     (
         "enable-rule",
@@ -588,6 +601,20 @@ fn additional_error_detection_matrix() {
         assert!(
             diags.iter().any(|d| d.message.contains(expected)),
             "Expected error containing {expected:?} for:\n  {sql}\n  got: {diags:?}"
+        );
+    }
+}
+
+#[test]
+fn locale_expression_collation_is_rejected() {
+    for sql in [
+        "SELECT name COLLATE \"en_US\" FROM t;",
+        "SELECT name COLLATE public.\"C\" FROM t;",
+    ] {
+        let diags = lint_sql(sql);
+        assert!(
+            diags.iter().any(|d| d.rule == LintRule::Collation),
+            "Expected Collation diagnostic for:\n  {sql}\n  got: {diags:?}"
         );
     }
 }
@@ -745,7 +772,6 @@ fn fixture_sample_migration() {
 
     let expected = &[
         "SERIAL",
-        "FOREIGN KEY",
         "TRUNCATE",
         "TEMPORARY",
         "array",
