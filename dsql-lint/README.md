@@ -93,7 +93,7 @@ dsql-lint --fix -o out.sql migration.sql   # custom output path
 dsql-lint --fix -o out.sql -               # read stdin, write to out.sql
 ```
 
-> **`--fix` produces DSQL-_accepted_ SQL, not a semantics-preserving transpile.** The output is rewritten so DSQL will accept it — that is not the same as behaving identically to the source. `FIXED` means mechanically equivalent on DSQL; `WARNING` means the rewrite changes behavior in a way you must review (an async index isn't ready when the statement returns, a weakened isolation level no longer prevents the same anomalies, a SERIAL's named sequence is no longer addressable, etc.). Always review every `WARNING` and test the result before applying it to a real migration. Foreign keys are never removed automatically.
+> **`--fix` produces DSQL-_accepted_ SQL, not a semantics-preserving transpile.** The output is rewritten so DSQL will accept it — that is not the same as behaving identically to the source. `FIXED` means mechanically equivalent on DSQL; `WARNING` means the rewrite changes behavior in a way you must review (an async index isn't ready when the statement returns, a weakened isolation level no longer prevents the same anomalies, a SERIAL's named sequence is no longer addressable, etc.). Always review every `WARNING` and test the result before applying it to a real migration.
 
 #### Example Output
 

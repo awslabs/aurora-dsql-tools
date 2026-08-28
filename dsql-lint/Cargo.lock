@@ -444,9 +444,9 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "sqlparser-dsql"
-version = "0.62.5"
+version = "0.62.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "494d1d430ac7dcf215a01d210bf1bbd3a8e56724bc96790571225ff923150fc2"
+checksum = "3b26333eeec5eed0792e39ffb1567de6b8f2a9ebf966f41d6cd92098185d856a"
 dependencies = [
  "log",
  "recursive",

@@ -48,6 +48,11 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "CREATE TABLE t (name VARCHAR(100) COLLATE pg_catalog.\"C\");",
         "Fixed",
     ),
+    (
+        "fk-enforced",
+        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id) ENFORCED);",
+        "Fixed",
+    ),
     // ── Tier 2: FixedWithWarning ──────────────────────────────────────
     // Async index builds change timing semantics (index not ready on return).
     (
@@ -120,6 +125,11 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
     (
         "alter-fk",
         "ALTER TABLE t ADD CONSTRAINT fk_c FOREIGN KEY (cid) REFERENCES c(id);",
+        "FixedWithWarning",
+    ),
+    (
+        "fk-not-enforced",
+        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id) NOT ENFORCED);",
         "FixedWithWarning",
     ),
     (
@@ -287,6 +297,16 @@ fn fix_tier_matrix() {
                 .collect::<Vec<_>>()
         );
     }
+}
+
+#[test]
+fn foreign_key_enforcement_fix_preserves_deferrability() {
+    let result = fix_sql(
+        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id) DEFERRABLE INITIALLY DEFERRED ENFORCED);",
+    );
+
+    assert!(result.sql.contains("DEFERRABLE INITIALLY DEFERRED"));
+    assert!(!result.sql.contains("ENFORCED"));
 }
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -74,7 +74,7 @@ fn error(
 }
 
 fn check_foreign_key(
-    foreign_key: &ForeignKeyConstraint,
+    foreign_key: &mut ForeignKeyConstraint,
     raw_sql: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -91,18 +91,31 @@ fn check_foreign_key(
         ));
     }
 
-    if let Some(enforced) = foreign_key
+    let enforced = foreign_key
         .characteristics
         .as_ref()
-        .and_then(|characteristics| characteristics.enforced)
-    {
+        .and_then(|characteristics| characteristics.enforced);
+    if let Some(enforced) = enforced {
+        let characteristics = foreign_key.characteristics.as_mut().unwrap();
+        characteristics.enforced = None;
+        if characteristics.deferrable.is_none() && characteristics.initially.is_none() {
+            foreign_key.characteristics = None;
+        }
+
         let clause = if enforced { "ENFORCED" } else { "NOT ENFORCED" };
+        let fix_result = if enforced {
+            FixResult::Fixed("Removed redundant ENFORCED clause".into())
+        } else {
+            FixResult::FixedWithWarning(
+                "Removed NOT ENFORCED clause; Aurora DSQL will enforce the foreign key".into(),
+            )
+        };
         diagnostics.push(error(
             LintRule::ForeignKeyEnforced,
             find_line(raw_sql, "enforced"),
             format!("Foreign key {clause} is not supported in DSQL."),
             "Remove the enforcement clause. Aurora DSQL foreign keys are always enforced.",
-            FixResult::Unfixable,
+            fix_result,
         ));
     }
 }
@@ -212,8 +225,8 @@ fn check_column(
         }
     }
 
-    for option in &col.options {
-        if let ColumnOption::ForeignKey(foreign_key) = &option.option {
+    for option in &mut col.options {
+        if let ColumnOption::ForeignKey(foreign_key) = &mut option.option {
             check_foreign_key(foreign_key, raw_sql, diagnostics);
         }
     }
@@ -270,7 +283,7 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
             check_column(col, raw_sql, diagnostics, false);
         }
 
-        for constraint in &ct.constraints {
+        for constraint in &mut ct.constraints {
             if let TableConstraint::ForeignKey(foreign_key) = constraint {
                 check_foreign_key(foreign_key, raw_sql, diagnostics);
             }
