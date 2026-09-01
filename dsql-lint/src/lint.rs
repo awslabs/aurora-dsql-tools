@@ -48,6 +48,7 @@ pub enum LintRule {
     ForeignKeyMatchPartial,
     ForeignKeyEnforced,
     ForeignKeyNotValid,
+    CheckNotValid,
     TempTable,
     PartitionBy,
     Inherits,
@@ -73,6 +74,7 @@ pub enum LintRule {
     AtUnsupportedAlterColumnSetType,
     AtUnsupportedAlterColumnSetNotNull,
     AtUnsupportedAlterColumnAddGenerated,
+    // Retained for source compatibility; no diagnostics emit this legacy rule.
     AtUnsupportedAddCheck,
     AtUnsupportedAddPrimaryKey,
     AtUnsupportedAddUnique,
