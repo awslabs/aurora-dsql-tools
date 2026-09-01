@@ -558,6 +558,18 @@ fn async_validate_constraint_is_valid() {
     );
 }
 
+#[test]
+fn check_constraint_two_phase_workflow_is_valid() {
+    let sql = "\
+ALTER TABLE t ADD CONSTRAINT ck_positive CHECK (value > 0) NOT VALID;
+ALTER TABLE ASYNC t VALIDATE CONSTRAINT ck_positive;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.is_empty(),
+        "Two-phase CHECK constraint workflow should be valid, got: {diags:?}"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // 4. FALSE-POSITIVE MATRIX
 // ═══════════════════════════════════════════════════════════════════════

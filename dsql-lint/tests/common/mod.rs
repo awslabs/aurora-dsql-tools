@@ -104,6 +104,12 @@ pub const CLEAN_STATEMENTS: &[(&str, &str, &str, &str)] = &[
         "ALTER TABLE _clean_base DROP COLUMN IF EXISTS description;",
     ),
     (
+        "alter-add-check-not-valid",
+        "ALTER TABLE _clean_check_not_valid ADD CONSTRAINT _clean_check CHECK (id > 0) NOT VALID;",
+        "CREATE TABLE _clean_check_not_valid (id INT);",
+        "DROP TABLE IF EXISTS _clean_check_not_valid;",
+    ),
+    (
         "alter-drop-col",
         "ALTER TABLE _clean_base DROP COLUMN description;",
         "ALTER TABLE _clean_base ADD COLUMN description TEXT;",
@@ -681,6 +687,12 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
             "",
             "ALTER TABLE _clust_base DROP CONSTRAINT IF EXISTS _r_fk;",
         ),
+        LintRule::CheckNotValid => fix_with(
+            "ALTER TABLE _clust_base ADD CONSTRAINT _r_check CHECK (id > 0);",
+            "NOT VALID",
+            "",
+            "ALTER TABLE _clust_base DROP CONSTRAINT IF EXISTS _r_check;",
+        ),
         LintRule::ForeignKey | LintRule::AtUnsupportedDropConstraint => None,
         LintRule::TempTable => fix("CREATE TEMP TABLE _r (id INT);", "TEMPORARY"),
         LintRule::PartitionBy => fix(
@@ -771,10 +783,7 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
             "ALTER TABLE _clust_base ALTER COLUMN col ADD GENERATED ALWAYS AS IDENTITY;",
             "ADD GENERATED AS IDENTITY",
         ),
-        LintRule::AtUnsupportedAddCheck => fix(
-            "ALTER TABLE _clust_base ADD CONSTRAINT _rej_chk CHECK (id > 0);",
-            "ADD CHECK",
-        ),
+        LintRule::AtUnsupportedAddCheck => None,
         LintRule::AtUnsupportedAddUnique => fix(
             "ALTER TABLE _clust_base ADD CONSTRAINT _rej_uq UNIQUE (id);",
             "ADD UNIQUE",

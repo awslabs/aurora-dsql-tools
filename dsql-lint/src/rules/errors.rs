@@ -494,6 +494,21 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
                 }
             }
             AlterTableOperation::AddConstraint {
+                constraint: TableConstraint::Check(_),
+                not_valid,
+            } if !*not_valid => {
+                *not_valid = true;
+                diagnostics.push(error(
+                    LintRule::CheckNotValid,
+                    find_line(raw_sql, "check"),
+                    "CHECK constraints added with ALTER TABLE require NOT VALID in DSQL.",
+                    "Add NOT VALID, then validate existing rows with `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT`, capture the returned job_id, and wait with `CALL sys.wait_for_job(job_id)`.",
+                    FixResult::FixedWithWarning(
+                        "Added NOT VALID to the CHECK constraint. The constraint applies to new writes immediately, but existing rows are not validated until ALTER TABLE ASYNC ... VALIDATE CONSTRAINT completes".to_string(),
+                    ),
+                ));
+            }
+            AlterTableOperation::AddConstraint {
                 constraint: TableConstraint::PrimaryKeyUsingIndex { .. },
                 ..
             } => {
@@ -687,12 +702,6 @@ fn check_alter_table_operations(
                 | AlterColumnOperation::SetStorage { .. } => continue,
             },
             AlterTableOperation::AddConstraint { constraint, .. } => match constraint {
-                TableConstraint::Check(_) => UnsupportedOp {
-                    rule: LintRule::AtUnsupportedAddCheck,
-                    msg: "ALTER TABLE ADD CHECK constraint is not supported in DSQL.".to_string(),
-                    suggestion: "Add CHECK constraints at table creation time.",
-                    needle: "add constraint",
-                },
                 TableConstraint::Unique(_) => UnsupportedOp {
                     rule: LintRule::AtUnsupportedAddUnique,
                     msg: "ALTER TABLE ADD UNIQUE constraint is not supported in DSQL.".to_string(),
@@ -706,7 +715,7 @@ fn check_alter_table_operations(
                     suggestion: "Add PRIMARY KEY constraints at table creation time.",
                     needle: "add constraint",
                 },
-                // ForeignKey is handled by check_alter_table; other variants are skipped.
+                // CHECK and foreign keys are handled by check_alter_table; other variants are skipped.
                 _ => continue,
             },
             AlterTableOperation::DropConstraint { .. } => continue,
