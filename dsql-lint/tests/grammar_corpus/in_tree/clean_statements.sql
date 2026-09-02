@@ -20,6 +20,9 @@ CREATE VIEW _clean_view AS SELECT 1;
 -- label: alter-add-col
 ALTER TABLE _clean_base ADD COLUMN description TEXT;
 
+-- label: alter-add-check-not-valid
+ALTER TABLE _clean_check_not_valid ADD CONSTRAINT _clean_check CHECK (id > 0) NOT VALID;
+
 -- label: alter-drop-col
 ALTER TABLE _clean_base DROP COLUMN description;
 

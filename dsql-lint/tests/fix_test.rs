@@ -128,6 +128,11 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "FixedWithWarning",
     ),
     (
+        "alter-check",
+        "ALTER TABLE t ADD CONSTRAINT ck_positive CHECK (value > 0);",
+        "FixedWithWarning",
+    ),
+    (
         "fk-not-enforced",
         "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id) NOT ENFORCED);",
         "FixedWithWarning",
@@ -386,6 +391,11 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
         "validate-constraint-async",
         "ALTER TABLE t VALIDATE CONSTRAINT c1;",
         "ALTER TABLE ASYNC t VALIDATE CONSTRAINT c1;\n",
+    ),
+    (
+        "alter-check",
+        "ALTER TABLE t ADD CONSTRAINT ck_positive CHECK (value > 0);",
+        "ALTER TABLE t ADD CONSTRAINT ck_positive CHECK (value > 0) NOT VALID;\n",
     ),
     (
         "index-using-btree",
@@ -988,6 +998,14 @@ fn fix_clean_statement_verbatim() {
     let sql = "CREATE TABLE orders (id UUID PRIMARY KEY, amount DECIMAL(10,2))";
     let result = fix_sql(sql);
     assert_eq!(result.sql.trim(), format!("{sql};"));
+    assert!(result.diagnostics.is_empty());
+}
+
+#[test]
+fn fix_unique_using_index_is_unchanged() {
+    let sql = "ALTER TABLE users ADD CONSTRAINT users_email_key UNIQUE USING INDEX users_email_unique_idx;";
+    let result = fix_sql(sql);
+    assert_eq!(result.sql, format!("{sql}\n"));
     assert!(result.diagnostics.is_empty());
 }
 
