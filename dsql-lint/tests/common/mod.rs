@@ -693,7 +693,9 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
             "",
             "ALTER TABLE _clust_base DROP CONSTRAINT IF EXISTS _r_check;",
         ),
-        LintRule::ForeignKey | LintRule::AtUnsupportedDropConstraint => None,
+        LintRule::ForeignKey
+        | LintRule::AtUnsupportedDropConstraint
+        | LintRule::AtUnsupportedUniqueUsingIndex => None,
         LintRule::TempTable => fix("CREATE TEMP TABLE _r (id INT);", "TEMPORARY"),
         LintRule::PartitionBy => fix(
             "CREATE TABLE _r (id INT, d DATE) PARTITION BY RANGE (d);",
@@ -795,10 +797,6 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
         LintRule::AtUnsupportedPrimaryKeyUsingIndex => fix(
             "ALTER TABLE _clust_base ADD CONSTRAINT _rej_pk PRIMARY KEY USING INDEX _clust_base_pkey;",
             "PRIMARY KEY USING INDEX",
-        ),
-        LintRule::AtUnsupportedUniqueUsingIndex => fix(
-            "ALTER TABLE _clust_base ADD CONSTRAINT _rej_u UNIQUE USING INDEX _clust_base_idx;",
-            "UNIQUE USING INDEX",
         ),
         LintRule::AtUnsupportedRowLevelSecurity => fix(
             "ALTER TABLE _clust_base ENABLE ROW LEVEL SECURITY;",

@@ -520,18 +520,6 @@ fn check_alter_table(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<
                     FixResult::Unfixable,
                 ));
             }
-            AlterTableOperation::AddConstraint {
-                constraint: TableConstraint::UniqueUsingIndex { .. },
-                ..
-            } => {
-                diagnostics.push(error(
-                    LintRule::AtUnsupportedUniqueUsingIndex,
-                    find_line(raw_sql, "using index"),
-                    "UNIQUE USING INDEX is not supported in DSQL.",
-                    "Create a UNIQUE constraint directly instead of promoting an index.",
-                    FixResult::Unfixable,
-                ));
-            }
             // Row-Level Security
             AlterTableOperation::EnableRowLevelSecurity
             | AlterTableOperation::DisableRowLevelSecurity

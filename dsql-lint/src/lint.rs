@@ -81,6 +81,7 @@ pub enum LintRule {
     // Retained for source compatibility; no diagnostics emit this legacy rule.
     AtUnsupportedDropConstraint,
     AtUnsupportedPrimaryKeyUsingIndex,
+    // Retained for source compatibility; no diagnostics emit this legacy rule.
     AtUnsupportedUniqueUsingIndex,
     AtUnsupportedRowLevelSecurity,
     AtUnsupportedReplicaIdentity,

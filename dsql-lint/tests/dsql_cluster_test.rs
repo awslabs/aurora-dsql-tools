@@ -711,6 +711,27 @@ fn index_variants_accepted_by_cluster() {
     );
 }
 
+#[test]
+fn unique_index_promotion_accepted_by_cluster() {
+    let cx = ClusterScope::new("unique_index_promotion");
+    let sql = "\
+CREATE TABLE _clust_users (id INT PRIMARY KEY, email TEXT);
+CREATE UNIQUE INDEX ASYNC _clust_users_email_idx ON _clust_users(email)
+\\gset
+CALL sys.wait_for_job(:'job_id');
+ALTER TABLE _clust_users
+  ADD CONSTRAINT _clust_users_email_key
+  UNIQUE USING INDEX _clust_users_email_idx;";
+    let cleanup = "DROP TABLE IF EXISTS _clust_users;";
+    let result = cx.exec_file_retry(sql, cleanup);
+
+    assert!(
+        result.is_ok(),
+        "DSQL should accept UNIQUE USING INDEX after the async unique index is valid: {}",
+        result.unwrap_err()
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // 6. SEQUENCE VARIANTS
 // ═══════════════════════════════════════════════════════════════════════

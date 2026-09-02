@@ -1002,6 +1002,14 @@ fn fix_clean_statement_verbatim() {
 }
 
 #[test]
+fn fix_unique_using_index_is_unchanged() {
+    let sql = "ALTER TABLE users ADD CONSTRAINT users_email_key UNIQUE USING INDEX users_email_unique_idx;";
+    let result = fix_sql(sql);
+    assert_eq!(result.sql, format!("{sql}\n"));
+    assert!(result.diagnostics.is_empty());
+}
+
+#[test]
 fn fix_collate_multi_column_tiers_and_line_numbers() {
     // Three COLLATE columns on three separate source lines exercise:
     //   - per-column line attribution (each diagnostic points at its column)

@@ -482,11 +482,6 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "ALTER TABLE t ADD PRIMARY KEY USING INDEX my_idx;",
         "PRIMARY KEY USING INDEX",
     ),
-    (
-        "unique-using-index",
-        "ALTER TABLE t ADD UNIQUE USING INDEX my_idx;",
-        "UNIQUE USING INDEX",
-    ),
     // COPY
     // COPY with server-side file path
     (
@@ -567,6 +562,19 @@ ALTER TABLE ASYNC t VALIDATE CONSTRAINT ck_positive;";
     assert!(
         diags.is_empty(),
         "Two-phase CHECK constraint workflow should be valid, got: {diags:?}"
+    );
+}
+
+#[test]
+fn unique_using_index_is_valid() {
+    let sql = "\
+ALTER TABLE users
+  ADD CONSTRAINT users_email_key
+  UNIQUE USING INDEX users_email_unique_idx;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.is_empty(),
+        "UNIQUE USING INDEX should be valid, got: {diags:?}"
     );
 }
 
