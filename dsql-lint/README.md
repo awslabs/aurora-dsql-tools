@@ -120,6 +120,17 @@ constraint being valid. Cascading actions count toward Aurora DSQL's
 transaction row-modification limits, and foreign-key conflicts can produce
 serialization failures that require retrying the full transaction.
 
+Post-creation `CHECK` constraints use the same two-phase validation pattern.
+`ALTER TABLE ... ADD CONSTRAINT ... CHECK (...)` must include `NOT VALID`;
+`dsql-lint --fix` adds it. Validate existing rows separately with
+`ALTER TABLE ASYNC ... VALIDATE CONSTRAINT`, then wait for the returned
+`job_id` with `CALL sys.wait_for_job(job_id)`. Inline `CHECK` constraints in
+`CREATE TABLE` remain valid without this workflow.
+
+`ALTER TABLE ... ADD CONSTRAINT ... UNIQUE USING INDEX ...` promotes an
+existing unique index. Create the index with `CREATE UNIQUE INDEX ASYNC` and
+wait until `pg_index.indisvalid` is true before promoting it.
+
 ### MySQL source DDL (`--dialect mysql`)
 
 `dsql-lint` can translate MySQL DDL (e.g. `mysqldump` `CREATE TABLE` output) into DSQL-compatible SQL. It parses the MySQL dialect, rewrites the MySQL-specific constructs into their PostgreSQL/DSQL equivalents, then runs the same DSQL fix pipeline as the Postgres path.
