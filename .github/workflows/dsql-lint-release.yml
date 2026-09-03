@@ -11,6 +11,12 @@ on:
   push:
     tags:
       - "dsql-lint/v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: dsql-lint version to retry on npm
+        required: true
+        type: string
 
 jobs:
   verify-version:
@@ -23,8 +29,10 @@ jobs:
       - name: Install Rust toolchain
         run: rustup update stable && rustup default stable
       - name: Assert Cargo.toml version matches tag
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#dsql-lint/v}"
+          TAG_VERSION="${VERSION_INPUT:-${GITHUB_REF_NAME#dsql-lint/v}}"
           # Use cargo's own view of the version rather than grepping TOML —
           # robust to future [workspace.package] or field reordering.
           CARGO_VERSION=$(cargo pkgid --manifest-path dsql-lint/Cargo.toml | sed 's/.*#//')
@@ -126,6 +134,7 @@ jobs:
 
   build-wheels:
     needs: verify-version
+    if: github.event_name == 'push'
     strategy:
       matrix:
         # See build-binaries for the `cross: true` semantics.
@@ -192,6 +201,11 @@ jobs:
     # asymmetric release. PyPI is yank-only (no true delete), so it has the
     # hardest recovery story of the four registries — publish it first.
     needs: [build-binaries, publish-pypi]
+    if: >-
+      always() &&
+      needs.build-binaries.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' ||
+      needs.publish-pypi.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -203,12 +217,14 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           registry-url: "https://registry.npmjs.org"
 
       - name: Set version from tag
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
-          VERSION="${GITHUB_REF_NAME#dsql-lint/v}"
+          VERSION="${VERSION_INPUT:-${GITHUB_REF_NAME#dsql-lint/v}}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "Publishing npm packages version $VERSION"
 
@@ -258,14 +274,10 @@ jobs:
           for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64; do
             (cd dsql-lint/npm/dsql-lint-$platform && npm publish --provenance --access public)
           done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish main package
         run: |
           (cd dsql-lint/npm/dsql-lint && npm publish --provenance --access public)
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-pypi:
     needs: build-wheels
