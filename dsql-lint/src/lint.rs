@@ -55,13 +55,16 @@ pub enum LintRule {
     CreateTableAs,
     Tablespace,
     IdentityType,
+    IdentityNotNull,
     IdentityCache,
     IdentityCacheMissing,
+    NumericBounds,
     IndexAsync,
     IndexConcurrently,
     IndexUsing,
     IndexSortDirection,
     IndexPartial,
+    IndexVolatileFunction,
     Truncate,
     SequenceType,
     SequenceCache,
@@ -132,6 +135,7 @@ pub enum LintRule {
     SerialSequenceIdiom,
     AlterAddUniqueCollapse,
     AlterAddPrimaryKeyCollapse,
+    PrimaryKeyRemoval,
     // DSQL-native pg_dump idioms (a dump taken from a DSQL cluster emits DDL
     // it cannot itself re-ingest; these collapse/strip it back to a loadable
     // form). See `rules::identity_idiom`.
@@ -295,7 +299,9 @@ fn is_ddl(stmt: &Statement) -> bool {
             | Statement::AlterType(_)
             | Statement::AlterRole { .. }
             | Statement::AlterUser(_)
+            | Statement::AlterDefaultPrivileges { .. }
             | Statement::Drop { .. }
+            | Statement::DropRoutine { .. }
             | Statement::DropTrigger(_)
             | Statement::DropPolicy(_)
             | Statement::Truncate(_)
@@ -602,8 +608,10 @@ pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
     rules::serial_idiom::check_serial_idioms(&stmts, &mut diagnostics);
     rules::constraint_collapse::check_alter_add_unique(&stmts, &mut diagnostics);
     rules::constraint_collapse::check_alter_add_primary_key(&stmts, &mut diagnostics);
+    rules::identity_idiom::check_identity_alter_targets(&stmts, &mut diagnostics);
     rules::identity_idiom::check_identity_adds(&stmts, &mut diagnostics);
     rules::identity_idiom::check_set_compression(&stmts, &mut diagnostics);
+    rules::errors::check_primary_key_removals(&stmts, &mut diagnostics);
 
     for (line_num, stmt_text) in &stmts {
         if stmt_text.trim().is_empty() {
@@ -685,8 +693,10 @@ pub(crate) fn fix_statements(mut stmts: Vec<(usize, String)>) -> FixOutput {
     rules::serial_idiom::fix_serial_idioms(&mut stmts, &mut all_diagnostics);
     rules::constraint_collapse::fix_alter_add_unique(&mut stmts, &mut all_diagnostics);
     rules::constraint_collapse::fix_alter_add_primary_key(&mut stmts, &mut all_diagnostics);
+    rules::identity_idiom::check_identity_alter_targets(&stmts, &mut all_diagnostics);
     rules::identity_idiom::fix_identity_adds(&mut stmts, &mut all_diagnostics);
     rules::identity_idiom::fix_set_compression(&mut stmts, &mut all_diagnostics);
+    rules::errors::check_primary_key_removals(&stmts, &mut all_diagnostics);
 
     for (line_num, stmt_text) in &stmts {
         if stmt_text.trim().is_empty() {
