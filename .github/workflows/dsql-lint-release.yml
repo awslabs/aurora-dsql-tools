@@ -268,15 +268,22 @@ jobs:
             "
           )
 
-      - name: Publish platform packages
+      - name: Publish npm packages
         run: |
-          for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64; do
-            (cd dsql-lint/npm/dsql-lint-$platform && npm publish --provenance --access public)
+          for package_dir in \
+            dsql-lint/npm/dsql-lint-darwin-arm64 \
+            dsql-lint/npm/dsql-lint-darwin-x64 \
+            dsql-lint/npm/dsql-lint-linux-arm64 \
+            dsql-lint/npm/dsql-lint-linux-x64 \
+            dsql-lint/npm/dsql-lint-win32-x64 \
+            dsql-lint/npm/dsql-lint; do
+            package_name=$(node -p "require('./$package_dir/package.json').name")
+            if npm view "$package_name@$VERSION" version >/dev/null 2>&1; then
+              echo "$package_name@$VERSION already published; skipping"
+            else
+              (cd "$package_dir" && npm publish --provenance --access public)
+            fi
           done
-
-      - name: Publish main package
-        run: |
-          (cd dsql-lint/npm/dsql-lint && npm publish --provenance --access public)
 
   publish-pypi:
     needs: build-wheels
