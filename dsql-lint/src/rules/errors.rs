@@ -3,16 +3,19 @@ use core::ops::ControlFlow;
 use sqlparser::ast::{
     visit_expressions, AlterColumnOperation, AlterFunctionKind, AlterFunctionOperation,
     AlterRoleOperation, AlterTableOperation, ColumnDef, ColumnOption, ColumnOptionDef,
-    ConstraintReferenceMatchKind, CopyTarget, CreateTableOptions, DataType, DeclareType, Expr,
-    ForeignKeyConstraint, GeneratedAs, IndexOption, ObjectType, OrderBySort, RoleOption,
-    SequenceOptions, Set, SqlOption, Statement, TableConstraint, TransactionIsolationLevel,
-    TransactionMode, UnaryOperator, Value, ValueWithSpan,
+    ConstraintReferenceMatchKind, CopyTarget, CreateTableOptions, DataType, DeclareType,
+    ExactNumberInfo, Expr, ForeignKeyConstraint, GeneratedAs, IndexOption, ObjectType, OrderBySort,
+    RoleOption, SequenceOptions, Set, SqlOption, Statement, TableConstraint,
+    TransactionIsolationLevel, TransactionMode, UnaryOperator, Value, ValueWithSpan,
 };
 use sqlparser::tokenizer::Span;
 
 use crate::lint::{Diagnostic, FixResult, LintRule};
 
-use super::{find_line, find_line_any};
+use super::{
+    find_line, find_line_any,
+    name_match::{fold_ident, normalize_object_name, parse_parts, refs_match, NameRef},
+};
 
 /// Construct a `CACHE <value>` sequence option.
 pub(crate) fn cache_option(value: i64) -> SequenceOptions {
@@ -178,6 +181,29 @@ fn check_column(
                 col.name
             ),
             "Use a join table for relational data, or store as JSON text.",
+            FixResult::Unfixable,
+        ));
+    }
+
+    let numeric_bounds = match &col.data_type {
+        DataType::Numeric(info) | DataType::Decimal(info) | DataType::Dec(info) => Some(info),
+        _ => None,
+    };
+    if numeric_bounds.is_some_and(|info| match info {
+        ExactNumberInfo::None => false,
+        ExactNumberInfo::Precision(precision) => !(1..=1000).contains(precision),
+        ExactNumberInfo::PrecisionAndScale(precision, scale) => {
+            !(1..=1000).contains(precision) || !(-1000..=1000).contains(scale)
+        }
+    }) {
+        diagnostics.push(error(
+            LintRule::NumericBounds,
+            find_line(raw_sql, &col_name_lower),
+            format!(
+                "Column `{}` uses {}, outside DSQL's NUMERIC precision or scale limits.",
+                col.name, col.data_type
+            ),
+            "Use NUMERIC precision from 1 through 1000 and scale from -1000 through 1000.",
             FixResult::Unfixable,
         ));
     }
@@ -648,7 +674,7 @@ fn check_alter_table_operations(
         return;
     };
 
-    for op in &alter_table.operations {
+    for op in &mut alter_table.operations {
         let UnsupportedOp {
             rule,
             msg,
@@ -674,14 +700,40 @@ fn check_alter_table_operations(
                     suggestion: "Add NOT NULL at table creation time.",
                     needle: "not null",
                 },
-                AlterColumnOperation::AddGenerated { .. } => UnsupportedOp {
-                    rule: LintRule::AtUnsupportedAlterColumnAddGenerated,
-                    msg: format!(
-                        "ALTER COLUMN '{column_name}' ADD GENERATED AS IDENTITY is not supported in DSQL."
-                    ),
-                    suggestion: "Define identity columns at table creation time.",
-                    needle: "identity",
-                },
+                AlterColumnOperation::AddGenerated {
+                    sequence_options, ..
+                } => {
+                    let has_cache = sequence_options.as_ref().is_some_and(|options| {
+                        options
+                            .iter()
+                            .any(|option| matches!(option, SequenceOptions::Cache(_)))
+                    });
+                    if !has_cache {
+                        match sequence_options {
+                            Some(options) => options.push(cache_1_option()),
+                            None => *sequence_options = Some(vec![cache_1_option()]),
+                        }
+                        diagnostics.push(error(
+                            LintRule::IdentityCacheMissing,
+                            find_line(raw_sql, "identity"),
+                            format!(
+                                "Identity column `{column_name}` without explicit CACHE clause is not supported in DSQL."
+                            ),
+                            "Add an explicit CACHE 1 or CACHE 65536 clause to the identity definition.",
+                            FixResult::Fixed(format!(
+                                "Added CACHE 1 to identity column `{column_name}`"
+                            )),
+                        ));
+                    } else if let Some(options) = sequence_options.as_mut() {
+                        validate_cache_options(
+                            LintRule::IdentityCache,
+                            options,
+                            raw_sql,
+                            diagnostics,
+                        );
+                    }
+                    continue;
+                }
                 AlterColumnOperation::DropNotNull
                 | AlterColumnOperation::SetDefault { .. }
                 | AlterColumnOperation::DropDefault
@@ -820,6 +872,33 @@ fn check_create_index(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec
             "Create a full index instead, or filter in queries.",
             FixResult::Unfixable,
         ));
+    }
+
+    for column in &ci.columns {
+        let _: ControlFlow<()> = visit_expressions(&column.column.expr, |expr| {
+            let Expr::Function(function) = expr else {
+                return ControlFlow::Continue(());
+            };
+            let [name] = function.name.0.as_slice() else {
+                return ControlFlow::Continue(());
+            };
+            let Some(name) = name.as_ident() else {
+                return ControlFlow::Continue(());
+            };
+            if matches!(name.value.to_ascii_lowercase().as_str(), "random" | "now") {
+                diagnostics.push(error(
+                    LintRule::IndexVolatileFunction,
+                    find_line(raw_sql, &name.value.to_ascii_lowercase()),
+                    format!(
+                        "Index expression uses volatile function {}(), which is not supported in DSQL.",
+                        name.value
+                    ),
+                    "Remove the volatile function from the index expression.",
+                    FixResult::Unfixable,
+                ));
+            }
+            ControlFlow::Continue(())
+        });
     }
 }
 
@@ -1268,8 +1347,26 @@ fn check_unsupported_statements(
             ));
         }
 
-        // ALTER USER — entire statement rejected by DSQL.
-        Statement::AlterUser(_) => {
+        // DSQL supports ALTER USER ... RENAME TO, but not property mutations.
+        Statement::AlterUser(user)
+            if user.rename_to.is_none()
+                || user.reset_password
+                || user.abort_all_queries
+                || user.add_role_delegation.is_some()
+                || user.remove_role_delegation.is_some()
+                || user.enroll_mfa
+                || user.set_default_mfa_method.is_some()
+                || user.remove_mfa_method.is_some()
+                || user.modify_mfa_method.is_some()
+                || user.add_mfa_method_otp.is_some()
+                || user.set_policy.is_some()
+                || user.unset_policy.is_some()
+                || !user.set_tag.options.is_empty()
+                || !user.unset_tag.is_empty()
+                || !user.set_props.options.is_empty()
+                || !user.unset_props.is_empty()
+                || user.password.is_some() =>
+        {
             diagnostics.push(error(
                 LintRule::UnsupportedAlterUser,
                 find_line(raw_sql, "alter user"),
@@ -1517,6 +1614,110 @@ fn check_identity_cache_missing(
                         FixResult::Fixed(format!("Added CACHE 1 to identity column `{}`", col.name)),
                     ));
                 }
+            }
+        }
+    }
+}
+
+struct PrimaryKeyTarget {
+    table: NameRef,
+    constraint_names: Vec<String>,
+    columns: Vec<String>,
+    part_idx: usize,
+}
+
+pub(crate) fn check_primary_key_removals(
+    parts: &[(usize, String)],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let (parsed, parsed_to_part) = parse_parts(parts);
+    let mut targets = Vec::new();
+
+    for (i, stmt) in parsed.iter().enumerate() {
+        let Statement::CreateTable(create_table) = stmt else {
+            continue;
+        };
+        let Some(table) = normalize_object_name(&create_table.name) else {
+            continue;
+        };
+        let mut constraint_names = Vec::new();
+        let mut columns = Vec::new();
+
+        for constraint in &create_table.constraints {
+            if let TableConstraint::PrimaryKey(primary_key) = constraint {
+                if let Some(name) = &primary_key.name {
+                    constraint_names.push(fold_ident(name));
+                }
+                columns.extend(primary_key.columns.iter().filter_map(|column| {
+                    if let Expr::Identifier(name) = &column.column.expr {
+                        Some(fold_ident(name))
+                    } else {
+                        None
+                    }
+                }));
+            }
+        }
+        for column in &create_table.columns {
+            for option in &column.options {
+                if let ColumnOption::PrimaryKey(primary_key) = &option.option {
+                    columns.push(fold_ident(&column.name));
+                    if let Some(name) = option.name.as_ref().or(primary_key.name.as_ref()) {
+                        constraint_names.push(fold_ident(name));
+                    }
+                }
+            }
+        }
+        if columns.is_empty() {
+            continue;
+        }
+        if constraint_names.is_empty() {
+            constraint_names.push(format!("{}_pkey", table.1));
+        }
+        targets.push(PrimaryKeyTarget {
+            table,
+            constraint_names,
+            columns,
+            part_idx: parsed_to_part[i],
+        });
+    }
+
+    for (i, stmt) in parsed.iter().enumerate() {
+        let Statement::AlterTable(alter_table) = stmt else {
+            continue;
+        };
+        let Some(table) = normalize_object_name(&alter_table.name) else {
+            continue;
+        };
+        let alter_part = parsed_to_part[i];
+        let Some(target) = targets
+            .iter()
+            .filter(|target| target.part_idx < alter_part && refs_match(&target.table, &table))
+            .max_by_key(|target| target.part_idx)
+        else {
+            continue;
+        };
+
+        for operation in &alter_table.operations {
+            let removed = match operation {
+                AlterTableOperation::DropConstraint { name, .. } => {
+                    target.constraint_names.contains(&fold_ident(name))
+                }
+                AlterTableOperation::DropColumn { column_names, .. } => column_names
+                    .iter()
+                    .any(|name| target.columns.contains(&fold_ident(name))),
+                _ => false,
+            };
+            if removed {
+                diagnostics.push(Diagnostic {
+                    rule: LintRule::PrimaryKeyRemoval,
+                    line: parts[alter_part].0,
+                    statement: parts[alter_part].1.clone(),
+                    message: "Removing a primary key is not supported in DSQL.".to_string(),
+                    suggestion:
+                        "Keep the primary key, or create a replacement table with the desired key."
+                            .to_string(),
+                    fix_result: FixResult::Unfixable,
+                });
             }
         }
     }
