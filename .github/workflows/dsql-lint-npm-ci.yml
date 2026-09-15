@@ -4,17 +4,19 @@ permissions:
   contents: read
 
 on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      checkout-ref:
+        description: "Exact commit to test; defaults to the triggering ref"
+        required: false
+        type: string
+        default: ""
   push:
     branches: [main]
     paths:
       - 'dsql-lint/npm/**'
       - '.github/workflows/dsql-lint-npm-*.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'dsql-lint/npm/**'
-      - '.github/workflows/dsql-lint-npm-*.yml'
-  workflow_dispatch:
 
 jobs:
   wrapper-tests:
@@ -26,6 +28,8 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
 
       - uses: actions/setup-node@v4
         with:
@@ -39,6 +43,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
 
       - name: Run actionlint
         uses: raven-actions/actionlint@v2

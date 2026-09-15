@@ -4,9 +4,14 @@ permissions:
   contents: read
 
 on:
+  workflow_call:
+    inputs:
+      checkout-ref:
+        description: "Exact commit to test; defaults to the triggering ref"
+        required: false
+        type: string
+        default: ""
   push:
-    branches: [ main ]
-  pull_request:
     branches: [ main ]
 
 jobs:
@@ -16,8 +21,23 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.checkout-ref }}
+
+      - name: Gitleaks trusted checkout
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          args=(--path=/repo --verbose --redact)
+          if [[ -f "$GITHUB_WORKSPACE/.github/.gitleaks.toml" ]]; then
+            args+=(--config-path=/repo/.github/.gitleaks.toml)
+          fi
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/repo:ro" \
+            zricethezav/gitleaks:v7.4.0 \
+            "${args[@]}"
 
       - name: gitleaks
+        if: github.event_name != 'workflow_dispatch'
         uses: gitleaks/gitleaks-action@v1.6.0
         env:
           # GitHub Token automatically created on run

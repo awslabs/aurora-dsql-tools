@@ -4,20 +4,24 @@ permissions:
   contents: read
 
 on:
+  workflow_call:
+    inputs:
+      checkout-ref:
+        description: "Exact commit to test; defaults to the triggering ref"
+        required: false
+        type: string
+        default: ""
+      run-integration:
+        description: "Allow jobs that use AWS credentials"
+        required: false
+        type: boolean
+        default: true
   push:
     branches: [main]
     paths:
       - 'dsql-lint/**'
       - '.github/workflows/dsql-lint-ci.yml'
       - '.github/workflows/dsql-cluster-*.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'dsql-lint/**'
-      - '.github/workflows/dsql-lint-ci.yml'
-      - '.github/workflows/dsql-cluster-*.yml'
-  workflow_dispatch:
-
 defaults:
   run:
     working-directory: dsql-lint
@@ -28,6 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
 
       - name: Install Rust toolchain
         run: rustup update stable && rustup default stable
@@ -65,6 +71,8 @@ jobs:
         working-directory: .
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -95,6 +103,8 @@ jobs:
         working-directory: .
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
 
       - name: Install Rust toolchain
         run: rustup update stable && rustup default stable
@@ -127,6 +137,7 @@ jobs:
           dsql-lint --version
 
   create-cluster:
+    if: github.event_name != 'pull_request' || inputs.run-integration
     # Runs in parallel with `build` — cluster spin-up wait time overlaps with
     # compile/lint/test. A failed build still consumes a cluster, but cluster
     # cost is negligible and `delete-cluster` always runs.
@@ -146,6 +157,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
 
       - name: Install Rust toolchain
         run: rustup update stable && rustup default stable
