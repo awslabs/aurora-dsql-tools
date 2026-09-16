@@ -63,6 +63,7 @@ pub enum LintRule {
     IndexConcurrently,
     IndexUsing,
     IndexSortDirection,
+    // Retained for source compatibility; no diagnostics emit this legacy rule.
     IndexPartial,
     IndexVolatileFunction,
     Truncate,

@@ -224,6 +224,12 @@ pub const CLEAN_STATEMENTS: &[(&str, &str, &str, &str)] = &[
         "DROP INDEX IF EXISTS _clean_nulls_last_idx;",
     ),
     (
+        "create-partial-index",
+        "CREATE INDEX ASYNC _clean_partial_idx ON _clean_base (id) WHERE id > 0;",
+        "",
+        "DROP INDEX IF EXISTS _clean_partial_idx;",
+    ),
+    (
         "create-column-storage-plain",
         "CREATE TABLE _clean_storage_plain (payload TEXT STORAGE PLAIN);",
         "",
@@ -714,6 +720,7 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
         | LintRule::AtUnsupportedUniqueUsingIndex
         | LintRule::AtUnsupportedAlterColumnAddGenerated
         | LintRule::IdentityNotNull
+        | LintRule::IndexPartial
         | LintRule::PrimaryKeyRemoval => None,
         LintRule::TempTable => fix("CREATE TEMP TABLE _r (id INT);", "TEMPORARY"),
         LintRule::PartitionBy => fix(
@@ -756,10 +763,6 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
         LintRule::IndexSortDirection => fix(
             "CREATE INDEX ASYNC _r_idx ON _clust_base(col DESC);",
             "sort direction",
-        ),
-        LintRule::IndexPartial => fix(
-            "CREATE INDEX ASYNC _r_idx ON _clust_base(col) WHERE col > 0;",
-            "Partial",
         ),
         LintRule::IndexVolatileFunction => fix(
             "CREATE INDEX ASYNC _r_idx ON _clust_base ((random()));",

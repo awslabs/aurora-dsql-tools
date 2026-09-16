@@ -41,9 +41,10 @@ jobs:
       flyway: ${{ steps.detect.outputs.flyway }}
       pgdump-proxy: ${{ steps.detect.outputs.pgdump-proxy }}
       sqltools-driver: ${{ steps.detect.outputs.sqltools-driver }}
+      checkout-ref: ${{ steps.detect.outputs.checkout-ref }}
       run-integration: ${{ steps.detect.outputs.run-integration }}
     steps:
-      - uses: actions/github-script@v9
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         id: detect
         env:
           CHECKOUT_REF: ${{ inputs.checkout-ref }}
@@ -88,8 +89,11 @@ jobs:
             ];
 
             let pr = context.payload.pull_request;
-            const checkoutRef = process.env.CHECKOUT_REF.toLowerCase();
-            const pullRequestBase = process.env.PULL_REQUEST_BASE_SHA.toLowerCase();
+            if (!pr && context.ref !== 'refs/heads/main') {
+              core.setFailed('Reusable CI calls without a PR event must run from main');
+              return;
+            }
+
             const pullNumber = Number(process.env.PULL_REQUEST_NUMBER);
             if (!pr && pullNumber) {
               const response = await github.rest.pulls.get({
@@ -100,6 +104,15 @@ jobs:
               pr = response.data;
             }
 
+            const requestedHead = process.env.CHECKOUT_REF.toLowerCase();
+            const requestedBase = process.env.PULL_REQUEST_BASE_SHA.toLowerCase();
+            if (Boolean(requestedHead) !== Boolean(requestedBase)) {
+              core.setFailed(
+                'checkout-ref and pull-request-base-sha must be provided together'
+              );
+              return;
+            }
+
             const sameRepository = !pr ||
               pr.head.repo.full_name === `${context.repo.owner}/${context.repo.repo}`;
             const runIntegration =
@@ -108,35 +121,34 @@ jobs:
 
             // Manual dispatch: run all CI
             if (!pr) {
+              core.setOutput('checkout-ref', context.sha);
               for (const name of Object.keys(config)) {
                 core.setOutput(name, 'true');
               }
               return;
             }
 
-            if (Boolean(checkoutRef) !== Boolean(pullRequestBase)) {
-              core.setFailed('checkout-ref and pull-request-base-sha must be provided together');
-              return;
-            }
-
-            const headSha = checkoutRef || pr.head.sha;
-            const baseSha = pullRequestBase || pr.base.sha;
-            if (!/^[0-9a-f]{40}$/.test(headSha) || !/^[0-9a-f]{40}$/.test(baseSha)) {
+            const compareHead = requestedHead || pr.head.sha;
+            const baseSha = requestedBase || pr.base.sha;
+            const checkoutRef = requestedHead || context.sha;
+            if (!/^[0-9a-f]{40}$/.test(compareHead) ||
+                !/^[0-9a-f]{40}$/.test(baseSha)) {
               core.setFailed('Pull request base and head must be full 40-character commit SHAs');
               return;
             }
-            if (checkoutRef && (pr.head.sha !== headSha || pr.base.sha !== baseSha)) {
+            if (pr.head.sha !== compareHead || pr.base.sha !== baseSha) {
               core.setFailed(
-                `Pull request changed: expected ${baseSha}...${headSha}, ` +
+                `Pull request changed: expected ${baseSha}...${compareHead}, ` +
                 `found ${pr.base.sha}...${pr.head.sha}`
               );
               return;
             }
+            core.setOutput('checkout-ref', checkoutRef);
 
             const response = await github.rest.repos.compareCommitsWithBasehead({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              basehead: `${baseSha}...${headSha}`,
+              basehead: `${baseSha}...${compareHead}`,
             });
             const changedFiles = response.data.files || [];
             const files = changedFiles.flatMap(f =>
@@ -156,19 +168,21 @@ jobs:
             }
 
   gitleaks:
+    needs: changes
     uses: ./.github/workflows/gitleaks-scan.yml
     with:
-      checkout-ref: ${{ inputs.checkout-ref }}
+      checkout-ref: ${{ needs.changes.outputs.checkout-ref }}
 
   dsql-lint:
     needs: changes
     if: needs.changes.outputs.dsql-lint == 'true'
     uses: ./.github/workflows/dsql-lint-ci.yml
     with:
-      checkout-ref: ${{ inputs.checkout-ref }}
+      checkout-ref: ${{ needs.changes.outputs.checkout-ref }}
       run-integration: ${{ needs.changes.outputs.run-integration == 'true' }}
     secrets: inherit
     permissions:
+      checks: write # required by rustsec/audit-check
       contents: read
       id-token: write # required by aws-actions/configure-aws-credentials
 
@@ -177,7 +191,7 @@ jobs:
     if: needs.changes.outputs.dsql-lint-npm == 'true'
     uses: ./.github/workflows/dsql-lint-npm-ci.yml
     with:
-      checkout-ref: ${{ inputs.checkout-ref }}
+      checkout-ref: ${{ needs.changes.outputs.checkout-ref }}
 
   flyway:
     needs: changes
@@ -196,14 +210,14 @@ jobs:
     if: needs.changes.outputs.pgdump-proxy == 'true'
     uses: ./.github/workflows/pgdump-proxy-ci.yml
     with:
-      checkout-ref: ${{ inputs.checkout-ref }}
+      checkout-ref: ${{ needs.changes.outputs.checkout-ref }}
 
   sqltools-driver:
     needs: changes
     if: needs.changes.outputs.sqltools-driver == 'true'
     uses: ./.github/workflows/vscode-sqltools-driver-ci.yml
     with:
-      checkout-ref: ${{ inputs.checkout-ref }}
+      checkout-ref: ${{ needs.changes.outputs.checkout-ref }}
       run-integration: ${{ needs.changes.outputs.run-integration == 'true' }}
     secrets: inherit
     permissions:
@@ -223,7 +237,7 @@ jobs:
       - sqltools-driver
     if: always()
     steps:
-      - uses: actions/github-script@v9
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const needs = ${{ toJSON(needs) }};
@@ -244,7 +258,7 @@ jobs:
     permissions:
       statuses: write
     steps:
-      - uses: actions/github-script@v9
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           GATE_RESULT: ${{ needs.gate.result }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
