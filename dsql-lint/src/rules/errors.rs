@@ -863,19 +863,13 @@ fn check_create_index(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec
         ));
     }
 
-    // Partial indexes — Unfixable
-    if ci.predicate.is_some() {
-        diagnostics.push(error(
-            LintRule::IndexPartial,
-            find_line(raw_sql, "where"),
-            "Partial indexes (CREATE INDEX ... WHERE) are not supported in DSQL.",
-            "Create a full index instead, or filter in queries.",
-            FixResult::Unfixable,
-        ));
-    }
-
-    for column in &ci.columns {
-        let _: ControlFlow<()> = visit_expressions(&column.column.expr, |expr| {
+    for expression in ci
+        .columns
+        .iter()
+        .map(|column| &column.column.expr)
+        .chain(ci.predicate.iter())
+    {
+        let _: ControlFlow<()> = visit_expressions(expression, |expr| {
             let Expr::Function(function) = expr else {
                 return ControlFlow::Continue(());
             };
