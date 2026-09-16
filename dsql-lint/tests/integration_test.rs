@@ -176,9 +176,9 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "CONCURRENTLY",
     ),
     (
-        "index-partial",
-        "CREATE INDEX ASYNC idx ON t(col) WHERE col > 0;",
-        "Partial",
+        "index-volatile-partial-predicate",
+        "CREATE INDEX ASYNC idx ON t(col) WHERE random() > 0.5;",
+        "random",
     ),
     // ALTER TABLE
     (
@@ -537,6 +537,16 @@ fn suggested_async_index_is_valid() {
     assert!(
         !diags.iter().any(|d| d.message.contains("not supported")),
         "CREATE INDEX ASYNC should be valid, got: {diags:?}"
+    );
+}
+
+#[test]
+fn partial_index_is_supported() {
+    let sql = "CREATE INDEX ASYNC idx_test ON t(col) WHERE col > 0;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.is_empty(),
+        "Partial indexes should be valid, got: {diags:?}"
     );
 }
 

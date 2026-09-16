@@ -80,6 +80,9 @@ CREATE INDEX ASYNC _clean_nulls_first_idx ON _clean_base (name NULLS FIRST);
 -- label: create-index-nulls-last
 CREATE INDEX ASYNC _clean_nulls_last_idx ON _clean_base (name NULLS LAST);
 
+-- label: create-partial-index
+CREATE INDEX ASYNC _clean_partial_idx ON _clean_base (id) WHERE id > 0;
+
 -- label: create-column-storage-plain
 CREATE TABLE _clean_storage_plain (payload TEXT STORAGE PLAIN);
 
