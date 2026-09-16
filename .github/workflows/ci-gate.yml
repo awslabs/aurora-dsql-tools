@@ -1,0 +1,252 @@
+# Orchestrates all PR CI by detecting changed paths and conditionally invoking
+# per-tool workflows. The "gate" job always runs and can be configured as the
+# single required status check in GitHub branch protection.
+name: CI Gate
+
+permissions:
+  contents: read
+  pull-requests: read
+
+on:
+  pull_request:
+  workflow_call:
+    inputs:
+      checkout-ref:
+        description: "Exact commit to test; defaults to the triggering ref"
+        required: false
+        type: string
+        default: ""
+      pull-request-number:
+        description: "Pull request used for changed-path detection"
+        required: false
+        type: number
+        default: 0
+      pull-request-base-sha:
+        description: "Exact pull request base SHA used for changed-path detection"
+        required: false
+        type: string
+        default: ""
+      run-integration:
+        description: "Allow jobs that use AWS credentials"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      dsql-lint: ${{ steps.detect.outputs.dsql-lint }}
+      dsql-lint-npm: ${{ steps.detect.outputs.dsql-lint-npm }}
+      pgdump-proxy: ${{ steps.detect.outputs.pgdump-proxy }}
+      sqltools-driver: ${{ steps.detect.outputs.sqltools-driver }}
+      run-integration: ${{ steps.detect.outputs.run-integration }}
+    steps:
+      - uses: actions/github-script@v9
+        id: detect
+        env:
+          CHECKOUT_REF: ${{ inputs.checkout-ref }}
+          PULL_REQUEST_BASE_SHA: ${{ inputs.pull-request-base-sha }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pull-request-number }}
+          RUN_INTEGRATION: ${{ inputs.run-integration }}
+        with:
+          script: |
+            const config = {
+              'dsql-lint': [
+                'dsql-lint/',
+                '.github/workflows/dsql-lint-ci.yml',
+                '.github/workflows/dsql-cluster-create.yml',
+                '.github/workflows/dsql-cluster-delete.yml',
+              ],
+              'dsql-lint-npm': [
+                'dsql-lint/npm/',
+                '.github/workflows/dsql-lint-npm-ci.yml',
+              ],
+              'pgdump-proxy': [
+                'pgdump-proxy/',
+                '.github/workflows/pgdump-proxy-ci.yml',
+              ],
+              'sqltools-driver': [
+                'vscode/sqltools-driver/',
+                '.github/workflows/vscode-sqltools-driver-ci.yml',
+                '.github/workflows/dsql-cluster-create.yml',
+                '.github/workflows/dsql-cluster-delete.yml',
+              ],
+            };
+            const runAllPaths = [
+              '.github/workflows/ci-gate.yml',
+              '.github/workflows/manual-ci.yml',
+              '.github/workflows/trusted-pr-integration.yml',
+              '.github/workflows/trusted-pr-integration-runner.yml',
+            ];
+
+            let pr = context.payload.pull_request;
+            const checkoutRef = process.env.CHECKOUT_REF.toLowerCase();
+            const pullRequestBase = process.env.PULL_REQUEST_BASE_SHA.toLowerCase();
+            const pullNumber = Number(process.env.PULL_REQUEST_NUMBER);
+            if (!pr && pullNumber) {
+              const response = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pullNumber,
+              });
+              pr = response.data;
+            }
+
+            const sameRepository = !pr ||
+              pr.head.repo.full_name === `${context.repo.owner}/${context.repo.repo}`;
+            const runIntegration =
+              process.env.RUN_INTEGRATION === 'true' || sameRepository;
+            core.setOutput('run-integration', String(runIntegration));
+
+            // Manual dispatch: run all CI
+            if (!pr) {
+              for (const name of Object.keys(config)) {
+                core.setOutput(name, 'true');
+              }
+              return;
+            }
+
+            if (Boolean(checkoutRef) !== Boolean(pullRequestBase)) {
+              core.setFailed('checkout-ref and pull-request-base-sha must be provided together');
+              return;
+            }
+
+            const headSha = checkoutRef || pr.head.sha;
+            const baseSha = pullRequestBase || pr.base.sha;
+            if (!/^[0-9a-f]{40}$/.test(headSha) || !/^[0-9a-f]{40}$/.test(baseSha)) {
+              core.setFailed('Pull request base and head must be full 40-character commit SHAs');
+              return;
+            }
+            if (checkoutRef && (pr.head.sha !== headSha || pr.base.sha !== baseSha)) {
+              core.setFailed(
+                `Pull request changed: expected ${baseSha}...${headSha}, ` +
+                `found ${pr.base.sha}...${pr.head.sha}`
+              );
+              return;
+            }
+
+            const response = await github.rest.repos.compareCommitsWithBasehead({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              basehead: `${baseSha}...${headSha}`,
+            });
+            const changedFiles = response.data.files || [];
+            const files = changedFiles.flatMap(f =>
+              [f.filename, f.previous_filename].filter(Boolean)
+            );
+
+            // The compare API returns at most 300 files. Run everything at
+            // the limit because additional changed paths may be omitted.
+            const runAll = changedFiles.length === 300 ||
+              files.some(f => runAllPaths.some(p => f === p));
+
+            for (const [name, paths] of Object.entries(config)) {
+              const shouldRun = runAll || files.some(f =>
+                paths.some(p => p.endsWith('/') ? f.startsWith(p) : f === p)
+              );
+              core.setOutput(name, String(shouldRun));
+            }
+
+  gitleaks:
+    uses: ./.github/workflows/gitleaks-scan.yml
+    with:
+      checkout-ref: ${{ inputs.checkout-ref }}
+
+  dsql-lint:
+    needs: changes
+    if: needs.changes.outputs.dsql-lint == 'true'
+    uses: ./.github/workflows/dsql-lint-ci.yml
+    with:
+      checkout-ref: ${{ inputs.checkout-ref }}
+      run-integration: ${{ needs.changes.outputs.run-integration == 'true' }}
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write # required by aws-actions/configure-aws-credentials
+
+  dsql-lint-npm:
+    needs: changes
+    if: needs.changes.outputs.dsql-lint-npm == 'true'
+    uses: ./.github/workflows/dsql-lint-npm-ci.yml
+    with:
+      checkout-ref: ${{ inputs.checkout-ref }}
+
+  pgdump-proxy:
+    needs: changes
+    if: needs.changes.outputs.pgdump-proxy == 'true'
+    uses: ./.github/workflows/pgdump-proxy-ci.yml
+    with:
+      checkout-ref: ${{ inputs.checkout-ref }}
+
+  sqltools-driver:
+    needs: changes
+    if: needs.changes.outputs.sqltools-driver == 'true'
+    uses: ./.github/workflows/vscode-sqltools-driver-ci.yml
+    with:
+      checkout-ref: ${{ inputs.checkout-ref }}
+      run-integration: ${{ needs.changes.outputs.run-integration == 'true' }}
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write # required by aws-actions/configure-aws-credentials
+
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    needs:
+      - changes
+      - gitleaks
+      - dsql-lint
+      - dsql-lint-npm
+      - pgdump-proxy
+      - sqltools-driver
+    if: always()
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const needs = ${{ toJSON(needs) }};
+            for (const [job, result] of Object.entries(needs)) {
+              if (result.result === 'failure' || result.result === 'cancelled') {
+                core.setFailed(`Job ${job} ${result.result}`);
+              }
+            }
+
+  integration-status:
+    name: Report DSQL integration result
+    if: >-
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: [changes, gate]
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - uses: actions/github-script@v9
+        env:
+          GATE_RESULT: ${{ needs.gate.result }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_INTEGRATION: ${{ needs.changes.outputs.run-integration }}
+        with:
+          script: |
+            const passed =
+              process.env.RUN_INTEGRATION === 'true' &&
+              process.env.GATE_RESULT === 'success';
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: process.env.HEAD_SHA,
+              state: passed ? 'success' : 'failure',
+              context: 'dsql-integration',
+              description: passed
+                ? 'DSQL integration tests passed'
+                : 'DSQL integration tests failed',
+              target_url:
+                `https://github.com/${context.repo.owner}/${context.repo.repo}` +
+                `/actions/runs/${context.runId}`,
+            });
+            if (!passed) {
+              core.setFailed(`CI gate ${process.env.GATE_RESULT}`);
+            }
