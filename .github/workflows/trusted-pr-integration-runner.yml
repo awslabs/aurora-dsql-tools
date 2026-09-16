@@ -82,6 +82,7 @@ jobs:
       run-integration: true
     secrets: inherit
     permissions:
+      checks: write
       contents: read
       id-token: write
       pull-requests: read
