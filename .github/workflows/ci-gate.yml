@@ -175,6 +175,7 @@ jobs:
       run-integration: ${{ needs.changes.outputs.run-integration == 'true' }}
     secrets: inherit
     permissions:
+      checks: write # required by rustsec/audit-check
       contents: read
       id-token: write # required by aws-actions/configure-aws-credentials
 

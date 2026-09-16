@@ -22,6 +22,7 @@ jobs:
     uses: awslabs/aurora-dsql-tools/.github/workflows/ci-gate.yml@main
     secrets: inherit
     permissions:
+      checks: write
       contents: read
       id-token: write
       pull-requests: read
