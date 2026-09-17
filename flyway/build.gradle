@@ -68,7 +68,14 @@ jar {
     }
 }
 
+def testJavaVersion = providers.gradleProperty('testJavaVersion')
+        .map { it.toInteger() }
+        .getOrElse(17)
+
 test {
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(testJavaVersion)
+    }
     useJUnitPlatform()
     exclude '**/*IntegrationTest.class'
 }
