@@ -1,0 +1,163 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'org.jreleaser' version '1.25.0'
+}
+
+group = 'software.amazon.dsql'
+version = '3.0.0'
+
+def flywayVersion = '11.9.0'
+def lombokVersion = '1.18.32'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    compileOnly "org.flywaydb:flyway-core:${flywayVersion}"
+    api("org.flywaydb:flyway-database-postgresql:${flywayVersion}") {
+        exclude group: 'org.flywaydb', module: 'flyway-core'
+    }
+    compileOnly "org.projectlombok:lombok:${lombokVersion}"
+    annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+
+    testImplementation platform('org.junit:junit-bom:5.11.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'org.assertj:assertj-core:3.26.3'
+    testImplementation "org.flywaydb:flyway-core:${flywayVersion}"
+    testImplementation 'software.amazon.dsql:aurora-dsql-jdbc-connector:1.5.0'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+    withJavadocJar()
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+}
+
+tasks.withType(Javadoc).configureEach {
+    options.encoding = 'UTF-8'
+    options.addStringOption('Xdoclint:none', '-quiet')
+}
+
+processResources {
+    from('LICENSE') {
+        into 'META-INF'
+    }
+    filesMatching('org/flywaydb/community/database/dsql/version.txt') {
+        expand pom: [version: project.version]
+    }
+}
+
+jar {
+    manifest {
+        attributes(
+                'Implementation-Title': 'Aurora DSQL Flyway Support',
+                'Implementation-Version': version
+        )
+    }
+}
+
+def testJavaVersion = providers.gradleProperty('testJavaVersion')
+        .map { it.toInteger() }
+        .getOrElse(17)
+
+test {
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(testJavaVersion)
+    }
+    useJUnitPlatform()
+    exclude '**/*IntegrationTest.class'
+}
+
+tasks.register('integrationTest', Test) {
+    description = 'Runs integration tests against a live Aurora DSQL cluster'
+    group = 'verification'
+    useJUnitPlatform()
+    include '**/*IntegrationTest.class'
+}
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            groupId = 'software.amazon.dsql'
+            artifactId = 'aurora-dsql-flyway-support'
+            from components.java
+
+            pom {
+                name = 'Aurora DSQL Flyway Support'
+                description = 'Temporary Maven Central distribution of the official Flyway community database support for Amazon Aurora DSQL'
+                url = 'https://github.com/awslabs/aurora-dsql-tools'
+                inceptionYear = '2026'
+
+                scm {
+                    url = 'https://github.com/awslabs/aurora-dsql-tools/tree/main'
+                    connection = 'scm:git:https://github.com/awslabs/aurora-dsql-tools.git'
+                    developerConnection = 'scm:git:ssh://git@github.com/awslabs/aurora-dsql-tools.git'
+                }
+
+                licenses {
+                    license {
+                        name = 'The Apache License, Version 2.0'
+                        url = 'https://www.apache.org/licenses/LICENSE-2.0.txt'
+                        distribution = 'repo'
+                    }
+                }
+
+                developers {
+                    developer {
+                        id = 'aws-aurora-dsql'
+                        name = 'Aurora DSQL Team'
+                        organization = 'Amazon Web Services'
+                        organizationUrl = 'https://aws.amazon.com'
+                    }
+                }
+
+                withXml {
+                    def dependencies = asNode().dependencies
+                    def dependency = dependencies[0].appendNode('dependency')
+                    dependency.appendNode('groupId', 'org.flywaydb')
+                    dependency.appendNode('artifactId', 'flyway-core')
+                    dependency.appendNode('version', flywayVersion)
+                    dependency.appendNode('scope', 'provided')
+                }
+            }
+        }
+    }
+
+    repositories {
+        maven {
+            url = layout.buildDirectory.dir('staging-deploy')
+        }
+    }
+}
+
+if (System.getenv('JRELEASER_MAVENCENTRAL_STAGE')) {
+    jreleaser {
+        signing {
+            active = 'ALWAYS'
+            armored = true
+        }
+        deploy {
+            maven {
+                mavenCentral {
+                    sonatype {
+                        active = 'ALWAYS'
+                        url = 'https://central.sonatype.com/api/v1/publisher'
+                        stagingRepository('build/staging-deploy')
+                    }
+                }
+            }
+        }
+    }
+}

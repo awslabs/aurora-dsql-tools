@@ -21,12 +21,10 @@ This monorepo contains developer tools for [Amazon Aurora DSQL](https://aws.amaz
 
 ### Database Migration Tools
 
-- [Official Flyway module][flyway-dsql] provides Flyway database support for
-  Aurora DSQL.
+- [Flyway support](./flyway/) packages the official Aurora DSQL community
+  module under temporary AWS Maven Central coordinates.
 - [pgdump-proxy](./pgdump-proxy/) lets stock `pg_dump` and `psql` read an
   Aurora DSQL cluster.
-
-[flyway-dsql]: https://github.com/flyway/flyway-community-db-support/tree/main/flyway-database-dsql
 
 ## Documentation
 
@@ -34,7 +32,7 @@ See the README in each tool's directory for detailed usage instructions:
 
 - [dsql-lint documentation](./dsql-lint/README.md)
 - [SQLTools Driver documentation](./vscode/sqltools-driver/README.md)
-- [Flyway adapter deprecation notice](./flyway/README.md)
+- [Flyway support documentation](./flyway/README.md)
 - [pg_dump proxy documentation](./pgdump-proxy/README.md)
 
 ## Versioning

@@ -38,6 +38,7 @@ jobs:
     outputs:
       dsql-lint: ${{ steps.detect.outputs.dsql-lint }}
       dsql-lint-npm: ${{ steps.detect.outputs.dsql-lint-npm }}
+      flyway: ${{ steps.detect.outputs.flyway }}
       pgdump-proxy: ${{ steps.detect.outputs.pgdump-proxy }}
       sqltools-driver: ${{ steps.detect.outputs.sqltools-driver }}
       checkout-ref: ${{ steps.detect.outputs.checkout-ref }}
@@ -62,6 +63,12 @@ jobs:
               'dsql-lint-npm': [
                 'dsql-lint/npm/',
                 '.github/workflows/dsql-lint-npm-ci.yml',
+              ],
+              'flyway': [
+                'flyway/',
+                '.github/workflows/flyway-ci.yml',
+                '.github/workflows/dsql-cluster-create.yml',
+                '.github/workflows/dsql-cluster-delete.yml',
               ],
               'pgdump-proxy': [
                 'pgdump-proxy/',
@@ -186,6 +193,18 @@ jobs:
     with:
       checkout-ref: ${{ needs.changes.outputs.checkout-ref }}
 
+  flyway:
+    needs: changes
+    if: needs.changes.outputs.flyway == 'true'
+    uses: ./.github/workflows/flyway-ci.yml
+    with:
+      checkout-ref: ${{ inputs.checkout-ref }}
+      run-integration: ${{ needs.changes.outputs.run-integration == 'true' }}
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write # required by aws-actions/configure-aws-credentials
+
   pgdump-proxy:
     needs: changes
     if: needs.changes.outputs.pgdump-proxy == 'true'
@@ -213,6 +232,7 @@ jobs:
       - gitleaks
       - dsql-lint
       - dsql-lint-npm
+      - flyway
       - pgdump-proxy
       - sqltools-driver
     if: always()
