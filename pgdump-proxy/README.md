@@ -19,6 +19,7 @@ SET row_security = off                        -> ERROR: not supported
 SET standard_conforming_strings = on          -> ERROR: not supported
 SELECT set_config('restrict_nonsystem_relation_kind', ...)  -> ERROR: not supported
 LOCK TABLE ... IN ACCESS SHARE MODE           -> ERROR: unsupported statement: Lock
+PREPARE dumpFunc(pg_catalog.oid) AS SELECT ... -> ERROR: unsupported statement: Prepare
 ```
 
 There is no `pg_dump` flag to suppress these, so **you cannot dump a DSQL
@@ -36,7 +37,10 @@ The proxy sits between the client (plaintext, on localhost) and DSQL (TLS):
   - a rejected `SET <param>` → a synthesized `SET` success reply,
   - `SELECT set_config('<rejected>', ...)` → rewritten to `SELECT NULL::text`,
   - `LOCK TABLE ...` → a synthesized `LOCK TABLE` reply (DSQL gives snapshot
-    isolation, so the lock is unnecessary).
+    isolation, so the lock is unnecessary),
+  - pg_dump's known one-`oid` catalog `PREPARE` statements → retained inside
+    the proxy, with matching `EXECUTE name('<oid>')` calls rewritten to the
+    underlying `SELECT` and sent directly to DSQL.
 - Content-relevant GUCs (`client_encoding`, `DateStyle`, `extra_float_digits`,
   `intervalstyle`, `timezone`, `search_path`) are on DSQL's allowlist and pass
   through, so dump fidelity is preserved.
@@ -82,6 +86,10 @@ Options: `--target-port` (default 5432), `--listen-host` (default `127.0.0.1`),
   cluster if dumping several.
 - **Use for migration/export, not as a general-purpose gateway.** It rewrites
   only the statements needed for `pg_dump`/`psql` to function against DSQL.
+- **No general SQL-level prepared statements.** The proxy only expands the
+  known one-`oid` catalog queries used internally by `pg_dump`. Other
+  `PREPARE`/`EXECUTE` statements pass through and remain unsupported by DSQL;
+  applications should use driver-level prepared statements.
 - **Simple-query setup only.** Interception fires on simple-query (`'Q'`)
   messages carrying one setup statement — what `pg_dump`/`psql` actually send.
   Setup statements issued via the extended-query protocol (Parse/Bind/Execute) or

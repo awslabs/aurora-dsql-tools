@@ -18,6 +18,8 @@ intercepts the specific setup statements DSQL rejects, none of which affect dump
   * `LOCK TABLE ... IN ... MODE`                  -> synth a `LOCK TABLE` reply
                                                      (DSQL is snapshot-isolated;
                                                       the lock is unnecessary)
+  * pg_dump's catalog `PREPARE` / `EXECUTE` pairs -> retain the SELECT locally
+                                                     and send it directly on EXECUTE
 
 Content-relevant GUCs (`client_encoding`, `DateStyle`, `extra_float_digits`,
 `intervalstyle`, `timezone`, `search_path`) are on DSQL's allowlist and pass
@@ -87,6 +89,38 @@ SET_CONFIG_RE = re.compile(
     rb"^\s*SELECT\s+(?:pg_catalog\.)?set_config\s*\(", re.IGNORECASE)
 LOCK_RE = re.compile(rb'^\s*LOCK\b', re.IGNORECASE)
 
+# pg_dump prepares these object-detail catalog queries with one `pg_catalog.oid`
+# parameter, then executes them with a decimal OID. SQL-level PREPARE is
+# intentionally unsupported by DSQL, so retain only these pg_dump-owned queries
+# in the proxy and inline the typed OID when EXECUTE arrives. This is deliberately
+# not a general PREPARE implementation: user statements and unfamiliar pg_dump
+# query shapes still pass through to DSQL and fail normally.
+PGDUMP_OID_PREPARED_QUERIES = {
+    b"getdomainconstraints",
+    b"dumpenumtype",
+    b"dumprangetype",
+    b"dumpbasetype",
+    b"dumpdomain",
+    b"dumpcompositetype",
+    b"dumpfunc",
+    b"dumpopr",
+    b"dumpagg",
+    b"getcolumnacls",
+    b"dumptableattach",
+}
+PGDUMP_PREPARE_RE = re.compile(
+    rb"^\s*PREPARE\s+([A-Za-z_][A-Za-z0-9_]*)\s*"
+    rb"\(\s*pg_catalog\.oid\s*\)\s+AS\s+(SELECT\b.*)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+PGDUMP_EXECUTE_RE = re.compile(
+    rb"^\s*EXECUTE\s+([A-Za-z_][A-Za-z0-9_]*)\s*"
+    rb"\(\s*'([0-9]+)'\s*\)\s*;?\s*$",
+    re.IGNORECASE,
+)
+PGDUMP_OID_PARAM_RE = re.compile(rb"\$1\b")
+OTHER_POSITIONAL_PARAM_RE = re.compile(rb"\$(?!1\b)[0-9]+")
+
 SSL_REQUEST_CODE = 80877103
 GSS_ENC_REQUEST_CODE = 80877104
 
@@ -98,6 +132,46 @@ def set_param_allowed(param: bytes) -> bool:
         or p.startswith("enable_")
         or p == "disable_sync_create_index"
     )
+
+
+def parse_pgdump_prepare(query: bytes) -> tuple[bytes, bytes] | None:
+    """Return normalized name and underlying SELECT for a known pg_dump
+    one-OID PREPARE statement, or None for every other statement."""
+    m = PGDUMP_PREPARE_RE.match(query)
+    if not m:
+        return None
+
+    name = m.group(1).lower()
+    select = m.group(2).strip()
+    if select.endswith(b";"):
+        select = select[:-1].rstrip()
+    if (
+        name not in PGDUMP_OID_PREPARED_QUERIES
+        or not PGDUMP_OID_PARAM_RE.search(select)
+        or OTHER_POSITIONAL_PARAM_RE.search(select)
+    ):
+        return None
+    return name, select
+
+
+def rewrite_pgdump_execute(
+    query: bytes, prepared_queries: dict[bytes, bytes]
+) -> tuple[bytes, bytes] | None:
+    """Rewrite a matching pg_dump EXECUTE as its underlying DSQL SELECT."""
+    m = PGDUMP_EXECUTE_RE.match(query)
+    if not m:
+        return None
+
+    name = m.group(1).lower()
+    select = prepared_queries.get(name)
+    if select is None:
+        return None
+
+    # PREPARE declared $1 as pg_catalog.oid. Preserve that type explicitly
+    # after inlining rather than relying on an unknown string literal coercion.
+    oid = m.group(2)
+    typed_oid = b"('" + oid + b"'::pg_catalog.oid)"
+    return name, PGDUMP_OID_PARAM_RE.sub(typed_oid, select)
 
 
 def frame(type_byte: bytes, body: bytes) -> bytes:
@@ -184,6 +258,7 @@ def client_to_server(client: socket.socket, server: socket.socket,
 
 def _pump_client_to_server(client: socket.socket, server: socket.socket,
                            client_lock: threading.Lock) -> None:
+    prepared_queries: dict[bytes, bytes] = {}
     while True:
         type_byte = recv_exact(client, 1)
         if type_byte is None:
@@ -197,16 +272,34 @@ def _pump_client_to_server(client: socket.socket, server: socket.socket,
             return
 
         if type_byte == b"Q":  # simple query
-            m = SET_RE.match(body)
+            query = body[:-1] if body.endswith(b"\x00") else body
+            prepared = parse_pgdump_prepare(query)
+            if prepared is not None:
+                name, select = prepared
+                prepared_queries[name] = select
+                sys.stderr.write(
+                    f"[proxy] retained pg_dump PREPARE {name.decode('ascii')}\n")
+                # pg_dump creates these after BEGIN, so the connection remains
+                # in its transaction while DSQL sees no PREPARE statement.
+                send_command_complete(client, client_lock, b"PREPARE", b"T")
+                continue
+            execution = rewrite_pgdump_execute(query, prepared_queries)
+            if execution is not None:
+                name, select = execution
+                sys.stderr.write(
+                    f"[proxy] expanded pg_dump EXECUTE {name.decode('ascii')}\n")
+                server.sendall(frame(b"Q", select + b";\x00"))
+                continue
+            m = SET_RE.match(query)
             if m and not set_param_allowed(m.group(1)):
                 sys.stderr.write(f"[proxy] swallowed SET {m.group(1).decode()}\n")
                 send_command_complete(client, client_lock, b"SET", b"I")
                 continue
-            if LOCK_RE.match(body):
+            if LOCK_RE.match(query):
                 sys.stderr.write("[proxy] synthesized LOCK TABLE ok\n")
                 send_command_complete(client, client_lock, b"LOCK TABLE", b"T")
                 continue
-            if SET_CONFIG_RE.match(body):
+            if SET_CONFIG_RE.match(query):
                 sys.stderr.write("[proxy] neutralized set_config() probe\n")
                 # Forward a rewrite (not the original) — unlike SET/LOCK we want
                 # a real server reply. `::text` matches set_config's return type,
@@ -328,6 +421,56 @@ def _self_test() -> None:
     assert SET_CONFIG_RE.match(b"SELECT 1") is None
     assert SET_CONFIG_RE.match(b"SELECT * FROM t WHERE c = 'set_config('") is None
     assert SET_CONFIG_RE.match(b"SELECT a, set_config FROM t") is None
+
+    # pg_dump's SQL-level prepared catalog queries are retained and expanded,
+    # while arbitrary PREPARE/EXECUTE statements remain untouched for DSQL to
+    # reject normally.
+    dump_func = (
+        b"PREPARE dumpFunc(pg_catalog.oid) AS\n"
+        b"SELECT prosrc FROM pg_catalog.pg_proc p WHERE p.oid = $1"
+    )
+    name, select = parse_pgdump_prepare(dump_func)
+    assert name == b"dumpfunc"
+    assert select == b"SELECT prosrc FROM pg_catalog.pg_proc p WHERE p.oid = $1"
+    prepared_queries = {name: select}
+    execute_name, rewritten = rewrite_pgdump_execute(
+        b"EXECUTE dumpFunc('12345')", prepared_queries)
+    assert execute_name == b"dumpfunc"
+    assert rewritten == (
+        b"SELECT prosrc FROM pg_catalog.pg_proc p "
+        b"WHERE p.oid = ('12345'::pg_catalog.oid)"
+    )
+    assert parse_pgdump_prepare(
+        b"PREPARE userQuery(pg_catalog.oid) AS SELECT $1") is None
+    assert parse_pgdump_prepare(
+        b"PREPARE dumpFunc(text) AS SELECT $1") is None
+    assert parse_pgdump_prepare(
+        b"PREPARE dumpFunc(pg_catalog.oid) AS SELECT $2") is None
+    assert rewrite_pgdump_execute(
+        b"EXECUTE userQuery('12345')", prepared_queries) is None
+
+    # Exercise the client pump: PREPARE is acknowledged locally, while EXECUTE
+    # becomes a simple SELECT on the upstream connection.
+    client, proxy_client = socket.socketpair()
+    proxy_server, upstream = socket.socketpair()
+    pump = threading.Thread(
+        target=_pump_client_to_server,
+        args=(proxy_client, proxy_server, threading.Lock()),
+        daemon=True,
+    )
+    pump.start()
+    client.sendall(frame(b"Q", dump_func + b"\x00"))
+    prepare_reply = frame(b"C", b"PREPARE\x00") + frame(b"Z", b"T")
+    assert recv_exact(client, len(prepare_reply)) == prepare_reply
+    client.sendall(frame(b"Q", b"EXECUTE dumpFunc('12345')\x00"))
+    expected_select = frame(b"Q", rewritten + b";\x00")
+    assert recv_exact(upstream, len(expected_select)) == expected_select
+    client.close()
+    pump.join(timeout=1)
+    assert not pump.is_alive()
+    proxy_client.close()
+    proxy_server.close()
+    upstream.close()
 
     # frame() length prefix (Int32 covers itself + body) — the set_config path.
     msg = frame(b"Q", b"SELECT NULL::text;\x00")
