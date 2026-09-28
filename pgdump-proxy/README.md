@@ -32,15 +32,15 @@ The proxy sits between the client (plaintext, on localhost) and DSQL (TLS):
 
 - Startup and authentication bytes are **passed through untouched** — DSQL's IAM
   token is just a cleartext password, so the proxy never terminates auth.
-- It intercepts only the setup statements DSQL rejects, none of which affect the
-  dump's *content*:
+- It handles the setup statements DSQL rejects without changing dump content:
   - a rejected `SET <param>` → a synthesized `SET` success reply,
   - `SELECT set_config('<rejected>', ...)` → rewritten to `SELECT NULL::text`,
   - `LOCK TABLE ...` → a synthesized `LOCK TABLE` reply (DSQL gives snapshot
-    isolation, so the lock is unnecessary),
-  - pg_dump's known one-`oid` catalog `PREPARE` statements → retained inside
-    the proxy, with matching `EXECUTE name('<oid>')` calls rewritten to the
-    underlying `SELECT` and sent directly to DSQL.
+    isolation, so the lock is unnecessary).
+- pg_dump's catalog queries do affect dump content, so their results are never
+  synthesized. For the known one-`oid` `PREPARE` statements, the proxy retains
+  the original `SELECT`; matching `EXECUTE name('<oid>')` calls send that same
+  query to DSQL with only the OID safely inlined.
 - Content-relevant GUCs (`client_encoding`, `DateStyle`, `extra_float_digits`,
   `intervalstyle`, `timezone`, `search_path`) are on DSQL's allowlist and pass
   through, so dump fidelity is preserved.
@@ -90,6 +90,10 @@ Options: `--target-port` (default 5432), `--listen-host` (default `127.0.0.1`),
   known one-`oid` catalog queries used internally by `pg_dump`. Other
   `PREPARE`/`EXECUTE` statements pass through and remain unsupported by DSQL;
   applications should use driver-level prepared statements.
+- **PostgreSQL 18 statistics export is unsupported.** Do not use
+  `pg_dump --statistics` or `pg_dump --statistics-only`; those modes use a
+  different two-`name[]` prepared query that this narrowly scoped proxy does
+  not expand. Default dumps do not include statistics and are unaffected.
 - **Simple-query setup only.** Interception fires on simple-query (`'Q'`)
   messages carrying one setup statement — what `pg_dump`/`psql` actually send.
   Setup statements issued via the extended-query protocol (Parse/Bind/Execute) or
