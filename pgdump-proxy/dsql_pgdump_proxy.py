@@ -98,18 +98,55 @@ LOCK_RE = re.compile(rb'^\s*LOCK\b', re.IGNORECASE)
 # in the proxy and inline the typed OID when EXECUTE arrives. This is deliberately
 # not a general PREPARE implementation: user statements and unfamiliar pg_dump
 # query shapes still pass through to DSQL and fail normally.
+# name: (primary catalog, unqualified catalog allowed, $1 predicate left sides,
+#        stable identifying fields/functions)
 PGDUMP_OID_PREPARED_QUERIES = {
-    b"getdomainconstraints": b"pg_constraint",
-    b"dumpenumtype": b"pg_enum",
-    b"dumprangetype": b"pg_range",
-    b"dumpbasetype": b"pg_type",
-    b"dumpdomain": b"pg_type",
-    b"dumpcompositetype": b"pg_attribute",
-    b"dumpfunc": b"pg_proc",
-    b"dumpopr": b"pg_operator",
-    b"dumpagg": b"pg_aggregate",
-    b"getcolumnacls": b"pg_attribute",
-    b"dumptableattach": b"pg_class",
+    b"getdomainconstraints": (
+        b"pg_constraint", False, ((b"contypid",),),
+        (b"conname", b"pg_get_constraintdef"),
+    ),
+    b"dumpenumtype": (
+        b"pg_enum", False, ((b"enumtypid",),),
+        (b"enumlabel", b"enumsortorder"),
+    ),
+    b"dumprangetype": (
+        b"pg_range", False, ((b"rngtypid",),),
+        (b"rngsubtype", b"rngcanonical"),
+    ),
+    b"dumpbasetype": (
+        b"pg_type", False, ((b"oid",),),
+        (b"typinput", b"typoutput"),
+    ),
+    b"dumpdomain": (
+        b"pg_type", False, ((b"t", b".", b"oid"),),
+        (b"typbasetype", b"typnotnull"),
+    ),
+    b"dumpcompositetype": (
+        b"pg_attribute", False, ((b"ct", b".", b"oid"),),
+        (b"attname", b"atttypid"),
+    ),
+    b"dumpfunc": (
+        b"pg_proc", False, ((b"p", b".", b"oid"),),
+        (b"prosrc", b"lanname"),
+    ),
+    b"dumpopr": (
+        b"pg_operator", False, ((b"oid",),),
+        (b"oprkind", b"oprcode"),
+    ),
+    b"dumpagg": (
+        b"pg_aggregate", False, ((b"p", b".", b"oid"),),
+        (b"aggtransfn", b"aggtranstype"),
+    ),
+    b"getcolumnacls": (
+        b"pg_attribute", False,
+        ((b"at", b".", b"attrelid"), (b"attrelid",)),
+        (b"attname", b"attacl"),
+    ),
+    # PostgreSQL 16.15 emits this catalog unqualified.
+    b"dumptableattach": (
+        b"pg_class", True, ((b"c", b".", b"oid"),),
+        (b"pg_get_expr", b"relpartbound"),
+    ),
 }
 PGDUMP_PREPARE_RE = re.compile(
     rb"^\s*PREPARE\s+([A-Za-z_][A-Za-z0-9_]*)\s*"
@@ -246,6 +283,7 @@ def _scan_sql(
                 ):
                     parameter = b"$invalid"
                 parameters.append((i, end, parameter))
+                tokens.append(parameter)
                 i = end
                 continue
         if c == ord("_") or _ascii_alpha(c):
@@ -266,7 +304,7 @@ def _scan_sql(
             else:
                 i = end
             continue
-        if c in b".,();":
+        if c in b".,();=":
             token = bytes((c,))
             tokens.append(token)
             if c == ord(";"):
@@ -275,8 +313,10 @@ def _scan_sql(
     return tokens, parameters, semicolons
 
 
-def _references_catalog(tokens: list[bytes], catalog: bytes) -> bool:
-    """Return whether a FROM/JOIN references pg_catalog.<catalog>."""
+def _references_catalog(
+    tokens: list[bytes], catalog: bytes, allow_unqualified: bool
+) -> bool:
+    """Return whether FROM/JOIN references the expected system catalog."""
     for i, token in enumerate(tokens):
         if token not in (b"from", b"join"):
             continue
@@ -285,7 +325,39 @@ def _references_catalog(tokens: list[bytes], catalog: bytes) -> bool:
             j += 1
         if tokens[j:j + 3] == [b"pg_catalog", b".", catalog]:
             return True
+        if allow_unqualified and j < len(tokens) and tokens[j] == catalog:
+            return True
     return False
+
+
+def _contains_sequence(tokens: list[bytes], sequence: tuple[bytes, ...]) -> bool:
+    width = len(sequence)
+    return any(
+        tuple(tokens[i:i + width]) == sequence
+        for i in range(len(tokens) - width + 1)
+    )
+
+
+def _matches_pgdump_query_shape(
+    tokens: list[bytes],
+    shape: tuple[
+        bytes,
+        bool,
+        tuple[tuple[bytes, ...], ...],
+        tuple[bytes, ...],
+    ],
+) -> bool:
+    """Check stable tokens from the corresponding PostgreSQL pg_dump query."""
+    catalog, allow_unqualified, predicate_left_sides, required_tokens = shape
+    has_oid_predicate = any(
+        _contains_sequence(tokens, left_side + (b"=", b"$1"))
+        for left_side in predicate_left_sides
+    )
+    return (
+        _references_catalog(tokens, catalog, allow_unqualified)
+        and has_oid_predicate
+        and all(token in tokens for token in required_tokens)
+    )
 
 
 def _single_oid_parameter(select: bytes) -> tuple[int, int] | None:
@@ -307,8 +379,8 @@ def parse_pgdump_prepare(query: bytes) -> tuple[bytes, bytes] | None:
         return None
 
     name = m.group(1).lower()
-    expected_catalog = PGDUMP_OID_PREPARED_QUERIES.get(name)
-    if expected_catalog is None:
+    expected_shape = PGDUMP_OID_PREPARED_QUERIES.get(name)
+    if expected_shape is None:
         return None
 
     select = m.group(2).strip()
@@ -321,7 +393,7 @@ def parse_pgdump_prepare(query: bytes) -> tuple[bytes, bytes] | None:
     if (
         semicolons
         or _single_oid_parameter(select) is None
-        or not _references_catalog(tokens, expected_catalog)
+        or not _matches_pgdump_query_shape(tokens, expected_shape)
     ):
         return None
     return name, select
@@ -616,35 +688,104 @@ def _self_test() -> None:
     # reject normally.
     dump_func = (
         b"PREPARE dumpFunc(pg_catalog.oid) AS\n"
-        b"SELECT '$1; literal' AS marker, prosrc "
-        b"FROM pg_catalog.pg_proc p WHERE p.oid = $1 /* $2; ignored */"
+        b"SELECT '$1; literal' AS marker, prosrc, lanname "
+        b"FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_language l "
+        b"ON l.oid = p.prolang WHERE p.oid = $1 /* $2; ignored */"
     )
     name, select = parse_pgdump_prepare(dump_func)
     assert name == b"dumpfunc"
     assert select == (
-        b"SELECT '$1; literal' AS marker, prosrc "
-        b"FROM pg_catalog.pg_proc p WHERE p.oid = $1 /* $2; ignored */"
+        b"SELECT '$1; literal' AS marker, prosrc, lanname "
+        b"FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_language l "
+        b"ON l.oid = p.prolang WHERE p.oid = $1 /* $2; ignored */"
     )
     prepared_queries = {name: select}
     execute_name, rewritten = rewrite_pgdump_execute(
         b"EXECUTE dumpFunc('12345')", prepared_queries)
     assert execute_name == b"dumpfunc"
     assert rewritten == (
-        b"SELECT '$1; literal' AS marker, prosrc FROM pg_catalog.pg_proc p "
+        b"SELECT '$1; literal' AS marker, prosrc, lanname "
+        b"FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_language l "
+        b"ON l.oid = p.prolang "
         b"WHERE p.oid = ('12345'::pg_catalog.oid) /* $2; ignored */"
     )
 
-    # Every PostgreSQL 16 pg_dump one-OID query name is associated with its
-    # expected primary system catalog. These compact fixtures test the complete
-    # allowlist without copying large, version-specific queries into this file.
-    for query_name, catalog in PGDUMP_OID_PREPARED_QUERIES.items():
-        fixture = (
-            b"PREPARE " + query_name + b"(pg_catalog.oid) AS "
-            b"SELECT 1 FROM pg_catalog." + catalog + b" WHERE oid = $1;"
-        )
+    # PostgreSQL 16.15 query fixtures. Unlike fixtures synthesized from the
+    # implementation mapping, these preserve the real catalog qualification,
+    # aliases, identifying fields, and $1 predicates emitted by pg_dump.
+    pg16_prepare_fixtures = (
+        b"PREPARE getDomainConstraints(pg_catalog.oid) AS "
+        b"SELECT tableoid, oid, conname, "
+        b"pg_catalog.pg_get_constraintdef(oid) AS consrc, convalidated "
+        b"FROM pg_catalog.pg_constraint WHERE contypid = $1 ORDER BY conname",
+        b"PREPARE dumpEnumType(pg_catalog.oid) AS "
+        b"SELECT oid, enumlabel FROM pg_catalog.pg_enum "
+        b"WHERE enumtypid = $1 ORDER BY enumsortorder",
+        b"PREPARE dumpRangeType(pg_catalog.oid) AS "
+        b"SELECT pg_catalog.format_type(rngmultitypid, NULL) AS rngmultitype, "
+        b"pg_catalog.format_type(rngsubtype, NULL) AS rngsubtype, "
+        b"opc.opcname, rngcanonical, rngsubdiff "
+        b"FROM pg_catalog.pg_range r, pg_catalog.pg_type st, "
+        b"pg_catalog.pg_opclass opc WHERE st.oid = rngsubtype "
+        b"AND opc.oid = rngsubopc AND rngtypid = $1",
+        b"PREPARE dumpBaseType(pg_catalog.oid) AS "
+        b"SELECT typlen, typinput, typoutput, typreceive, typsend, "
+        b"typanalyze, typdelim, typbyval, typalign, typstorage, "
+        b"typmodin, typmodout, typcategory, typispreferred, "
+        b"typsubscript FROM pg_catalog.pg_type WHERE oid = $1",
+        b"PREPARE dumpDomain(pg_catalog.oid) AS "
+        b"SELECT t.typnotnull, "
+        b"pg_catalog.format_type(t.typbasetype, t.typtypmod) AS typdefn, "
+        b"t.typdefault, t.typcollation FROM pg_catalog.pg_type t "
+        b"LEFT JOIN pg_catalog.pg_type u ON t.typbasetype = u.oid "
+        b"WHERE t.oid = $1",
+        b"PREPARE dumpCompositeType(pg_catalog.oid) AS "
+        b"SELECT a.attname, a.attnum, "
+        b"pg_catalog.format_type(a.atttypid, a.atttypmod) AS atttypdefn "
+        b"FROM pg_catalog.pg_type ct JOIN pg_catalog.pg_attribute a "
+        b"ON a.attrelid = ct.typrelid WHERE ct.oid = $1 ORDER BY a.attnum",
+        b"PREPARE dumpFunc(pg_catalog.oid) AS "
+        b"SELECT proretset, prosrc, probin, provolatile, proisstrict, "
+        b"prosecdef, lanname, proconfig, procost, prorows, "
+        b"pg_catalog.pg_get_function_arguments(p.oid) AS funcargs, "
+        b"pg_catalog.pg_get_function_result(p.oid) AS funcresult, "
+        b"proleakproof, proparallel, prokind, prosupport, "
+        b"pg_get_function_sqlbody(p.oid) AS prosqlbody "
+        b"FROM pg_catalog.pg_proc p, pg_catalog.pg_language l "
+        b"WHERE p.oid = $1 AND l.oid = p.prolang",
+        b"PREPARE dumpOpr(pg_catalog.oid) AS "
+        b"SELECT oprkind, oprcode::pg_catalog.regprocedure, "
+        b"oprleft::pg_catalog.regtype, oprright::pg_catalog.regtype, "
+        b"oprcom, oprnegate, oprrest::pg_catalog.regprocedure, "
+        b"oprjoin::pg_catalog.regprocedure, oprcanmerge, oprcanhash "
+        b"FROM pg_catalog.pg_operator WHERE oid = $1",
+        b"PREPARE dumpAgg(pg_catalog.oid) AS "
+        b"SELECT aggtransfn, aggfinalfn, "
+        b"aggtranstype::pg_catalog.regtype, agginitval, aggsortop, "
+        b"pg_catalog.pg_get_function_arguments(p.oid) AS funcargs, "
+        b"aggkind, aggmtransfn, aggminvtransfn, aggmfinalfn, "
+        b"aggmtranstype::pg_catalog.regtype, aggfinalextra, "
+        b"aggmfinalextra, aggtransspace, aggmtransspace, aggminitval, "
+        b"aggcombinefn, aggserialfn, aggdeserialfn, proparallel "
+        b"FROM pg_catalog.pg_aggregate a, pg_catalog.pg_proc p "
+        b"WHERE a.aggfnoid = p.oid AND p.oid = $1",
+        b"PREPARE getColumnACLs(pg_catalog.oid) AS "
+        b"SELECT at.attname, at.attacl, pip.privtype, pip.initprivs "
+        b"FROM pg_catalog.pg_attribute at "
+        b"LEFT JOIN pg_catalog.pg_init_privs pip "
+        b"ON at.attrelid = pip.objoid AND at.attnum = pip.objsubid "
+        b"WHERE at.attrelid = $1 AND NOT at.attisdropped "
+        b"ORDER BY at.attnum",
+        b"PREPARE dumpTableAttach(pg_catalog.oid) AS "
+        b"SELECT pg_get_expr(c.relpartbound, c.oid) "
+        b"FROM pg_class c WHERE c.oid = $1",
+    )
+    recognized_names = set()
+    for fixture in pg16_prepare_fixtures:
         parsed = parse_pgdump_prepare(fixture)
         assert parsed is not None
-        assert parsed[0] == query_name
+        recognized_names.add(parsed[0])
+    assert recognized_names == set(PGDUMP_OID_PREPARED_QUERIES)
 
     assert parse_pgdump_prepare(
         b"PREPARE userQuery(pg_catalog.oid) AS SELECT $1") is None
@@ -667,11 +808,16 @@ def _self_test() -> None:
         b"SELECT $1 FROM pg_catalog.pg_class") is None
     assert parse_pgdump_prepare(
         b"PREPARE dumpFunc(pg_catalog.oid) AS "
+        b"SELECT 1 FROM pg_catalog.pg_proc p WHERE p.oid = $1") is None
+    assert parse_pgdump_prepare(
+        b"PREPARE dumpFunc(pg_catalog.oid) AS "
         b"SELECT $1 /* FROM pg_catalog.pg_proc */ "
         b"FROM pg_catalog.pg_class") is None
     assert parse_pgdump_prepare(
         b"PREPARE dumpFunc(pg_catalog.oid) AS "
-        b"SELECT $$ $1; $$ FROM pg_catalog.pg_proc WHERE oid = $1") is not None
+        b"SELECT $$ $1; $$, prosrc, lanname "
+        b"FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_language l "
+        b"ON l.oid = p.prolang WHERE p.oid = $1") is not None
     assert parse_pgdump_prepare(
         b"PREPARE dumpFunc(pg_catalog.oid) AS "
         b"SELECT 'unclosed FROM pg_catalog.pg_proc WHERE oid = $1") is None
