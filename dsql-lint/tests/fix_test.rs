@@ -17,6 +17,11 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "CREATE INDEX ASYNC idx ON t USING btree(col);",
         "Fixed",
     ),
+    (
+        "index-asc",
+        "CREATE INDEX ASYNC idx ON t(col ASC);",
+        "Fixed",
+    ),
     ("seq-missing-cache", "CREATE SEQUENCE s;", "Fixed"),
     (
         "identity-missing-cache",
@@ -43,6 +48,11 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "CREATE TABLE t (name VARCHAR(100) COLLATE pg_catalog.\"C\");",
         "Fixed",
     ),
+    (
+        "fk-enforced",
+        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id) ENFORCED);",
+        "Fixed",
+    ),
     // ── Tier 2: FixedWithWarning ──────────────────────────────────────
     // Async index builds change timing semantics (index not ready on return).
     (
@@ -51,8 +61,18 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "FixedWithWarning",
     ),
     (
+        "validate-constraint-async",
+        "ALTER TABLE t VALIDATE CONSTRAINT c1;",
+        "FixedWithWarning",
+    ),
+    (
         "index-concurrently",
         "CREATE INDEX CONCURRENTLY idx ON t(col);",
+        "FixedWithWarning",
+    ),
+    (
+        "index-desc",
+        "CREATE INDEX ASYNC idx ON t(col DESC);",
         "FixedWithWarning",
     ),
     // Sequence widening to BIGINT changes the consumable range.
@@ -103,18 +123,18 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "FixedWithWarning",
     ),
     (
-        "column-fk",
-        "CREATE TABLE t (id INT, cid INT REFERENCES c(id));",
-        "FixedWithWarning",
-    ),
-    (
-        "table-fk",
-        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id));",
-        "FixedWithWarning",
-    ),
-    (
         "alter-fk",
         "ALTER TABLE t ADD CONSTRAINT fk_c FOREIGN KEY (cid) REFERENCES c(id);",
+        "FixedWithWarning",
+    ),
+    (
+        "alter-check",
+        "ALTER TABLE t ADD CONSTRAINT ck_positive CHECK (value > 0);",
+        "FixedWithWarning",
+    ),
+    (
+        "fk-not-enforced",
+        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id) NOT ENFORCED);",
         "FixedWithWarning",
     ),
     (
@@ -185,7 +205,7 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
     (
         "alter-add-col-fk",
         "ALTER TABLE t ADD COLUMN cid INT REFERENCES c(id);",
-        "FixedWithWarning",
+        "Unfixable",
     ),
     (
         "collate-en-us",
@@ -284,6 +304,16 @@ fn fix_tier_matrix() {
     }
 }
 
+#[test]
+fn foreign_key_enforcement_fix_preserves_deferrability() {
+    let result = fix_sql(
+        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id) DEFERRABLE INITIALLY DEFERRED ENFORCED);",
+    );
+
+    assert!(result.sql.contains("DEFERRABLE INITIALLY DEFERRED"));
+    assert!(!result.sql.contains("ENFORCED"));
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // ROUNDTRIP MATRIX
 // ═══════════════════════════════════════════════════════════════════════
@@ -358,6 +388,16 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
         "CREATE INDEX ASYNC idx ON t(col);\n",
     ),
     (
+        "validate-constraint-async",
+        "ALTER TABLE t VALIDATE CONSTRAINT c1;",
+        "ALTER TABLE ASYNC t VALIDATE CONSTRAINT c1;\n",
+    ),
+    (
+        "alter-check",
+        "ALTER TABLE t ADD CONSTRAINT ck_positive CHECK (value > 0);",
+        "ALTER TABLE t ADD CONSTRAINT ck_positive CHECK (value > 0) NOT VALID;\n",
+    ),
+    (
         "index-using-btree",
         "CREATE INDEX ASYNC idx ON t USING btree(col);",
         "CREATE INDEX ASYNC idx ON t(col);\n",
@@ -381,6 +421,16 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
         "index-using-no-async-after-cols",
         "CREATE INDEX idx ON t(col) USING btree;",
         "CREATE INDEX ASYNC idx ON t(col);\n",
+    ),
+    (
+        "index-asc",
+        "CREATE INDEX ASYNC idx ON t(col ASC);",
+        "CREATE INDEX ASYNC idx ON t(col);\n",
+    ),
+    (
+        "index-desc-nulls-first",
+        "CREATE INDEX ASYNC idx ON t(col DESC NULLS FIRST);",
+        "CREATE INDEX ASYNC idx ON t(col NULLS FIRST);\n",
     ),
     // Sequence fixes
     (
@@ -420,16 +470,16 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
         "BEGIN ISOLATION LEVEL SERIALIZABLE;",
         "BEGIN ISOLATION LEVEL REPEATABLE READ;\n",
     ),
-    // FK removal
+    // Supported foreign keys are preserved.
     (
         "column-fk",
         "CREATE TABLE t (id INT, cid INT REFERENCES c(id));",
-        "CREATE TABLE t (\n  id INT,\n  cid INT  \n);\n",
+        "CREATE TABLE t (id INT, cid INT REFERENCES c(id));\n",
     ),
     (
         "table-fk",
         "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id));",
-        "CREATE TABLE t (\n  id INT,\n  cid INT  \n);\n",
+        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id));\n",
     ),
     // Clause removal
     (
@@ -461,7 +511,7 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
     (
         "alter-add-col-fk",
         "ALTER TABLE t ADD COLUMN cid INT REFERENCES c(id);",
-        "ALTER TABLE t ADD COLUMN cid INT;\n",
+        "ALTER TABLE t ADD COLUMN cid INT REFERENCES c(id);\n",
     ),
     (
         "alter-add-col-collate",
@@ -489,17 +539,17 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
         "CREATE TABLE t (\n  name VARCHAR(100) COLLATE \"C\",\n  city VARCHAR(50) COLLATE \"en_US\",\n  notes TEXT COLLATE \"en_US.utf8\"\n);",
         "CREATE TABLE t (\n  name VARCHAR(100),\n  city VARCHAR(50),\n  notes TEXT  \n);\n",
     ),
-    // Mixed ALTER TABLE: FK removed, other ops kept
+    // Mixed ALTER TABLE: the FK gains NOT VALID and the other operation remains.
     (
         "alter-mixed-fk-col",
         "ALTER TABLE t ADD CONSTRAINT fk_c FOREIGN KEY (cid) REFERENCES c(id), ADD COLUMN x INT;",
-        "ALTER TABLE t ADD COLUMN x INT;\n",
+        "ALTER TABLE t ADD CONSTRAINT fk_c FOREIGN KEY (cid) REFERENCES c(id) NOT VALID, ADD COLUMN x INT;\n",
     ),
     // Multi-fix on one statement
     (
         "serial-plus-fk",
         "CREATE TABLE t (id SERIAL PRIMARY KEY, cid INT REFERENCES c(id));",
-        "CREATE TABLE t (\n  id BIGINT PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY ( CACHE 1 ),\n  cid INT  \n);\n",
+        "CREATE TABLE t (\n  id BIGINT PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY ( CACHE 1 ),\n  cid INT REFERENCES c (id)  \n);\n",
     ),
     // Whole-list collapse rules — pin the rendered text so a sqlparser
     // Display regression that silently drops INCLUDE (still valid SQL,
@@ -932,13 +982,15 @@ fn fix_single_ddl_plus_dml_in_txn_emits_diagnostic_and_splits() {
 // Cases with bespoke assertions that don't fit a matrix row.
 
 #[test]
-fn fix_alter_fk_removed_entirely() {
+fn fix_alter_fk_adds_not_valid() {
     let result = fix_sql("ALTER TABLE t ADD CONSTRAINT fk_c FOREIGN KEY (cid) REFERENCES c(id);");
-    assert_eq!(
-        result.sql, "",
-        "ALTER TABLE with only FK should produce empty output"
-    );
+    assert!(result.sql.contains("ADD CONSTRAINT"));
+    assert!(result.sql.contains("NOT VALID"));
     assert_eq!(result.diagnostics.len(), 1);
+    assert!(matches!(
+        result.diagnostics[0].fix_result,
+        FixResult::FixedWithWarning(_)
+    ));
 }
 
 #[test]
@@ -946,6 +998,14 @@ fn fix_clean_statement_verbatim() {
     let sql = "CREATE TABLE orders (id UUID PRIMARY KEY, amount DECIMAL(10,2))";
     let result = fix_sql(sql);
     assert_eq!(result.sql.trim(), format!("{sql};"));
+    assert!(result.diagnostics.is_empty());
+}
+
+#[test]
+fn fix_unique_using_index_is_unchanged() {
+    let sql = "ALTER TABLE users ADD CONSTRAINT users_email_key UNIQUE USING INDEX users_email_unique_idx;";
+    let result = fix_sql(sql);
+    assert_eq!(result.sql, format!("{sql}\n"));
     assert!(result.diagnostics.is_empty());
 }
 

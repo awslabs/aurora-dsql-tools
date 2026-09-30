@@ -147,8 +147,7 @@ pub(crate) fn detect_serial_idioms(stmts: &[Statement]) -> Vec<SerialIdiom> {
                 // Only consider ALTER TABLEs whose sole operation is the SET DEFAULT
                 // we are about to remove. With multiple operations the part can't be
                 // dropped wholesale (we'd lose siblings like ADD CONSTRAINT or
-                // SET NOT NULL); the existing per-statement
-                // `AtUnsupportedAlterColumnSetDefault` rule still flags it Unfixable.
+                // SET NOT NULL), so the idiom collapse skips it.
                 if alter.operations.len() != 1 {
                     continue;
                 }
@@ -212,7 +211,7 @@ fn idiom_message(column: &str) -> String {
 /// runs over the original (unmodified) statements, so users see this high-level
 /// finding ALONGSIDE the lower-level rule violations on the constituent
 /// statements (the unparseable `ALTER SEQUENCE … OWNED BY` line surfaces as a
-/// `ParseError`, the `SET DEFAULT nextval` as `AtUnsupportedAlterColumnSetDefault`).
+/// `ParseError`).
 /// `fix_sql` emits ONLY this finding because `fix_serial_idioms` removes the
 /// constituent statements before the per-statement loop runs.
 pub(crate) fn check_serial_idioms(parts: &[(usize, String)], diagnostics: &mut Vec<Diagnostic>) {
@@ -568,8 +567,7 @@ mod tests {
 
     /// Multi-op ALTER TABLE: detector must NOT mark this idiom as collapsible —
     /// removing the whole statement would silently drop the unrelated `ADD
-    /// CONSTRAINT`. The user gets the per-statement
-    /// `AtUnsupportedAlterColumnSetDefault` Unfixable instead.
+    /// CONSTRAINT`. The idiom collapse skips it and leaves the ALTER intact.
     #[test]
     fn multi_op_alter_table_skipped() {
         let stmts = parse_ok(&[

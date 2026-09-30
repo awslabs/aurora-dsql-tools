@@ -4,19 +4,24 @@ permissions:
   contents: read
 
 on:
+  workflow_call:
+    inputs:
+      checkout-ref:
+        description: "Exact commit to test; defaults to the triggering ref"
+        required: false
+        type: string
+        default: ""
+      run-integration:
+        description: "Allow jobs that use AWS credentials"
+        required: false
+        type: boolean
+        default: true
   push:
     branches: [main]
     paths:
       - 'flyway/**'
       - '.github/workflows/flyway-ci.yml'
       - '.github/workflows/dsql-cluster-*.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'flyway/**'
-      - '.github/workflows/flyway-ci.yml'
-      - '.github/workflows/dsql-cluster-*.yml'
-  workflow_dispatch:
 
 defaults:
   run:
@@ -24,24 +29,36 @@ defaults:
 
 jobs:
   build:
-    name: Build and Unit Test
+    name: Build and Unit Test (Java ${{ matrix.java-version }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        java-version: ['17', '21']
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
         with:
-          java-version: '21'
+          ref: ${{ inputs.checkout-ref }}
+
+      - name: Set up compile JDK 17
+        uses: actions/setup-java@v6
+        with:
+          java-version: '17'
+          distribution: 'corretto'
+
+      - name: Set up test JDK ${{ matrix.java-version }}
+        uses: actions/setup-java@v6
+        with:
+          java-version: ${{ matrix.java-version }}
           distribution: 'corretto'
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Build and run unit tests
-        run: ./gradlew build
+        run: ./gradlew build -PtestJavaVersion=${{ matrix.java-version }}
 
   create-cluster:
+    if: github.event_name != 'pull_request' || inputs.run-integration
     needs: build
     uses: ./.github/workflows/dsql-cluster-create.yml
     with:
@@ -55,22 +72,25 @@ jobs:
     needs: create-cluster
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       id-token: write
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
         with:
-          java-version: '21'
+          ref: ${{ inputs.checkout-ref }}
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          java-version: '17'
           distribution: 'corretto'
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.IAM_ROLE }}
           aws-region: ${{ needs.create-cluster.outputs.region }}
