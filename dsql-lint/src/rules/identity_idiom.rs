@@ -12,10 +12,10 @@
 //!     NO MINVALUE NO MAXVALUE CACHE 1);
 //! ```
 //!
-//! Neither ALTER is accepted by DSQL (`ALTER COLUMN ... ADD GENERATED` and
-//! `... SET COMPRESSION` both error), and neither parses in our bundled
-//! `sqlparser-dsql` — they surface as `ParseError`/Unfixable. This module
-//! rewrites them at the text level so a DSQL→DSQL dump round-trips:
+//! DSQL accepts ordinary `ALTER COLUMN ... ADD GENERATED`, but not pg_dump's
+//! `SEQUENCE NAME` identity option. `SET COMPRESSION` is also rejected. Those
+//! two pg_dump forms do not parse in our bundled `sqlparser-dsql`, so this
+//! module rewrites them at the text level for DSQL-to-DSQL round trips:
 //!
 //! - **`ADD GENERATED ... AS IDENTITY`** is folded back onto the matching
 //!   `CREATE TABLE` column as an inline
@@ -35,7 +35,10 @@
 //! split on `;`), so a `;` inside a string literal cannot trip it.
 
 use sqlparser::{
-    ast::{ColumnOption, GeneratedAs, Statement},
+    ast::{
+        AlterColumnOperation, AlterTableOperation, ColumnOption, DataType, Expr, GeneratedAs,
+        Statement, TableConstraint,
+    },
     dialect::PostgreSqlDialect,
     parser::Parser,
 };
@@ -62,8 +65,8 @@ struct IdentityAdd {
     /// Source cache, preserved so a tuned `CACHE 65536` isn't reset to 1.
     /// Defaults to 1 when the tail carries no `CACHE`.
     cache: i64,
-    /// Bare (schema-stripped, folded) source sequence name; `None` if the tail
-    /// names none. Compared against the auto-name to detect a setval miss.
+    /// Bare (schema-stripped, folded) source sequence name. Compared against
+    /// the auto-name to detect a setval miss.
     seq_name: Option<String>,
     /// Index into `parts` of the (unparseable) ALTER statement to drop.
     alter_part: usize,
@@ -123,7 +126,10 @@ fn parse_identity_add(text: &str, alter_part: usize) -> Option<IdentityAdd> {
     // `lowered` for keyword matching, `original` to keep a quoted name's case.
     let tail_off = after_gen_off + gen_kw_len + AS_IDENTITY.len();
     let cache = parse_cache(&prefix.lowered[tail_off..]).unwrap_or(1);
-    let seq_name = parse_sequence_name(&prefix.lowered[tail_off..], &prefix.original[tail_off..]);
+    let seq_name = Some(parse_sequence_name(
+        &prefix.lowered[tail_off..],
+        &prefix.original[tail_off..],
+    )?);
 
     Some(IdentityAdd {
         table: prefix.table,
@@ -361,6 +367,130 @@ fn identity_diag(line: usize, statement: String, add: &IdentityAdd, fixed: bool)
     }
 }
 
+struct IdentityTarget {
+    table: NameRef,
+    column: String,
+    data_type: DataType,
+    not_null: bool,
+    part_idx: usize,
+}
+
+fn identity_targets(parts: &[(usize, String)]) -> Vec<IdentityTarget> {
+    let (parsed, parsed_to_part) = parse_parts(parts);
+    let mut targets = Vec::new();
+    for (i, stmt) in parsed.iter().enumerate() {
+        let Statement::CreateTable(ct) = stmt else {
+            continue;
+        };
+        let Some(table) = normalize_object_name(&ct.name) else {
+            continue;
+        };
+        let table_pk_columns: Vec<String> = ct
+            .constraints
+            .iter()
+            .filter_map(|constraint| match constraint {
+                TableConstraint::PrimaryKey(pk) => Some(&pk.columns),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|column| match &column.column.expr {
+                Expr::Identifier(ident) => Some(fold_ident(ident)),
+                _ => None,
+            })
+            .collect();
+
+        for column in &ct.columns {
+            let name = fold_ident(&column.name);
+            let not_null = table_pk_columns.contains(&name)
+                || column.options.iter().any(|option| {
+                    matches!(
+                        &option.option,
+                        ColumnOption::NotNull | ColumnOption::PrimaryKey(_)
+                    )
+                });
+            targets.push(IdentityTarget {
+                table: table.clone(),
+                column: name,
+                data_type: column.data_type.clone(),
+                not_null,
+                part_idx: parsed_to_part[i],
+            });
+        }
+    }
+    targets
+}
+
+/// Validate ordinary parsed `ALTER COLUMN ... ADD GENERATED` statements
+/// against an earlier `CREATE TABLE` when that metadata is present.
+pub(crate) fn check_identity_alter_targets(
+    parts: &[(usize, String)],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let targets = identity_targets(parts);
+    let (parsed, parsed_to_part) = parse_parts(parts);
+
+    for (i, stmt) in parsed.iter().enumerate() {
+        let Statement::AlterTable(alter_table) = stmt else {
+            continue;
+        };
+        let Some(table) = normalize_object_name(&alter_table.name) else {
+            continue;
+        };
+        let alter_part = parsed_to_part[i];
+
+        for operation in &alter_table.operations {
+            let AlterTableOperation::AlterColumn {
+                column_name,
+                op: AlterColumnOperation::AddGenerated { .. },
+            } = operation
+            else {
+                continue;
+            };
+            let column = fold_ident(column_name);
+            let Some(target) = targets
+                .iter()
+                .filter(|target| {
+                    target.part_idx < alter_part
+                        && target.column == column
+                        && refs_match(&target.table, &table)
+                })
+                .max_by_key(|target| target.part_idx)
+            else {
+                continue;
+            };
+
+            if !matches!(&target.data_type, DataType::BigInt(_) | DataType::Int8(_)) {
+                diagnostics.push(Diagnostic {
+                    rule: LintRule::IdentityType,
+                    line: parts[alter_part].0,
+                    statement: parts[alter_part].1.clone(),
+                    message: format!(
+                        "Identity column `{column}` must use BIGINT type in DSQL. Found: {}.",
+                        target.data_type
+                    ),
+                    suggestion:
+                        "Change the target column to BIGINT before adding the identity property."
+                            .to_string(),
+                    fix_result: FixResult::Unfixable,
+                });
+            }
+            if !target.not_null {
+                diagnostics.push(Diagnostic {
+                    rule: LintRule::IdentityNotNull,
+                    line: parts[alter_part].0,
+                    statement: parts[alter_part].1.clone(),
+                    message: format!(
+                        "Identity column `{column}` must be NOT NULL before adding the identity property in DSQL."
+                    ),
+                    suggestion: "Define the column as BIGINT NOT NULL at table creation time."
+                        .to_string(),
+                    fix_result: FixResult::Unfixable,
+                });
+            }
+        }
+    }
+}
+
 /// Lint-only pass: surface one `IdentityAddGeneratedCollapse` per collapsible
 /// ALTER, without touching the input.
 pub(crate) fn check_identity_adds(parts: &[(usize, String)], diagnostics: &mut Vec<Diagnostic>) {
@@ -528,7 +658,7 @@ mod tests {
         assert_eq!(add.cache, 65536);
     }
 
-    /// A tail with no `CACHE` clause defaults to 1 (the safe DSQL default).
+    /// A pg_dump tail with no `CACHE` clause defaults to 1.
     #[test]
     fn parse_identity_add_defaults_cache_when_absent() {
         let add = parse_identity_add(
@@ -643,7 +773,7 @@ mod tests {
     #[test]
     fn parse_identity_add_always_only_quoted() {
         let add = parse_identity_add(
-            "ALTER TABLE ONLY public.\"T\" ALTER COLUMN \"Id\" ADD GENERATED ALWAYS AS IDENTITY (CACHE 1);",
+            "ALTER TABLE ONLY public.\"T\" ALTER COLUMN \"Id\" ADD GENERATED ALWAYS AS IDENTITY (SEQUENCE NAME public.t_id_seq CACHE 1);",
             0,
         )
         .expect("identity ALTER must parse");
@@ -653,17 +783,14 @@ mod tests {
         assert_eq!(add.cache, 1);
     }
 
-    /// `parse_cache` must read the paren-adjacent `(CACHE n)` form (no preceding
-    /// `SEQUENCE NAME`, so `(` directly abuts `CACHE`) — otherwise it silently
-    /// defaults to `CACHE 1`, re-introducing the L1 downgrade for that shape.
+    /// Ordinary parsed identity ALTERs must not enter the pg_dump collapse.
     #[test]
-    fn parse_identity_add_cache_adjacent_to_paren() {
-        let add = parse_identity_add(
+    fn parse_identity_add_requires_sequence_name() {
+        assert!(parse_identity_add(
             "ALTER TABLE t ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (CACHE 65536)",
             0,
         )
-        .expect("must parse");
-        assert_eq!(add.cache, 65536);
+        .is_none());
     }
 
     #[test]
