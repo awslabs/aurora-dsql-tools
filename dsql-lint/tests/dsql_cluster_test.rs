@@ -17,8 +17,8 @@
 //! Each `#[test]` owns a per-test DSQL schema, created in `ClusterScope::new`
 //! and dropped in `Drop`. All SQL routes through that schema via
 //! `PGOPTIONS=-c search_path=…`, so unqualified table names like `_clust_base`
-//! resolve to the test's own schema. The cargo harness can run all tests in
-//! parallel — there is no shared `public` state and no process-wide lock.
+//! resolve to the test's own schema. CI runs the tests serially because DDL
+//! catalog versions remain cluster-wide even when schemas are isolated.
 //!
 //! OC001 (schema-version conflict) is *not* schema-scoped per DSQL docs: any
 //! catalog mutation anywhere bumps the cluster-wide catalog version. The
@@ -38,13 +38,8 @@ use std::time::Duration;
 use dsql_lint::{fix_sql, fix_sql_mysql, lint_sql, FixResult, LintRule};
 use strum::IntoEnumIterator;
 
-// 8 cluster #[test] fns now run in parallel (was: serialized). Each does
-// DDL on its own schema, but OC001 is cluster-global, so contention is
-// significantly higher than the original serialized run. The fixture test
-// alone does ~70 rules × ~3 resets each with multiple OC001-prone DDLs per
-// reset, giving the tail many chances to catch a storm. Generous budget
-// here is far cheaper than a flaky CI; even at p99 we hit only a few retries
-// per DDL, so suite wall time is dominated by happy-path latency.
+// Keep retries for transient cluster-wide catalog conflicts even though CI
+// serializes this test binary.
 const OC001_MAX_RETRIES: usize = 12;
 const OC001_BASE_DELAY_MS: u64 = 300;
 // Per-fixture retry cap for the multi-DDL fix path in
@@ -708,6 +703,27 @@ fn index_variants_accepted_by_cluster() {
         failures.is_empty(),
         "Index variant failures:\n\n{}",
         failures.join("\n\n")
+    );
+}
+
+#[test]
+fn unique_index_promotion_accepted_by_cluster() {
+    let cx = ClusterScope::new("unique_index_promotion");
+    let sql = "\
+CREATE TABLE _clust_users (id INT PRIMARY KEY, email TEXT);
+CREATE UNIQUE INDEX ASYNC _clust_users_email_idx ON _clust_users(email)
+\\gset
+CALL sys.wait_for_job(:'job_id');
+ALTER TABLE _clust_users
+  ADD CONSTRAINT _clust_users_email_key
+  UNIQUE USING INDEX _clust_users_email_idx;";
+    let cleanup = "DROP TABLE IF EXISTS _clust_users;";
+    let result = cx.exec_file_retry(sql, cleanup);
+
+    assert!(
+        result.is_ok(),
+        "DSQL should accept UNIQUE USING INDEX after the async unique index is valid: {}",
+        result.unwrap_err()
     );
 }
 

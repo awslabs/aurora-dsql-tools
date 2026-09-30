@@ -8,45 +8,55 @@ plugins {
 }
 
 group = 'software.amazon.dsql'
-version = '2.0.0'
+version = '3.0.0'
+
+def flywayVersion = '13.3.0'
+def lombokVersion = '1.18.32'
 
 repositories {
     mavenCentral()
 }
 
 dependencies {
-    // Flyway Core - provided by Flyway runtime
-    compileOnly 'org.flywaydb:flyway-core:13.3.0'
-    compileOnly 'org.flywaydb:flyway-database-postgresql:13.3.0'
+    compileOnly "org.flywaydb:flyway-core:${flywayVersion}"
+    api("org.flywaydb:flyway-database-postgresql:${flywayVersion}") {
+        exclude group: 'org.flywaydb', module: 'flyway-core'
+    }
+    compileOnly "org.projectlombok:lombok:${lombokVersion}"
+    annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
 
-    // PostgreSQL JDBC Driver - provided by runtime
-    compileOnly 'org.postgresql:postgresql:42.7.13'
-
-    // Aurora DSQL JDBC Connector - provides the OCC retry contract (OCCRetry/OCCRetryConfig)
-    // used by the OCC retry decorator. Provided by the runtime; users supply the driver.
-    compileOnly 'software.amazon.dsql:aurora-dsql-jdbc-connector:1.5.0'
-
-    // Testing - Unit Tests
-    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.2'
-    testImplementation 'org.assertj:assertj-core:3.27.7'
-    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-
-    // Testing - Integration Tests (need actual Flyway and DSQL dependencies)
-    testImplementation 'org.flywaydb:flyway-core:13.3.0'
-    testImplementation 'org.flywaydb:flyway-database-postgresql:13.3.0'
+    testImplementation platform('org.junit:junit-bom:5.11.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'org.assertj:assertj-core:3.26.3'
+    testImplementation "org.flywaydb:flyway-core:${flywayVersion}"
     testImplementation 'software.amazon.dsql:aurora-dsql-jdbc-connector:1.5.0'
-    testImplementation 'software.amazon.awssdk:dsql:2.51.0'
-    testImplementation 'org.postgresql:postgresql:42.7.13'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
     withJavadocJar()
     withSourcesJar()
 }
 
-javadoc {
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+}
+
+tasks.withType(Javadoc).configureEach {
     options.encoding = 'UTF-8'
     options.addStringOption('Xdoclint:none', '-quiet')
+}
+
+processResources {
+    from('LICENSE') {
+        into 'META-INF'
+    }
+    filesMatching('org/flywaydb/community/database/dsql/version.txt') {
+        expand pom: [version: project.version]
+    }
 }
 
 jar {
@@ -58,40 +68,23 @@ jar {
     }
 }
 
-// The version reported at runtime: generated from the project version.
-def generateVersionProperties = tasks.register('generateVersionProperties', WriteProperties) {
-    destinationFile = layout.buildDirectory
-            .file('generated/version/software/amazon/dsql/flyway/version.properties')
-    property 'version', project.version
-}
-
-sourceSets.main.resources.srcDir(layout.buildDirectory.dir('generated/version'))
-
-// Every consumer of the main resources needs to wait for the generated file
-tasks.named('processResources') {
-    dependsOn(generateVersionProperties)
-}
-
-tasks.named('sourcesJar') {
-    dependsOn(generateVersionProperties)
-}
+def testJavaVersion = providers.gradleProperty('testJavaVersion')
+        .map { it.toInteger() }
+        .getOrElse(17)
 
 test {
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(testJavaVersion)
+    }
     useJUnitPlatform()
     exclude '**/*IntegrationTest.class'
-
-    // Lets the unit tests assert the runtime version matches the build version
-    systemProperty 'project.version', project.version
 }
 
 tasks.register('integrationTest', Test) {
-    description = 'Runs integration tests against live Aurora DSQL cluster'
+    description = 'Runs integration tests against a live Aurora DSQL cluster'
     group = 'verification'
-
     useJUnitPlatform()
     include '**/*IntegrationTest.class'
-
-    systemProperty 'dsql.cluster.endpoint', System.getenv('DSQL_CLUSTER_ENDPOINT') ?: ''
 }
 
 publishing {
@@ -99,18 +92,17 @@ publishing {
         maven(MavenPublication) {
             groupId = 'software.amazon.dsql'
             artifactId = 'aurora-dsql-flyway-support'
-
             from components.java
 
             pom {
                 name = 'Aurora DSQL Flyway Support'
-                description = 'Flyway database support for Amazon Aurora DSQL'
+                description = 'Temporary Maven Central distribution of the official Flyway community database support for Amazon Aurora DSQL'
                 url = 'https://github.com/awslabs/aurora-dsql-tools'
-                inceptionYear = '2025'
+                inceptionYear = '2026'
 
-                scm{
+                scm {
                     url = 'https://github.com/awslabs/aurora-dsql-tools/tree/main'
-                    connection = 'scm:git:ssh://git@github.com/awslabs/aurora-dsql-tools.git'
+                    connection = 'scm:git:https://github.com/awslabs/aurora-dsql-tools.git'
                     developerConnection = 'scm:git:ssh://git@github.com/awslabs/aurora-dsql-tools.git'
                 }
 
@@ -129,6 +121,15 @@ publishing {
                         organization = 'Amazon Web Services'
                         organizationUrl = 'https://aws.amazon.com'
                     }
+                }
+
+                withXml {
+                    def dependencies = asNode().dependencies
+                    def dependency = dependencies[0].appendNode('dependency')
+                    dependency.appendNode('groupId', 'org.flywaydb')
+                    dependency.appendNode('artifactId', 'flyway-core')
+                    dependency.appendNode('version', flywayVersion)
+                    dependency.appendNode('scope', 'provided')
                 }
             }
         }

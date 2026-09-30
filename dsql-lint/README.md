@@ -93,7 +93,7 @@ dsql-lint --fix -o out.sql migration.sql   # custom output path
 dsql-lint --fix -o out.sql -               # read stdin, write to out.sql
 ```
 
-> **`--fix` produces DSQL-_accepted_ SQL, not a semantics-preserving transpile.** The output is rewritten so DSQL will accept it — that is not the same as behaving identically to the source. `FIXED` means mechanically equivalent on DSQL; `WARNING` means the rewrite changes behavior in a way you must review (an async index isn't ready when the statement returns, a weakened isolation level no longer prevents the same anomalies, a SERIAL's named sequence is no longer addressable, etc.). Always review every `WARNING` and test the result before applying it to a real migration. Foreign keys are never removed automatically.
+> **`--fix` produces DSQL-_accepted_ SQL, not a semantics-preserving transpile.** The output is rewritten so DSQL will accept it — that is not the same as behaving identically to the source. `FIXED` means mechanically equivalent on DSQL; `WARNING` means the rewrite changes behavior in a way you must review (an async index isn't ready when the statement returns, a weakened isolation level no longer prevents the same anomalies, a SERIAL's named sequence is no longer addressable, etc.). Always review every `WARNING` and test the result before applying it to a real migration.
 
 #### Example Output
 
@@ -119,6 +119,17 @@ asynchronous DDL operation. Capture the validation statement's returned
 constraint being valid. Cascading actions count toward Aurora DSQL's
 transaction row-modification limits, and foreign-key conflicts can produce
 serialization failures that require retrying the full transaction.
+
+Post-creation `CHECK` constraints use the same two-phase validation pattern.
+`ALTER TABLE ... ADD CONSTRAINT ... CHECK (...)` must include `NOT VALID`;
+`dsql-lint --fix` adds it. Validate existing rows separately with
+`ALTER TABLE ASYNC ... VALIDATE CONSTRAINT`, then wait for the returned
+`job_id` with `CALL sys.wait_for_job(job_id)`. Inline `CHECK` constraints in
+`CREATE TABLE` remain valid without this workflow.
+
+`ALTER TABLE ... ADD CONSTRAINT ... UNIQUE USING INDEX ...` promotes an
+existing unique index. Create the index with `CREATE UNIQUE INDEX ASYNC` and
+wait until `pg_index.indisvalid` is true before promoting it.
 
 ### MySQL source DDL (`--dialect mysql`)
 

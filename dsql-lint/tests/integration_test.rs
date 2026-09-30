@@ -10,7 +10,7 @@
 
 mod common;
 
-use dsql_lint::{lint_sql, LintRule};
+use dsql_lint::{fix_sql, lint_sql, LintRule};
 use strum::IntoEnumIterator;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -176,9 +176,9 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "CONCURRENTLY",
     ),
     (
-        "index-partial",
-        "CREATE INDEX ASYNC idx ON t(col) WHERE col > 0;",
-        "Partial",
+        "index-volatile-partial-predicate",
+        "CREATE INDEX ASYNC idx ON t(col) WHERE random() > 0.5;",
+        "random",
     ),
     // ALTER TABLE
     (
@@ -482,11 +482,6 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "ALTER TABLE t ADD PRIMARY KEY USING INDEX my_idx;",
         "PRIMARY KEY USING INDEX",
     ),
-    (
-        "unique-using-index",
-        "ALTER TABLE t ADD UNIQUE USING INDEX my_idx;",
-        "UNIQUE USING INDEX",
-    ),
     // COPY
     // COPY with server-side file path
     (
@@ -546,6 +541,16 @@ fn suggested_async_index_is_valid() {
 }
 
 #[test]
+fn partial_index_is_supported() {
+    let sql = "CREATE INDEX ASYNC idx_test ON t(col) WHERE col > 0;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.is_empty(),
+        "Partial indexes should be valid, got: {diags:?}"
+    );
+}
+
+#[test]
 fn async_validate_constraint_is_valid() {
     // The ASYNC form is the correct DSQL syntax and must lint clean.
     let sql = "ALTER TABLE ASYNC t VALIDATE CONSTRAINT c1;";
@@ -555,6 +560,31 @@ fn async_validate_constraint_is_valid() {
             .iter()
             .any(|d| d.rule == LintRule::ValidateConstraintAsync),
         "ALTER TABLE ASYNC ... VALIDATE CONSTRAINT should be valid, got: {diags:?}"
+    );
+}
+
+#[test]
+fn check_constraint_two_phase_workflow_is_valid() {
+    let sql = "\
+ALTER TABLE t ADD CONSTRAINT ck_positive CHECK (value > 0) NOT VALID;
+ALTER TABLE ASYNC t VALIDATE CONSTRAINT ck_positive;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.is_empty(),
+        "Two-phase CHECK constraint workflow should be valid, got: {diags:?}"
+    );
+}
+
+#[test]
+fn unique_using_index_is_valid() {
+    let sql = "\
+ALTER TABLE users
+  ADD CONSTRAINT users_email_key
+  UNIQUE USING INDEX users_email_unique_idx;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.is_empty(),
+        "UNIQUE USING INDEX should be valid, got: {diags:?}"
     );
 }
 
@@ -626,6 +656,127 @@ fn additional_false_positive_matrix() {
         assert!(
             !diags.iter().any(|d| d.message.contains(unexpected)),
             "Unexpected error containing {unexpected:?} for:\n  {sql}\n  got: {diags:?}"
+        );
+    }
+}
+
+#[test]
+fn validated_supported_syntax_is_clean() {
+    for sql in [
+        "SELECT * FROM t FOR KEY SHARE;",
+        "ALTER GROUP old_group RENAME TO new_group;",
+        "ALTER USER old_user RENAME TO new_user;",
+        "ALTER DEFAULT PRIVILEGES IN SCHEMA s GRANT SELECT ON TABLES TO PUBLIC;",
+        "ALTER ROUTINE s.f() RENAME TO g;",
+        "ALTER ROUTINE s.g() OWNER TO CURRENT_USER;",
+        "ALTER ROUTINE s.g() SET SCHEMA other_schema;",
+        "GRANT EXECUTE ON ROUTINE s.g() TO PUBLIC;",
+        "REVOKE EXECUTE ON ROUTINE s.g() FROM PUBLIC;",
+        "COMMENT ON ROUTINE s.g() IS 'routine comment';",
+        "DROP ROUTINE other_schema.g();",
+        "CREATE SCHEMA s CREATE SEQUENCE s.seq CACHE 1;",
+        "CREATE SCHEMA s GRANT USAGE ON SCHEMA s TO PUBLIC;",
+        "CREATE SCHEMA s REVOKE USAGE ON SCHEMA s FROM PUBLIC;",
+    ] {
+        let diags = lint_sql(sql);
+        assert!(
+            diags.is_empty(),
+            "Supported DSQL SQL triggered diagnostics:\n  SQL: {sql}\n  Diagnostics: {diags:?}"
+        );
+    }
+}
+
+#[test]
+fn validated_identity_alter_semantics() {
+    for cache in [1, 65536] {
+        let sql = format!(
+            "CREATE TABLE t (id BIGINT NOT NULL);\n\
+             ALTER TABLE t ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (CACHE {cache});"
+        );
+        assert!(
+            lint_sql(&sql).is_empty(),
+            "Valid identity ALTER triggered diagnostics:\n{sql}\n{:?}",
+            lint_sql(&sql)
+        );
+    }
+
+    for (sql, expected) in [
+        (
+            "ALTER TABLE t ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY;",
+            "CACHE",
+        ),
+        (
+            "ALTER TABLE t ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (CACHE 100);",
+            "CACHE value",
+        ),
+        (
+            "CREATE TABLE t (id INTEGER NOT NULL);\n\
+             ALTER TABLE t ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (CACHE 1);",
+            "BIGINT",
+        ),
+        (
+            "CREATE TABLE t (id BIGINT);\n\
+             ALTER TABLE t ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (CACHE 1);",
+            "NOT NULL",
+        ),
+    ] {
+        let diags = lint_sql(sql);
+        assert!(
+            diags.iter().any(|d| d.message.contains(expected)),
+            "Expected {expected:?} diagnostic for:\n{sql}\nGot: {diags:?}"
+        );
+    }
+
+    let fixed = fix_sql("ALTER TABLE t ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY;").sql;
+    assert!(
+        fixed.contains("CACHE 1") && lint_sql(&fixed).is_empty(),
+        "Identity ALTER fix did not add CACHE 1:\n{fixed}"
+    );
+}
+
+#[test]
+fn validated_numeric_index_and_primary_key_semantics() {
+    for sql in [
+        "CREATE TABLE t (n NUMERIC(1000, -1000));",
+        "CREATE INDEX ASYNC idx_lower ON t ((lower(name)));",
+        "CREATE TABLE t (id INT, CONSTRAINT t_check CHECK (id > 0));\n\
+         ALTER TABLE t DROP CONSTRAINT t_check;",
+        "CREATE TABLE t (id INT, CONSTRAINT t_unique UNIQUE (id));\n\
+         ALTER TABLE t DROP CONSTRAINT t_unique;",
+        "CREATE TABLE parent (id INT PRIMARY KEY);\n\
+         CREATE TABLE t (id INT, parent_id INT, CONSTRAINT t_fk FOREIGN KEY (parent_id) REFERENCES parent(id));\n\
+         ALTER TABLE t DROP CONSTRAINT t_fk;",
+    ] {
+        let diags = lint_sql(sql);
+        assert!(
+            diags.is_empty(),
+            "Valid DSQL SQL triggered diagnostics:\n{sql}\n{diags:?}"
+        );
+    }
+
+    for (sql, expected) in [
+        ("CREATE TABLE t (n NUMERIC(1001, 0));", "numeric"),
+        ("CREATE TABLE t (n NUMERIC(1000, 1001));", "numeric"),
+        ("CREATE TABLE t (n NUMERIC(1000, -1001));", "numeric"),
+        ("CREATE INDEX ASYNC idx_random ON t ((random()));", "random"),
+        ("CREATE INDEX ASYNC idx_now ON t ((now()));", "now"),
+        (
+            "CREATE TABLE t (id UUID CONSTRAINT t_pkey PRIMARY KEY);\n\
+             ALTER TABLE t DROP CONSTRAINT t_pkey;",
+            "primary key",
+        ),
+        (
+            "CREATE TABLE t (id UUID PRIMARY KEY);\n\
+             ALTER TABLE t DROP COLUMN id;",
+            "primary key",
+        ),
+    ] {
+        let diags = lint_sql(sql);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.to_lowercase().contains(expected)),
+            "Expected {expected:?} diagnostic for:\n{sql}\nGot: {diags:?}"
         );
     }
 }
