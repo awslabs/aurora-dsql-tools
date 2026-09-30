@@ -21,10 +21,10 @@ This monorepo contains developer tools for [Amazon Aurora DSQL](https://aws.amaz
 
 ### Database Migration Tools
 
-| Package | Description | Maven Central |
-|---------|-------------|---------------|
-| [flyway](./flyway/) | Flyway database support for Aurora DSQL | [![Maven Central](https://img.shields.io/maven-central/v/software.amazon.dsql/aurora-dsql-flyway-support)](https://central.sonatype.com/artifact/software.amazon.dsql/aurora-dsql-flyway-support) |
-| [pgdump-proxy](./pgdump-proxy/) | Wire proxy that lets stock `pg_dump` / `psql` read an Aurora DSQL cluster | — |
+- [Flyway support](./flyway/) packages the official Aurora DSQL community
+  module under temporary AWS Maven Central coordinates.
+- [pgdump-proxy](./pgdump-proxy/) lets stock `pg_dump` and `psql` read an
+  Aurora DSQL cluster.
 
 ## Documentation
 
@@ -50,5 +50,5 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md#security-issue-notifications) for inform
 ## License
 
 Each package has its own license:
+
 - VS Code SQLTools Driver: [MIT-0](./vscode/sqltools-driver/LICENSE)
-- Flyway Support: [Apache-2.0](./flyway/LICENSE)
