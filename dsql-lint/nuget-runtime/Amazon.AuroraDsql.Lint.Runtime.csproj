@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Amazon.AuroraDsql.Lint.Runtime</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <DefaultItemExcludes>$(DefaultItemExcludes);tests/**</DefaultItemExcludes>
+
+    <!-- NuGet package metadata -->
+    <PackageId>Amazon.AuroraDsql.Lint.Runtime</PackageId>
+    <Version>0.0.0</Version>
+    <Authors>Amazon Web Services</Authors>
+    <Description>Runtime resolver for the dsql-lint native binary. Enables .NET libraries to locate and spawn the dsql-lint CLI via PackageReference.</Description>
+    <PackageLicenseExpression>MIT-0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/awslabs/aurora-dsql-tools/tree/main/dsql-lint</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/awslabs/aurora-dsql-tools</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>aws;aurora;dsql;sql;lint;postgresql;runtime</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="" />
+    <None Include="buildTransitive\**" Pack="true" PackagePath="buildTransitive" />
+  </ItemGroup>
+
+  <!-- Native binaries per RID — .gitkeep placeholders excluded -->
+  <ItemGroup>
+    <Content Include="runtimes\**\native\*" Exclude="**\.gitkeep" Pack="true" PackagePath="runtimes" CopyToOutputDirectory="PreserveNewest" Link="runtimes\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

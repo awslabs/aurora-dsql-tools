@@ -1,0 +1,21 @@
+{
+  "name": "@aws/dsql-lint-linux-arm64",
+  "version": "0.0.0",
+  "description": "dsql-lint native binary for Linux ARM64",
+  "license": "MIT-0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/awslabs/aurora-dsql-tools"
+  },
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "bin": {
+    "dsql-lint": "bin/dsql-lint"
+  },
+  "files": ["bin/"],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true,
+    "access": "public"
+  }
+}

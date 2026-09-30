@@ -287,7 +287,7 @@ export default class AuroraDSQLDriver extends AbstractDriver<Pool, PoolConfig> i
     return this.completionsCache;
   };
 
-  public getInsertQuery(params: { item: NSDatabase.ITable; columns: Array<NSDatabase.IColumn> }): string {
+  public async getInsertQuery(params: { item: NSDatabase.ITable; columns: Array<NSDatabase.IColumn> }): Promise<string> {
     const escapeTableName = require('../escape-table').default;
     const { item, columns } = params;
     const tableName = escapeTableName(item);
