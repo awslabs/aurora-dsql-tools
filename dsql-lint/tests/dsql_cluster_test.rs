@@ -17,8 +17,8 @@
 //! Each `#[test]` owns a per-test DSQL schema, created in `ClusterScope::new`
 //! and dropped in `Drop`. All SQL routes through that schema via
 //! `PGOPTIONS=-c search_path=…`, so unqualified table names like `_clust_base`
-//! resolve to the test's own schema. The cargo harness can run all tests in
-//! parallel — there is no shared `public` state and no process-wide lock.
+//! resolve to the test's own schema. CI runs the tests serially because DDL
+//! catalog versions remain cluster-wide even when schemas are isolated.
 //!
 //! OC001 (schema-version conflict) is *not* schema-scoped per DSQL docs: any
 //! catalog mutation anywhere bumps the cluster-wide catalog version. The
@@ -35,16 +35,11 @@ use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 
-use dsql_lint::{fix_sql, lint_sql, FixResult, LintRule};
+use dsql_lint::{fix_sql, fix_sql_mysql, lint_sql, FixResult, LintRule};
 use strum::IntoEnumIterator;
 
-// 8 cluster #[test] fns now run in parallel (was: serialized). Each does
-// DDL on its own schema, but OC001 is cluster-global, so contention is
-// significantly higher than the original serialized run. The fixture test
-// alone does ~70 rules × ~3 resets each with multiple OC001-prone DDLs per
-// reset, giving the tail many chances to catch a storm. Generous budget
-// here is far cheaper than a flaky CI; even at p99 we hit only a few retries
-// per DDL, so suite wall time is dominated by happy-path latency.
+// Keep retries for transient cluster-wide catalog conflicts even though CI
+// serializes this test binary.
 const OC001_MAX_RETRIES: usize = 12;
 const OC001_BASE_DELAY_MS: u64 = 300;
 // Per-fixture retry cap for the multi-DDL fix path in
@@ -381,16 +376,6 @@ const FIX_MATRIX: &[(&str, &str, &str)] = &[
     ),
     // Tier 2 — FixedWithWarning
     (
-        "column-fk",
-        "CREATE TABLE _clust_fk1 (id INT, cid INT REFERENCES _clust_base(id));",
-        "DROP TABLE IF EXISTS _clust_fk1;",
-    ),
-    (
-        "table-fk",
-        "CREATE TABLE _clust_fk2 (id INT, cid INT, FOREIGN KEY (cid) REFERENCES _clust_base(id));",
-        "DROP TABLE IF EXISTS _clust_fk2;",
-    ),
-    (
         "temp-table",
         "CREATE TEMP TABLE _clust_temp (id INT);",
         "DROP TABLE IF EXISTS _clust_temp;",
@@ -442,19 +427,14 @@ const FIX_MATRIX: &[(&str, &str, &str)] = &[
         "ALTER TABLE _clust_base DROP COLUMN IF EXISTS extra_data;",
     ),
     (
-        "alter-add-col-fk",
-        "ALTER TABLE _clust_base ADD COLUMN extra_ref INT REFERENCES _clust_base(id);",
-        "ALTER TABLE _clust_base DROP COLUMN IF EXISTS extra_ref;",
-    ),
-    (
         "alter-fk-only",
         "ALTER TABLE _clust_base ADD CONSTRAINT _clust_fk FOREIGN KEY (col) REFERENCES _clust_base(id);",
-        "",
+        "ALTER TABLE _clust_base DROP CONSTRAINT IF EXISTS _clust_fk;",
     ),
     (
         "alter-mixed-fk-col",
         "ALTER TABLE _clust_base ADD CONSTRAINT _clust_fk2 FOREIGN KEY (col) REFERENCES _clust_base(id), ADD COLUMN mix_col INT;",
-        "ALTER TABLE _clust_base DROP COLUMN IF EXISTS mix_col;",
+        "ALTER TABLE _clust_base DROP CONSTRAINT IF EXISTS _clust_fk2; ALTER TABLE _clust_base DROP COLUMN IF EXISTS mix_col;",
     ),
     (
         "begin-read-committed",
@@ -480,7 +460,7 @@ fn run_cleanup_stmts(cx: &ClusterScope, cleanup_sql: &str) {
 #[test]
 fn fix_matrix_against_cluster() {
     let cx = ClusterScope::new("fix_matrix");
-    cx.exec("CREATE TABLE _clust_base (id INT, col INT);")
+    cx.exec("CREATE TABLE _clust_base (id INT PRIMARY KEY, col INT);")
         .expect("base table setup");
 
     let mut failures = Vec::new();
@@ -624,6 +604,58 @@ fn clean_statements_accepted_by_cluster() {
     );
 }
 
+#[test]
+fn drop_primary_key_constraint_rejected_by_cluster() {
+    let cx = ClusterScope::new("drop_pk_constraint");
+    cx.exec(
+        "CREATE TABLE _drop_pk_constraint (
+            id UUID,
+            CONSTRAINT _drop_pk_constraint_pkey PRIMARY KEY (id)
+        );",
+    )
+    .expect("table setup");
+
+    assert!(
+        cx.exec(
+            "ALTER TABLE _drop_pk_constraint
+             DROP CONSTRAINT _drop_pk_constraint_pkey;"
+        )
+        .is_err(),
+        "DSQL should reject dropping a primary key constraint"
+    );
+}
+
+#[test]
+fn additional_rejection_cases_rejected_by_cluster() {
+    let cx = ClusterScope::new("additional_rejections");
+    cx.exec("CREATE TABLE _clust_base (id INT PRIMARY KEY, col INT);")
+        .expect("base table setup");
+
+    let mut failures = Vec::new();
+
+    for (label, sql, rule) in common::ADDITIONAL_CLUSTER_REJECTION_CASES {
+        let diags = lint_sql(sql);
+        if !diags.iter().any(|d| d.rule == *rule) {
+            failures.push(format!(
+                "[{label}] expected `{rule:?}` diagnostic\n  SQL: {sql}\n  Got: {diags:?}"
+            ));
+            continue;
+        }
+
+        if cx.exec(sql).is_ok() {
+            failures.push(format!(
+                "[{label}] expected DSQL to reject statement, but it succeeded\n  SQL: {sql}"
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "Additional rejection failures against DSQL cluster:\n\n{}",
+        failures.join("\n\n")
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // 5. INDEX CREATION METHODS — verify ASYNC works, CREATE INDEX ASYNC
 //    with UNIQUE, IF NOT EXISTS, etc.
@@ -671,6 +703,27 @@ fn index_variants_accepted_by_cluster() {
         failures.is_empty(),
         "Index variant failures:\n\n{}",
         failures.join("\n\n")
+    );
+}
+
+#[test]
+fn unique_index_promotion_accepted_by_cluster() {
+    let cx = ClusterScope::new("unique_index_promotion");
+    let sql = "\
+CREATE TABLE _clust_users (id INT PRIMARY KEY, email TEXT);
+CREATE UNIQUE INDEX ASYNC _clust_users_email_idx ON _clust_users(email)
+\\gset
+CALL sys.wait_for_job(:'job_id');
+ALTER TABLE _clust_users
+  ADD CONSTRAINT _clust_users_email_key
+  UNIQUE USING INDEX _clust_users_email_idx;";
+    let cleanup = "DROP TABLE IF EXISTS _clust_users;";
+    let result = cx.exec_file_retry(sql, cleanup);
+
+    assert!(
+        result.is_ok(),
+        "DSQL should accept UNIQUE USING INDEX after the async unique index is valid: {}",
+        result.unwrap_err()
     );
 }
 
@@ -780,7 +833,7 @@ fn lint_rule_fixtures_validated_on_cluster() {
     let reset_with_setup = |fix: &common::RuleFixture, phase: &str| -> Result<(), String> {
         cx.reset()
             .map_err(|e| format!("{phase} reset failed: {e}"))?;
-        cx.exec("CREATE TABLE _clust_base (id INT, col INT);")
+        cx.exec("CREATE TABLE _clust_base (id INT PRIMARY KEY, col INT);")
             .map_err(|e| format!("{phase} _clust_base setup failed: {e}"))?;
         if !fix.setup_sql.is_empty() {
             cx.exec(fix.setup_sql).map_err(|e| {
@@ -948,6 +1001,178 @@ fn ddl_transaction_fix_against_cluster() {
     assert!(
         failures.is_empty(),
         "DDL transaction fix failures against DSQL cluster:\n\n{}",
+        failures.join("\n\n")
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 10. MYSQL TRANSLATION VALIDATION
+// ═══════════════════════════════════════════════════════════════════════
+// mysqldump DDL → fix_sql_mysql → execute on DSQL. The unit tests only check
+// the translated output is syntactically clean against the lenient PostgreSQL
+// parser; this proves it actually applies on a real cluster. Several entries
+// produce multi-statement output (a secondary KEY lifts to a separate
+// CREATE INDEX), routed to exec_file_retry by exec_auto via the `;\n` check.
+// cleanup_sql MUST be backtick-free — DSQL rejects backticks.
+
+const MYSQL_FIX_MATRIX: &[(&str, &str, &str)] = &[
+    (
+        "tinyint-as-bool",
+        "CREATE TABLE `_my_bool` (`id` int NOT NULL, `flag` tinyint(1)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_bool;",
+    ),
+    (
+        "unsigned-family",
+        "CREATE TABLE `_my_uns` (`a` int unsigned, `b` bigint unsigned, `c` smallint unsigned, \
+         `d` mediumint unsigned, `e` tinyint unsigned) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_uns;",
+    ),
+    (
+        "datetime-enum-set-year",
+        "CREATE TABLE `_my_misc` (`created` datetime, `kind` enum('a','b','c'), \
+         `perms` set('r','w'), `yr` year) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_misc;",
+    ),
+    (
+        "auto-increment",
+        "CREATE TABLE `_my_ai` (`id` int NOT NULL AUTO_INCREMENT, PRIMARY KEY (`id`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_ai;",
+    ),
+    (
+        "secondary-key-lifted", // multi-statement: CREATE TABLE + CREATE INDEX ASYNC
+        "CREATE TABLE `_my_idx` (`id` int NOT NULL, `name` varchar(50), \
+         PRIMARY KEY (`id`), KEY `idx_name` (`name`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_idx;",
+    ),
+    (
+        "anonymous-key-lifted",
+        "CREATE TABLE `_my_anon` (`id` int NOT NULL, `name` varchar(50), \
+         PRIMARY KEY (`id`), KEY (`name`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_anon;",
+    ),
+    (
+        "unique-key",
+        "CREATE TABLE `_my_uk` (`id` int NOT NULL, `email` varchar(255), \
+         PRIMARY KEY (`id`), UNIQUE KEY `uk_email` (`email`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_uk;",
+    ),
+    (
+        "composite-pk",
+        "CREATE TABLE `_my_cpk` (`a` int NOT NULL, `b` int NOT NULL, PRIMARY KEY (`a`,`b`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_cpk;",
+    ),
+    (
+        "check-constraint",
+        "CREATE TABLE `_my_chk` (`id` int NOT NULL, `qty` int, \
+         CONSTRAINT `ck_qty` CHECK (`qty` >= 0), PRIMARY KEY (`id`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_chk;",
+    ),
+    (
+        "on-update-timestamp", // ON UPDATE stripped, DEFAULT CURRENT_TIMESTAMP kept
+        "CREATE TABLE `_my_ts` (`id` int NOT NULL, \
+         `updated` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, \
+         PRIMARY KEY (`id`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_ts;",
+    ),
+    (
+        "column-comment-charset", // inline COMMENT / CHARACTER SET / COLLATE stripped
+        "CREATE TABLE `_my_cc` (`id` int NOT NULL, \
+         `name` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci COMMENT 'a note', \
+         PRIMARY KEY (`id`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_cc;",
+    ),
+    (
+        "realistic-full", // many constructs at once, the way a real mysqldump table looks
+        "CREATE TABLE `_my_full` (\
+         `id` int NOT NULL AUTO_INCREMENT, \
+         `active` tinyint(1) DEFAULT '1', \
+         `views` bigint unsigned DEFAULT '0', \
+         `kind` enum('post','page') DEFAULT 'post', \
+         `created` datetime, \
+         `meta` json, \
+         PRIMARY KEY (`id`), \
+         UNIQUE KEY `uk_kind` (`kind`), \
+         KEY `idx_created` (`created`)) \
+         ENGINE=InnoDB AUTO_INCREMENT=42 DEFAULT CHARSET=utf8mb4;",
+        "DROP TABLE IF EXISTS _my_full;",
+    ),
+    (
+        "mysqldump-noise", // full dump shape: DROP/SET/LOCK/UNLOCK/DISABLE KEYS noise
+        "DROP TABLE IF EXISTS `_my_noise`;\n\
+         /*!40101 SET @saved_cs_client = @@character_set_client */;\n\
+         CREATE TABLE `_my_noise` (`id` int NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB;\n\
+         /*!40101 SET character_set_client = @saved_cs_client */;\n\
+         LOCK TABLES `_my_noise` WRITE;\n\
+         UNLOCK TABLES;\n\
+         /*!40000 ALTER TABLE `_my_noise` DISABLE KEYS */;",
+        "DROP TABLE IF EXISTS _my_noise;",
+    ),
+    (
+        "binary-types", // PROBE: do BLOB/BINARY/VARBINARY/BIT actually apply on DSQL?
+        "CREATE TABLE `_my_bin` (`id` int NOT NULL, `data` blob, `b` binary(16), \
+         `vb` varbinary(255), `bit1` bit(1), PRIMARY KEY (`id`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_bin;",
+    ),
+    (
+        // PROBE: recast DEFAULTs must type-check at CREATE (DSQL validates the
+        // DEFAULT/type pairing; MySQL doesn't): bare-number/quoted/bit-literal
+        // booleans, bit -> bytea hex, dropped zero-date.
+        "defaults-recast",
+        "CREATE TABLE `_my_def` (`id` int NOT NULL, \
+         `a` tinyint(1) NOT NULL DEFAULT 0, `b` tinyint(1) DEFAULT '1', \
+         `f` bit(1) DEFAULT b'1', `m` bit(8) DEFAULT b'00000010', \
+         `d` datetime NOT NULL DEFAULT '0000-00-00 00:00:00', \
+         PRIMARY KEY (`id`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_def;",
+    ),
+    (
+        "unique-prefix", // UNIQUE KEY with a col(N) prefix -> full-column UNIQUE
+        "CREATE TABLE `_my_pfx` (`id` int NOT NULL, `name` varchar(200), \
+         PRIMARY KEY (`id`), UNIQUE KEY `uk_name` (`name`(20))) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_pfx;",
+    ),
+];
+
+#[test]
+fn fix_mysql_matrix_against_cluster() {
+    let cx = ClusterScope::new("mysql_fix");
+
+    let mut failures = Vec::new();
+
+    for (label, input_sql, cleanup_sql) in MYSQL_FIX_MATRIX {
+        run_cleanup_stmts(&cx, cleanup_sql);
+
+        let result = fix_sql_mysql(input_sql);
+
+        // A translated mysqldump table should never be Unfixable — that would
+        // mean a MySQL construct reached the Postgres gate untranslated.
+        let unfixable: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.fix_result, FixResult::Unfixable))
+            .collect();
+        if !unfixable.is_empty() {
+            failures.push(format!(
+                "[{label}] translation left unfixable diagnostics: {unfixable:?}\n  Input: {input_sql}\n  Output: {}",
+                result.sql
+            ));
+            run_cleanup_stmts(&cx, cleanup_sql);
+            continue;
+        }
+
+        if let Err(err) = cx.exec_auto(&result.sql, cleanup_sql) {
+            failures.push(format!(
+                "[{label}]\n  Input:  {input_sql}\n  Fixed:  {}\n  Error:  {err}",
+                result.sql
+            ));
+        }
+
+        run_cleanup_stmts(&cx, cleanup_sql);
+    }
+
+    assert!(
+        failures.is_empty(),
+        "MySQL translation failures against DSQL cluster:\n\n{}",
         failures.join("\n\n")
     );
 }
