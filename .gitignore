@@ -6,3 +6,18 @@ out/
 *.vsix
 # Test workspace files
 **/test-vscode-sqltools.code-workspace
+# Python build artifacts (maturin)
+dsql-lint/pypi/dist/
+# Python bytecode cache
+__pycache__/
+*.pyc
+# .NET build artifacts
+dsql-lint/nuget/bin/
+dsql-lint/nuget/obj/
+dsql-lint/nuget-runtime/bin/
+dsql-lint/nuget-runtime/obj/
+dsql-lint/nuget-runtime/tests/bin/
+dsql-lint/nuget-runtime/tests/obj/
+# Gradle build artifacts
+flyway/build/
+flyway/.gradle/

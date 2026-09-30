@@ -1,0 +1,21 @@
+{
+  "name": "@aws/dsql-lint-win32-x64",
+  "version": "0.0.0",
+  "description": "dsql-lint native binary for Windows x64",
+  "license": "MIT-0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/awslabs/aurora-dsql-tools"
+  },
+  "os": ["win32"],
+  "cpu": ["x64"],
+  "bin": {
+    "dsql-lint": "bin/dsql-lint.exe"
+  },
+  "files": ["bin/"],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true,
+    "access": "public"
+  }
+}

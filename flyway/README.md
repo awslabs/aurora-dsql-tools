@@ -1,70 +1,70 @@
-# Aurora DSQL Flyway Support
+# flyway-database-dsql
 
-Flyway database plugin for [Amazon Aurora DSQL](https://docs.aws.amazon.com/aurora-dsql/).
+Flyway community database support for [Amazon Aurora DSQL](https://docs.aws.amazon.com/aurora-dsql/).
 
-## DSQL-Specific Behavior
-
-This plugin adapts Flyway for Aurora DSQL's distributed architecture:
-
-- **One DDL per transaction**: Each schema change runs in its own transaction automatically
-- **IAM authentication**: Role-based access via IAM replaces PostgreSQL's `SET ROLE`
-- **Optimistic concurrency**: DSQL uses OCC instead of advisory locks. Run migrations from a single instance to avoid conflicts
-- **Async indexes required**: Use `CREATE INDEX ASYNC` in all migrations (see [Writing DSQL-Compatible Migrations](#writing-dsql-compatible-migrations))
-
-### Not Yet Supported
-
-- `flyway undo` (Flyway Teams feature) - untested with DSQL
-- `flyway baseline` - use `baselineOnMigrate=true` instead (see [Troubleshooting](#ddl-and-dml-are-not-supported-in-the-same-transaction))
+This directory packages the official
+[`flyway-database-dsql` 10.26.0 source](https://github.com/flyway/flyway-community-db-support/tree/10.26.0/flyway-database-dsql)
+at upstream commit `64985070bc0cc233b481b99088a4af53071f3d4b` under temporary AWS Maven
+coordinates. The implementation and tests are unchanged; only the standalone build and publication
+metadata differ.
 
 ## Installation
 
-The plugin is available on [Maven Central](https://central.sonatype.com/artifact/software.amazon.dsql/aurora-dsql-flyway-support).
-
-### Maven
+Version `3.0.0` requires Java 17 or later and uses the same Flyway `11.9.0` baseline as the official
+`10.26.0` module.
 
 ```xml
 <dependency>
     <groupId>software.amazon.dsql</groupId>
     <artifactId>aurora-dsql-flyway-support</artifactId>
-    <version>1.0.1</version>
+    <version>3.0.0</version>
 </dependency>
-```
-
-### Gradle
-
-```groovy
-implementation 'software.amazon.dsql:aurora-dsql-flyway-support:1.0.1'
-```
-
-You'll also need these dependencies:
-
-```xml
-<!-- Aurora DSQL JDBC Connector -->
-<dependency>
-    <groupId>software.amazon.dsql</groupId>
-    <artifactId>aurora-dsql-jdbc-connector</artifactId>
-    <version>1.3.0</version>
-</dependency>
-
-<!-- Flyway -->
 <dependency>
     <groupId>org.flywaydb</groupId>
     <artifactId>flyway-core</artifactId>
-    <version>11.3.0</version>
+    <version>11.9.0</version>
 </dependency>
 <dependency>
-    <groupId>org.flywaydb</groupId>
-    <artifactId>flyway-database-postgresql</artifactId>
-    <version>11.3.0</version>
-</dependency>
-
-<!-- PostgreSQL JDBC Driver -->
-<dependency>
-    <groupId>org.postgresql</groupId>
-    <artifactId>postgresql</artifactId>
-    <version>42.7.2</version>
+    <groupId>software.amazon.dsql</groupId>
+    <artifactId>aurora-dsql-jdbc-connector</artifactId>
+    <version>1.5.0</version>
 </dependency>
 ```
+
+The support artifact brings in `flyway-database-postgresql:11.9.0`. Do not load this artifact and
+`org.flywaydb:flyway-database-dsql` in the same Flyway runtime.
+
+### Moving to the official artifact
+
+When Redgate publishes the official module to your approved repository, remove
+`software.amazon.dsql:aurora-dsql-flyway-support` and add
+`org.flywaydb:flyway-database-dsql` at the corresponding official version. No Java package,
+Flyway configuration, or migration changes are required because this artifact uses the official
+implementation unchanged.
+
+## DSQL-Specific Behavior
+
+This module adapts Flyway's PostgreSQL support for Aurora DSQL's distributed architecture:
+
+- **One DDL per transaction**: DSQL accepts a single DDL statement per transaction, with DML in its
+  own. Flyway commits a migration file as one transaction, so keep one DDL statement per file (see
+  [One DDL statement per migration](#one-ddl-statement-per-migration))
+- **IAM authentication**: role-based access via IAM replaces PostgreSQL's `SET ROLE`
+- **Optimistic concurrency**: DSQL uses OCC instead of advisory locks, and surfaces conflicts
+  (`OC000` / `OC001` / `40001`) at commit time. The module can retry the migration transaction on a
+  conflict — off by default, opt in via [Configuration](#configuration). Run migrations from a single instance
+- **Async indexes**: use `CREATE INDEX ASYNC` in migrations, with an optional wait for the build
+  (see [Asynchronous indexes](#asynchronous-indexes))
+
+## Requirements
+
+- The [Aurora DSQL JDBC connector](https://github.com/awslabs/aurora-dsql-connectors/tree/main/java/jdbc)
+  on the runtime classpath for `jdbc:aws-dsql:postgresql://` URLs. It is not bundled by this module, so you supply
+  it yourself. A plain `jdbc:postgresql://` DSQL endpoint uses the PostgreSQL driver instead and does
+  not need the connector, but you must then generate the IAM token yourself and pass it as the
+  password.
+- AWS credentials on the default provider chain
+- IAM permission `dsql:DbConnectAdmin` on the cluster
 
 ## Quick Start
 
@@ -77,6 +77,10 @@ flyway.user=admin
 flyway.driver=software.amazon.dsql.jdbc.DSQLConnector
 ```
 
+Both `jdbc:aws-dsql:postgresql://` and `jdbc:postgresql://<host>.dsql.<region>.on.aws` URLs are
+recognized. The connector generates the IAM token from the credential chain and parses the region
+from the host; no password is supplied.
+
 ### 2. Run Migrations
 
 ```bash
@@ -85,62 +89,20 @@ flyway migrate
 
 ## Programmatic Usage
 
-For Java applications, you can configure Flyway programmatically:
-
 ```java
 Flyway flyway = Flyway.configure()
     .dataSource(
         "jdbc:aws-dsql:postgresql://<CLUSTER_ID>.dsql.<REGION>.on.aws:5432/postgres",
         "admin",
         null)  // Password is null - IAM auth is automatic
+    .baselineOnMigrate(true)
     .locations("classpath:db/migration")
     .load();
 
 flyway.migrate();
 ```
-
-For production applications with connection pooling, use HikariCP:
-
-```java
-import com.zaxxer.hikari.HikariConfig;
-import com.zaxxer.hikari.HikariDataSource;
-
-HikariConfig config = new HikariConfig();
-config.setJdbcUrl("jdbc:aws-dsql:postgresql://<CLUSTER_ID>.dsql.<REGION>.on.aws:5432/postgres");
-config.setUsername("admin");
-config.setMaximumPoolSize(10);
-config.setConnectionTimeout(30000);
-
-HikariDataSource dataSource = new HikariDataSource(config);
-
-Flyway flyway = Flyway.configure()
-    .dataSource(dataSource)
-    .locations("classpath:db/migration")
-    .load();
-
-flyway.migrate();
-```
-
-The Aurora DSQL JDBC Connector automatically handles:
-- IAM authentication token generation and refresh
-- SSL/TLS configuration with certificate verification
-- Connection URL transformation
 
 ## Writing DSQL-Compatible Migrations
-
-When writing Flyway migrations for Aurora DSQL, follow these patterns:
-
-### Primary Keys
-
-Use UUID with `gen_random_uuid()` for primary keys:
-
-```sql
-CREATE TABLE users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email VARCHAR(255) NOT NULL,
-    name VARCHAR(255)
-);
-```
 
 ### Index Creation
 
@@ -150,17 +112,28 @@ Use `CREATE INDEX ASYNC` for all indexes:
 CREATE INDEX ASYNC idx_users_email ON users(email);
 ```
 
-See [Asynchronous indexes in Aurora DSQL](https://docs.aws.amazon.com/aurora-dsql/latest/userguide/working-with-create-index-async.html) for details.
+DSQL has no synchronous index creation — see [Asynchronous indexes](#asynchronous-indexes).
 
-### Data Modification
+### One DDL statement per migration
 
-Use standard INSERT, UPDATE, and DELETE statements:
+DSQL accepts a single DDL statement per transaction, with DML in its own. Flyway commits a whole
+migration file as one transaction, so give each file one DDL statement:
 
 ```sql
-INSERT INTO users (email, name) VALUES ('user@example.com', 'Test User');
-UPDATE users SET name = 'Updated Name' WHERE email = 'user@example.com';
-DELETE FROM users WHERE email = 'user@example.com';
+-- V1__create_users.sql
+CREATE TABLE users (id INT PRIMARY KEY, email VARCHAR(255));
 ```
+
+To hold several statements in one file, switch off the wrapping transaction for it with a script
+configuration file alongside the migration:
+
+```properties
+# V2__seed_users.sql.conf
+executeInTransaction=false
+```
+
+Each statement then commits on its own. Note that OCC retry does not apply to a migration running
+outside a transaction.
 
 ### Transaction Limits
 
@@ -170,160 +143,65 @@ Be aware of these per-transaction limits when writing migrations:
 - Maximum 10 MiB data size
 - Maximum 5 minutes duration
 
-For a complete list of PostgreSQL features not available in Aurora DSQL, see [Unsupported PostgreSQL features](https://docs.aws.amazon.com/aurora-dsql/latest/userguide/working-with-postgresql-compatibility-unsupported-features.html) in the Aurora DSQL documentation.
+## Configuration
 
-## Docker Setup
+Parameters live under the `flyway.dsql.` namespace, set through any Flyway surface (config file,
+CLI flag, environment variable, or the Java API). OCC retry is off by default; the example
+below opts in with 3 retries, a reasonable starting point. In `flyway.conf` / `flyway.toml`:
 
-Use a multi-stage Docker build to download all dependencies automatically:
-
-```dockerfile
-# Stage 1: Download dependencies using Maven
-FROM maven:3.9-eclipse-temurin-21 AS deps
-
-WORKDIR /deps
-
-# Create a minimal pom.xml to download dependencies
-RUN echo '<?xml version="1.0" encoding="UTF-8"?>\n\
-<project xmlns="http://maven.apache.org/POM/4.0.0"\n\
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"\n\
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">\n\
-    <modelVersion>4.0.0</modelVersion>\n\
-    <groupId>deps</groupId>\n\
-    <artifactId>flyway-dsql-deps</artifactId>\n\
-    <version>1.0.0</version>\n\
-    <dependencies>\n\
-        <dependency>\n\
-            <groupId>software.amazon.dsql</groupId>\n\
-            <artifactId>aurora-dsql-flyway-support</artifactId>\n\
-            <version>1.0.1</version>\n\
-        </dependency>\n\
-        <dependency>\n\
-            <groupId>software.amazon.dsql</groupId>\n\
-            <artifactId>aurora-dsql-jdbc-connector</artifactId>\n\
-            <version>1.3.0</version>\n\
-        </dependency>\n\
-        <dependency>\n\
-            <groupId>org.postgresql</groupId>\n\
-            <artifactId>postgresql</artifactId>\n\
-            <version>42.7.2</version>\n\
-        </dependency>\n\
-    </dependencies>\n\
-</project>' > pom.xml
-
-# Download all dependencies (including transitive)
-RUN mvn dependency:copy-dependencies -DoutputDirectory=/deps/drivers -DincludeScope=runtime
-
-# Stage 2: Flyway with DSQL support
-FROM flyway/flyway:11.3
-
-USER root
-
-# Remove bundled PostgreSQL driver (we use the one from DSQL connector)
-RUN rm -f /flyway/lib/postgresql-*.jar /flyway/drivers/postgresql-*.jar
-
-# Copy downloaded dependencies
-COPY --from=deps /deps/drivers/*.jar /flyway/drivers/
-
-# Copy your migration scripts
-COPY ./migrations/ /flyway/sql/
-
-ENV FLYWAY_LOCATIONS=filesystem:sql
-ENV FLYWAY_CONNECT_RETRIES=60
-
-ENTRYPOINT ["flyway", "migrate"]
+```
+flyway.dsql.occMaxRetries=3
+flyway.dsql.occMaxRetryDelaySeconds=5
+flyway.dsql.awaitAsyncIndexes=false
 ```
 
-Build and run:
+| Parameter | Default | Description |
+|---|---|---|
+| `occMaxRetries` | `0` | Max retries of a migration transaction that fails with an OCC conflict. `0` disables retries; set a positive value to enable. |
+| `occMaxRetryDelaySeconds` | `5` | Upper bound on the exponential backoff between OCC retries. |
+| `awaitAsyncIndexes` | `false` | When `true`, wait for `CREATE INDEX ASYNC` builds before the migration returns. |
 
-```bash
-# Build the image
-docker build -t flyway-dsql .
+Equivalent environment variables: `FLYWAY_DSQL_OCC_MAX_RETRIES`,
+`FLYWAY_DSQL_OCC_MAX_RETRY_DELAY_SECONDS`, `FLYWAY_DSQL_AWAIT_ASYNC_INDEXES`.
 
-# Run migrations
-docker run --rm \
-  -e AWS_REGION=us-east-1 \
-  -e AWS_ACCESS_KEY_ID \
-  -e AWS_SECRET_ACCESS_KEY \
-  -e AWS_SESSION_TOKEN \
-  -e FLYWAY_URL="jdbc:aws-dsql:postgresql://<CLUSTER_ID>.dsql.<REGION>.on.aws:5432/postgres" \
-  -e FLYWAY_USER=admin \
-  -e FLYWAY_DRIVER=software.amazon.dsql.jdbc.DSQLConnector \
-  flyway-dsql
-```
+## Asynchronous indexes
 
-## IAM Configuration
+`CREATE INDEX ASYNC` returns immediately with a runtime `job_id` and builds the index in the
+background, so a plain migration reports success while the index is still building.
 
-The IAM role needs `dsql:DbConnectAdmin` permission:
+With `awaitAsyncIndexes=true`, a SQL migration running `CREATE INDEX ASYNC` captures that `job_id`
+and blocks (via `sys.wait_for_job`) until the build finishes; if it fails, the migration fails.
 
-```json
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": "dsql:DbConnectAdmin",
-            "Resource": "arn:aws:dsql:<REGION>:<ACCOUNT>:cluster/<CLUSTER_ID>"
-        }
-    ]
-}
-```
+- **Off by default** — fire-and-forget is faster for a pure performance index. Enable the wait when
+  a later migration needs the index built, or a failed build should fail the deploy. The wait runs
+  after the script finishes, so it gates a later migration, not an earlier statement in the same
+  file.
+- **SQL migrations only** — Java migrations can capture the `job_id` and call `sys.wait_for_job`
+  themselves.
+- **A failed build leaves an `INVALID` index** — neither DSQL nor the migration drops it (a timed-out
+  wait may front a build that still succeeds). Drop it before rerunning; `IF NOT EXISTS` can silently
+  accept the `INVALID` index.
 
-For EKS/IRSA, ensure these environment variables are set:
-- `AWS_REGION`
-- `AWS_ROLE_ARN`
-- `AWS_WEB_IDENTITY_TOKEN_FILE`
+## Not Yet Supported
 
-## Building from Source
-
-```bash
-./gradlew build
-```
-
-Output: `build/libs/aurora-dsql-flyway-support-1.0.1.jar`
-
-### Running Tests
-
-Unit tests:
-```bash
-./gradlew test
-```
-
-Integration tests (requires DSQL cluster):
-```bash
-export DSQL_CLUSTER_ENDPOINT=<cluster-id>.dsql.<region>.on.aws
-export AWS_REGION=<region>
-./gradlew integrationTest
-```
+- `flyway undo` (Flyway Teams feature) — untested with DSQL
+- `flyway baseline` — use `baselineOnMigrate=true` instead (see [Troubleshooting](#ddl-and-dml-are-not-supported-in-the-same-transaction))
 
 ## Troubleshooting
 
 ### "No database found to handle jdbc:aws-dsql:"
 
-The plugin JAR is not on the classpath. Ensure it is in `/flyway/drivers/`.
-
-### "setting configuration parameter 'role' not supported"
-
-You are using standard PostgreSQL support instead of this plugin. Verify:
-1. Plugin JAR is present in `/flyway/drivers/`
-2. URL starts with `jdbc:aws-dsql:`
-
-### "Please use CREATE INDEX ASYNC"
-
-DSQL requires async index creation. Change your migration:
-
-```sql
--- Before
-CREATE INDEX idx_name ON table(column);
-
--- After
-CREATE INDEX ASYNC idx_name ON table(column);
-```
+Either the Aurora DSQL JDBC connector is not on the classpath (see [Requirements](#requirements)), or
+the URL omits the `postgresql://` segment. The connector accepts only
+`jdbc:aws-dsql:postgresql://<host>/<database>`.
 
 ### "ddl and dml are not supported in the same transaction"
 
-This error occurs when using `flyway baseline` command. Aurora DSQL does not allow DDL (CREATE TABLE) and DML (INSERT) in the same transaction.
-
-Use `baselineOnMigrate` instead of calling `baseline` directly:
+Flyway commits a migration file as one transaction, and DSQL runs one DDL statement per transaction
+with DML in its own. This error therefore comes either from a migration file that mixes DDL and DML
+(see [One DDL statement per migration](#one-ddl-statement-per-migration)), or from the standalone
+`flyway baseline` command, whose create-table and marker insert share a transaction. For baseline,
+use `baselineOnMigrate` instead:
 
 ```properties
 # flyway.conf
@@ -331,35 +209,12 @@ flyway.baselineOnMigrate=true
 flyway.baselineVersion=1
 ```
 
-Or in Java:
-```java
-Flyway flyway = Flyway.configure()
-    .dataSource(url, user, password)
-    .baselineOnMigrate(true)
-    .baselineVersion("1")
-    .load();
-flyway.migrate();
-```
-
 ### Token/Authentication Errors
 
-The Aurora DSQL JDBC Connector automatically handles IAM token generation and refresh. If you encounter authentication errors:
-
 - Verify IAM permissions include `dsql:DbConnectAdmin`
-- Check AWS credentials are configured (environment variables, IAM role, or credentials file)
-- Ensure the AWS region is correctly set
-
-## Requirements
-
-- Java 21+
-- Flyway 11.3+
-- Aurora DSQL JDBC Connector 1.3.0+
-- PostgreSQL JDBC Driver 42.7.x
-
-## Security
-
-See [CONTRIBUTING](CONTRIBUTING.md) for more information.
+- Check AWS credentials resolve on the default provider chain
+- Ensure the region parsed from the endpoint is correct
 
 ## License
 
-This project is licensed under the Apache-2.0 License.
+This project is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).

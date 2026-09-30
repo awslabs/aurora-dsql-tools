@@ -1,0 +1,49 @@
+[package]
+name = "dsql-lint"
+version = "0.2.20"
+edition = "2021"
+rust-version = "1.80"
+description = "Lint SQL files for Aurora DSQL compatibility"
+authors = ["Amazon Web Services"]
+license = "MIT-0"
+repository = "https://github.com/awslabs/aurora-dsql-tools"
+homepage = "https://github.com/awslabs/aurora-dsql-tools/tree/main/dsql-lint"
+keywords = ["aws", "aurora", "dsql", "sql", "lint"]
+categories = ["command-line-utilities", "database"]
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ["cfg(dsql_cluster)"]
+
+[features]
+default = ["serde"]
+serde = ["dep:serde", "dep:serde_json"]
+# Maintainer-only: builds the `grammar-diff` binary that compares grammar
+# acceptance to dsql-lint acceptance over a vendored corpus.
+grammar-diff = ["serde", "dep:earlgrey", "dep:indexmap"]
+
+[dependencies]
+# `visitor` powers the recursive backtick-stripping walk in the MySQL path.
+sqlparser = { package = "sqlparser-dsql", version = "0.62.9", features = ["visitor"] }
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+strum = { version = "0.26", features = ["derive"] }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+# grammar-diff feature only:
+earlgrey = { version = "0.4", optional = true }
+indexmap = { version = "2", features = ["serde"], optional = true }
+
+[lib]
+name = "dsql_lint"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dsql-lint"
+path = "src/main.rs"
+required-features = ["serde"]
+
+[[bin]]
+name = "grammar-diff"
+path = "src/bin/grammar_diff.rs"
+required-features = ["grammar-diff"]
