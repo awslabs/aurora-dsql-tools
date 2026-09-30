@@ -11,6 +11,12 @@ on:
   push:
     tags:
       - "dsql-lint/v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: dsql-lint version to retry on npm
+        required: true
+        type: string
 
 jobs:
   verify-version:
@@ -23,8 +29,10 @@ jobs:
       - name: Install Rust toolchain
         run: rustup update stable && rustup default stable
       - name: Assert Cargo.toml version matches tag
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#dsql-lint/v}"
+          TAG_VERSION="${VERSION_INPUT:-${GITHUB_REF_NAME#dsql-lint/v}}"
           # Use cargo's own view of the version rather than grepping TOML —
           # robust to future [workspace.package] or field reordering.
           CARGO_VERSION=$(cargo pkgid --manifest-path dsql-lint/Cargo.toml | sed 's/.*#//')
@@ -126,6 +134,7 @@ jobs:
 
   build-wheels:
     needs: verify-version
+    if: github.event_name == 'push'
     strategy:
       matrix:
         # See build-binaries for the `cross: true` semantics.
@@ -192,6 +201,11 @@ jobs:
     # asymmetric release. PyPI is yank-only (no true delete), so it has the
     # hardest recovery story of the four registries — publish it first.
     needs: [build-binaries, publish-pypi]
+    if: >-
+      always() &&
+      needs.build-binaries.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' ||
+      needs.publish-pypi.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -203,12 +217,13 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          registry-url: "https://registry.npmjs.org"
+          node-version: 24
 
       - name: Set version from tag
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
-          VERSION="${GITHUB_REF_NAME#dsql-lint/v}"
+          VERSION="${VERSION_INPUT:-${GITHUB_REF_NAME#dsql-lint/v}}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "Publishing npm packages version $VERSION"
 
@@ -253,19 +268,22 @@ jobs:
             "
           )
 
-      - name: Publish platform packages
+      - name: Publish npm packages
         run: |
-          for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64; do
-            (cd dsql-lint/npm/dsql-lint-$platform && npm publish --provenance --access public)
+          for package_dir in \
+            dsql-lint/npm/dsql-lint-darwin-arm64 \
+            dsql-lint/npm/dsql-lint-darwin-x64 \
+            dsql-lint/npm/dsql-lint-linux-arm64 \
+            dsql-lint/npm/dsql-lint-linux-x64 \
+            dsql-lint/npm/dsql-lint-win32-x64 \
+            dsql-lint/npm/dsql-lint; do
+            package_name=$(node -p "require('./$package_dir/package.json').name")
+            if npm view "$package_name@$VERSION" version >/dev/null 2>&1; then
+              echo "$package_name@$VERSION already published; skipping"
+            else
+              (cd "$package_dir" && npm publish --provenance --access public)
+            fi
           done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish main package
-        run: |
-          (cd dsql-lint/npm/dsql-lint && npm publish --provenance --access public)
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-pypi:
     needs: build-wheels
@@ -303,7 +321,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: "8.0.x"
 
@@ -364,6 +382,81 @@ jobs:
       - name: Push to NuGet.org
         run: |
           dotnet nuget push dsql-lint/nuget/bin/Release/*.nupkg \
+            --api-key "${{ env.NUGET_API_KEY }}" \
+            --source https://api.nuget.org/v3/index.json
+
+  publish-nuget-runtime:
+    needs: [build-binaries, publish-pypi]
+    runs-on: ubuntu-latest
+    environment: nuget
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.NUGET_PUBLISH_IAM_ROLE }}
+          role-session-name: dsql-lint-nuget-runtime-publish
+          aws-region: us-west-2
+
+      - name: Get NuGet API Key
+        run: |
+          SECRET_JSON=$(aws secretsmanager get-secret-value \
+            --secret-id "production/build/AuroraDsql-nuget-api-key" \
+            --query 'SecretString' \
+            --output text)
+          NUGET_API_KEY=$(echo "$SECRET_JSON" | jq -r '.Key')
+          echo "::add-mask::$NUGET_API_KEY"
+          echo "NUGET_API_KEY=$NUGET_API_KEY" >> "$GITHUB_ENV"
+
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#dsql-lint/v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Publishing NuGet Runtime package version $VERSION"
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          pattern: dsql-lint-*
+
+      - name: Stage binaries into runtimes layout
+        run: |
+          declare -A RID_MAP=(
+            ["darwin-arm64"]="osx-arm64"
+            ["darwin-x64"]="osx-x64"
+            ["linux-arm64"]="linux-arm64"
+            ["linux-x64"]="linux-x64"
+            ["win32-x64"]="win-x64"
+          )
+          for platform in "${!RID_MAP[@]}"; do
+            rid="${RID_MAP[$platform]}"
+            dest="dsql-lint/nuget-runtime/runtimes/$rid/native"
+            rm -f "$dest/.gitkeep"
+            if [ "$platform" = "win32-x64" ]; then
+              cp "artifacts/dsql-lint-$platform/bin/dsql-lint.exe" "$dest/"
+            else
+              cp "artifacts/dsql-lint-$platform/bin/dsql-lint" "$dest/"
+              chmod +x "$dest/dsql-lint"
+            fi
+          done
+
+      - name: Pack NuGet package
+        run: dotnet pack --configuration Release -p:Version="$VERSION"
+        working-directory: dsql-lint/nuget-runtime
+
+      - name: Push to NuGet.org
+        run: |
+          dotnet nuget push dsql-lint/nuget-runtime/bin/Release/*.nupkg \
             --api-key "${{ env.NUGET_API_KEY }}" \
             --source https://api.nuget.org/v3/index.json
 

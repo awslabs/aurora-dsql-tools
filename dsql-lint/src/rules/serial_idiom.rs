@@ -51,38 +51,9 @@ use sqlparser::parser::Parser;
 use super::errors::identity_by_default_cache_1;
 use crate::lint::{Diagnostic, FixResult, LintRule};
 use crate::rules::name_match::{
-    drop_parts, normalize_object_name, parse_parts, pick_best_match, refs_match, NameRef,
+    drop_parts, normalize_dotted_identifier, normalize_object_name, parse_parts, pick_best_match,
+    refs_match, NameRef,
 };
-
-/// PG case-folding for a single textual identifier segment (no dots). If the
-/// segment is wrapped in `"..."` the inner value is preserved verbatim;
-/// otherwise it is lowercased. Used by the text-level `OWNED BY` matcher and
-/// by `nextval('...')`-string parsing where we don't have an `Ident` to read.
-fn fold_text_ident(segment: &str) -> String {
-    let trimmed = segment.trim();
-    if let Some(inner) = trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-        inner.to_string()
-    } else {
-        trimmed.to_ascii_lowercase()
-    }
-}
-
-/// `rsplit_once('.')` but skips dots that fall inside `"..."`-quoted
-/// identifier segments. Used so a sequence named `"my.seq"` is not mis-split
-/// into schema=`"my` / name=`seq"`.
-fn rsplit_dot_outside_quotes(s: &str) -> Option<(&str, &str)> {
-    let bytes = s.as_bytes();
-    let mut in_quotes = false;
-    let mut last_dot: Option<usize> = None;
-    for (i, b) in bytes.iter().enumerate() {
-        match b {
-            b'"' => in_quotes = !in_quotes,
-            b'.' if !in_quotes => last_dot = Some(i),
-            _ => {}
-        }
-    }
-    last_dot.map(|i| (&s[..i], &s[i + 1..]))
-}
 
 /// A detected pg_dump SERIAL idiom: a CREATE TABLE column whose auto-increment
 /// is wired up via a separate CREATE SEQUENCE + ALTER COLUMN SET DEFAULT nextval.
@@ -176,8 +147,7 @@ pub(crate) fn detect_serial_idioms(stmts: &[Statement]) -> Vec<SerialIdiom> {
                 // Only consider ALTER TABLEs whose sole operation is the SET DEFAULT
                 // we are about to remove. With multiple operations the part can't be
                 // dropped wholesale (we'd lose siblings like ADD CONSTRAINT or
-                // SET NOT NULL); the existing per-statement
-                // `AtUnsupportedAlterColumnSetDefault` rule still flags it Unfixable.
+                // SET NOT NULL), so the idiom collapse skips it.
                 if alter.operations.len() != 1 {
                     continue;
                 }
@@ -241,7 +211,7 @@ fn idiom_message(column: &str) -> String {
 /// runs over the original (unmodified) statements, so users see this high-level
 /// finding ALONGSIDE the lower-level rule violations on the constituent
 /// statements (the unparseable `ALTER SEQUENCE … OWNED BY` line surfaces as a
-/// `ParseError`, the `SET DEFAULT nextval` as `AtUnsupportedAlterColumnSetDefault`).
+/// `ParseError`).
 /// `fix_sql` emits ONLY this finding because `fix_serial_idioms` removes the
 /// constituent statements before the per-statement loop runs.
 pub(crate) fn check_serial_idioms(parts: &[(usize, String)], diagnostics: &mut Vec<Diagnostic>) {
@@ -432,19 +402,6 @@ fn is_alter_sequence_owned_by(text: &str, sequence: &NameRef) -> bool {
     refs_match(&name_ref, sequence)
 }
 
-/// Normalize a possibly-schema-qualified, possibly-quoted SQL identifier such
-/// as `public."My Seq"` or `t_id_seq` into `(Option<schema>, name)`. The split
-/// respects `"..."` quoting so a sequence named `"my.seq"` is not chopped
-/// inside its quotes; each segment is then PG-folded (unquoted to lowercase,
-/// quoted preserved) so the result can be compared byte-equal against an
-/// `ObjectName`-derived `NameRef`.
-fn normalize_dotted_identifier(s: &str) -> NameRef {
-    match rsplit_dot_outside_quotes(s) {
-        Some((schema, name)) => (Some(fold_text_ident(schema)), fold_text_ident(name)),
-        None => (None, fold_text_ident(s)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,8 +567,7 @@ mod tests {
 
     /// Multi-op ALTER TABLE: detector must NOT mark this idiom as collapsible —
     /// removing the whole statement would silently drop the unrelated `ADD
-    /// CONSTRAINT`. The user gets the per-statement
-    /// `AtUnsupportedAlterColumnSetDefault` Unfixable instead.
+    /// CONSTRAINT`. The idiom collapse skips it and leaves the ALTER intact.
     #[test]
     fn multi_op_alter_table_skipped() {
         let stmts = parse_ok(&[

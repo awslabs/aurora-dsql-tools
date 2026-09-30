@@ -27,6 +27,47 @@ pub(crate) fn fold_ident(ident: &Ident) -> String {
     }
 }
 
+/// PG case-folding for a single textual identifier segment (no dots), for rules
+/// that match unparseable statements at the text level and have no `Ident` to
+/// read. A `"..."`-wrapped segment keeps its inner value verbatim (with `""`
+/// decoded to `"`); an unquoted segment is lowercased.
+pub(crate) fn fold_text_ident(segment: &str) -> String {
+    let trimmed = segment.trim();
+    if let Some(inner) = trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        inner.replace("\"\"", "\"")
+    } else {
+        trimmed.to_ascii_lowercase()
+    }
+}
+
+/// `rsplit_once('.')` that skips dots inside `"..."`-quoted segments, so a name
+/// like `public."my.tbl"` splits into `(public, "my.tbl")` rather than being
+/// mis-split inside the quotes.
+pub(crate) fn rsplit_dot_outside_quotes(s: &str) -> Option<(&str, &str)> {
+    let bytes = s.as_bytes();
+    let mut in_quotes = false;
+    let mut last_dot: Option<usize> = None;
+    for (i, b) in bytes.iter().enumerate() {
+        match b {
+            b'"' => in_quotes = !in_quotes,
+            b'.' if !in_quotes => last_dot = Some(i),
+            _ => {}
+        }
+    }
+    last_dot.map(|i| (&s[..i], &s[i + 1..]))
+}
+
+/// Normalize a possibly-schema-qualified, possibly-quoted textual identifier
+/// (e.g. `public.t`, `"My Schema"."t"`, `"my.seq"`) into a PG case-folded
+/// [`NameRef`], so a text-matched name compares byte-equal against one derived
+/// from an `ObjectName` via [`normalize_object_name`].
+pub(crate) fn normalize_dotted_identifier(s: &str) -> NameRef {
+    match rsplit_dot_outside_quotes(s.trim()) {
+        Some((schema, name)) => (Some(fold_text_ident(schema)), fold_text_ident(name)),
+        None => (None, fold_text_ident(s.trim())),
+    }
+}
+
 /// Normalize an `ObjectName` to `(Option<schema>, name)` with PG case folding.
 ///
 /// - 0 parts -> `None`
@@ -146,5 +187,34 @@ mod tests {
         let mut parts = vec![(1, "a".into()), (2, "b".into()), (3, "c".into())];
         drop_parts(&mut parts, vec![2, 0, 0]);
         assert_eq!(parts, vec![(2, "b".into())]);
+    }
+
+    /// A quoted segment keeps its case verbatim and decodes the `""` escape
+    /// to a single `"`, matching how `fold_ident` (the AST side) renders a
+    /// quoted `Ident` — so a text-matched name compares byte-equal against an
+    /// AST-derived one even when the identifier embeds a quote.
+    #[test]
+    fn fold_text_ident_decodes_doubled_quotes_and_preserves_case() {
+        assert_eq!(fold_text_ident("\"My_Col\""), "My_Col");
+        assert_eq!(fold_text_ident("\"a\"\"b\""), "a\"b");
+        assert_eq!(fold_text_ident("Plain"), "plain"); // unquoted folds down
+    }
+
+    /// `normalize_dotted_identifier` splits on the schema dot but not on a dot
+    /// inside a quoted segment, and folds each segment.
+    #[test]
+    fn normalize_dotted_identifier_respects_quotes() {
+        assert_eq!(
+            normalize_dotted_identifier("public.t"),
+            (Some("public".to_string()), "t".to_string())
+        );
+        assert_eq!(
+            normalize_dotted_identifier("\"my.seq\""),
+            (None, "my.seq".to_string())
+        );
+        assert_eq!(
+            normalize_dotted_identifier("public.\"My.Tbl\""),
+            (Some("public".to_string()), "My.Tbl".to_string())
+        );
     }
 }

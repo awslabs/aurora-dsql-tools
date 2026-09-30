@@ -2,7 +2,7 @@
 
 use sqlparser::{
     ast::Statement,
-    dialect::PostgreSqlDialect,
+    dialect::{Dialect, PostgreSqlDialect},
     parser::Parser,
     tokenizer::{Token, Tokenizer},
 };
@@ -33,6 +33,7 @@ pub enum FixResult {
 /// External consumers should treat `LintRule` as opaque (or match on the
 /// serde string form) rather than relying on exhaustive matches.
 #[doc(hidden)]
+#[allow(deprecated)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
 #[cfg_attr(
     feature = "serde",
@@ -42,20 +43,29 @@ pub enum FixResult {
 pub enum LintRule {
     SerialType,
     ArrayType,
+    // Retained for source compatibility; no diagnostics emit this legacy rule.
     ForeignKey,
+    ForeignKeyMatchPartial,
+    ForeignKeyEnforced,
+    ForeignKeyNotValid,
+    CheckNotValid,
     TempTable,
     PartitionBy,
     Inherits,
     CreateTableAs,
     Tablespace,
     IdentityType,
+    IdentityNotNull,
     IdentityCache,
     IdentityCacheMissing,
+    NumericBounds,
     IndexAsync,
     IndexConcurrently,
     IndexUsing,
-    IndexExpression,
+    IndexSortDirection,
+    // Retained for source compatibility; no diagnostics emit this legacy rule.
     IndexPartial,
+    IndexVolatileFunction,
     Truncate,
     SequenceType,
     SequenceCache,
@@ -65,22 +75,21 @@ pub enum LintRule {
     TransactionIsolation,
     SetTransaction,
     // ALTER TABLE operations — one variant per rejected operation arm.
-    AtUnsupportedDropColumn,
     AtUnsupportedAlterColumnSetType,
     AtUnsupportedAlterColumnSetNotNull,
-    AtUnsupportedAlterColumnDropNotNull,
-    AtUnsupportedAlterColumnSetDefault,
-    AtUnsupportedAlterColumnDropDefault,
     AtUnsupportedAlterColumnAddGenerated,
+    // Retained for source compatibility; no diagnostics emit this legacy rule.
     AtUnsupportedAddCheck,
     AtUnsupportedAddPrimaryKey,
     AtUnsupportedAddUnique,
+    // Retained for source compatibility; no diagnostics emit this legacy rule.
     AtUnsupportedDropConstraint,
     AtUnsupportedPrimaryKeyUsingIndex,
+    // Retained for source compatibility; no diagnostics emit this legacy rule.
     AtUnsupportedUniqueUsingIndex,
     AtUnsupportedRowLevelSecurity,
     AtUnsupportedReplicaIdentity,
-    AtUnsupportedValidateConstraint,
+    ValidateConstraintAsync,
     AtUnsupportedRewriteRule,
     // Top-level statement rejections — one variant per arm.
     UnsupportedTempView,
@@ -127,6 +136,25 @@ pub enum LintRule {
     SerialSequenceIdiom,
     AlterAddUniqueCollapse,
     AlterAddPrimaryKeyCollapse,
+    PrimaryKeyRemoval,
+    // DSQL-native pg_dump idioms (a dump taken from a DSQL cluster emits DDL
+    // it cannot itself re-ingest; these collapse/strip it back to a loadable
+    // form). See `rules::identity_idiom`.
+    IdentityAddGeneratedCollapse,
+    AlterColumnSetCompressionStrip,
+    // MySQL → DSQL translation warnings (emitted only by `fix_sql_mysql`).
+    // Each marks a lossy transform whose output is valid DSQL but not
+    // semantically identical to the MySQL source — surfaced as
+    // `FixedWithWarning` so `Fixed` stays reserved for faithful rewrites.
+    MysqlUnsignedWidened,
+    MysqlEnumToVarchar,
+    MysqlSetToText,
+    MysqlAutoIncrementToIdentity,
+    MysqlOnUpdateDropped,
+    MysqlInvalidDefaultDropped,
+    MysqlIndexPrefixDropped,
+    MysqlIndexRenamed,
+    MysqlDataStatementDropped,
     ParseError,
 }
 
@@ -184,8 +212,17 @@ fn loc_to_byte(input: &str, offsets: &[usize], line: u64, col: u64) -> usize {
 /// apples-to-oranges diff between what the lint engine sees per statement
 /// and what the grammar oracle sees per statement.
 pub(crate) fn split_statements(input: &str) -> Result<Vec<(usize, String)>, String> {
-    let dialect = PostgreSqlDialect {};
-    let all_tokens = Tokenizer::new(&dialect, input)
+    split_statements_dialect(input, &PostgreSqlDialect {})
+}
+
+/// Dialect-generic statement splitter. `fix_sql_mysql` reuses this with
+/// `MySqlDialect` to slice statement text from the source bytes — rebuilding
+/// from tokens double-unescapes string literals and corrupts data.
+pub(crate) fn split_statements_dialect(
+    input: &str,
+    dialect: &dyn Dialect,
+) -> Result<Vec<(usize, String)>, String> {
+    let all_tokens = Tokenizer::new(dialect, input)
         .tokenize_with_location()
         .map_err(|e| e.to_string())?;
 
@@ -263,7 +300,9 @@ fn is_ddl(stmt: &Statement) -> bool {
             | Statement::AlterType(_)
             | Statement::AlterRole { .. }
             | Statement::AlterUser(_)
+            | Statement::AlterDefaultPrivileges { .. }
             | Statement::Drop { .. }
+            | Statement::DropRoutine { .. }
             | Statement::DropTrigger(_)
             | Statement::DropPolicy(_)
             | Statement::Truncate(_)
@@ -570,6 +609,10 @@ pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
     rules::serial_idiom::check_serial_idioms(&stmts, &mut diagnostics);
     rules::constraint_collapse::check_alter_add_unique(&stmts, &mut diagnostics);
     rules::constraint_collapse::check_alter_add_primary_key(&stmts, &mut diagnostics);
+    rules::identity_idiom::check_identity_alter_targets(&stmts, &mut diagnostics);
+    rules::identity_idiom::check_identity_adds(&stmts, &mut diagnostics);
+    rules::identity_idiom::check_set_compression(&stmts, &mut diagnostics);
+    rules::errors::check_primary_key_removals(&stmts, &mut diagnostics);
 
     for (line_num, stmt_text) in &stmts {
         if stmt_text.trim().is_empty() {
@@ -616,27 +659,33 @@ pub struct FixOutput {
 }
 
 pub fn fix_sql(sql: &str) -> FixOutput {
-    let dialect = PostgreSqlDialect {};
-    let mut all_diagnostics = Vec::new();
-    let mut fixed_parts: Vec<(usize, String)> = Vec::new();
-
-    let mut stmts = match split_statements(sql) {
+    let stmts = match split_statements(sql) {
         Ok(s) => s,
         Err(e) => {
-            all_diagnostics.push(Diagnostic {
-                rule: LintRule::ParseError,
-                line: 1,
-                statement: String::new(),
-                message: format!("Failed to tokenize SQL: {e}"),
-                suggestion: "Fix the SQL syntax and try again.".to_string(),
-                fix_result: FixResult::Unfixable,
-            });
             return FixOutput {
                 sql: sql.to_string(),
-                diagnostics: all_diagnostics,
+                diagnostics: vec![Diagnostic {
+                    rule: LintRule::ParseError,
+                    line: 1,
+                    statement: String::new(),
+                    message: format!("Failed to tokenize SQL: {e}"),
+                    suggestion: "Fix the SQL syntax and try again.".to_string(),
+                    fix_result: FixResult::Unfixable,
+                }],
             };
         }
     };
+    fix_statements(stmts)
+}
+
+/// The DSQL-compatibility gate, entered from already-split `(line, text)`
+/// statements. `fix_sql_mysql` calls this directly with source line numbers, so
+/// gate diagnostics need no remap. Each statement parses independently, so one
+/// unparseable statement can't disable the gate for the rest.
+pub(crate) fn fix_statements(mut stmts: Vec<(usize, String)>) -> FixOutput {
+    let dialect = PostgreSqlDialect {};
+    let mut all_diagnostics = Vec::new();
+    let mut fixed_parts: Vec<(usize, String)> = Vec::new();
 
     // Pre-passes: collapse multi-statement idioms BEFORE the per-statement
     // loop, so the loop never emits Unfixable diagnostics on statements
@@ -645,6 +694,10 @@ pub fn fix_sql(sql: &str) -> FixOutput {
     rules::serial_idiom::fix_serial_idioms(&mut stmts, &mut all_diagnostics);
     rules::constraint_collapse::fix_alter_add_unique(&mut stmts, &mut all_diagnostics);
     rules::constraint_collapse::fix_alter_add_primary_key(&mut stmts, &mut all_diagnostics);
+    rules::identity_idiom::check_identity_alter_targets(&stmts, &mut all_diagnostics);
+    rules::identity_idiom::fix_identity_adds(&mut stmts, &mut all_diagnostics);
+    rules::identity_idiom::fix_set_compression(&mut stmts, &mut all_diagnostics);
+    rules::errors::check_primary_key_removals(&stmts, &mut all_diagnostics);
 
     for (line_num, stmt_text) in &stmts {
         if stmt_text.trim().is_empty() {
@@ -739,6 +792,110 @@ mod tests {
         let diags = lint_sql(sql);
         assert!(!diags.is_empty());
         assert!(diags[0].message.contains("Failed to parse SQL"));
+    }
+
+    #[test]
+    fn test_supported_alter_constraint_parses() {
+        let supported = [
+            "ALTER TABLE child ALTER CONSTRAINT child_parent_fkey DEFERRABLE;",
+            "ALTER TABLE child ALTER CONSTRAINT child_parent_fkey NOT DEFERRABLE;",
+            "ALTER TABLE child ALTER CONSTRAINT child_parent_fkey DEFERRABLE INITIALLY DEFERRED;",
+            "ALTER TABLE ONLY public.child ALTER CONSTRAINT child_parent_fkey DEFERRABLE INITIALLY IMMEDIATE;",
+            "ALTER TABLE IF EXISTS ONLY public.child * ALTER CONSTRAINT child_parent_fkey INITIALLY DEFERRED;",
+            "ALTER TABLE child ALTER CONSTRAINT child_parent_fkey NOT DEFERRABLE INITIALLY IMMEDIATE;",
+        ];
+
+        for sql in supported {
+            assert!(lint_sql(sql).is_empty(), "expected supported SQL: {sql}");
+            let fixed = fix_sql(sql);
+            assert!(
+                fixed.diagnostics.is_empty(),
+                "expected no fix diagnostics for: {sql}"
+            );
+            assert_eq!(fixed.sql, format!("{sql}\n"));
+        }
+    }
+
+    #[test]
+    fn test_invalid_alter_constraint_still_reports_parse_error() {
+        for sql in [
+            "ALTER TABLE child ALTER CONSTRAINT child_parent_fkey SOMETIMES DEFERRED;",
+            "ALTER TABLE child ALTER CONSTRAINT child_parent_fkey ENFORCED;",
+        ] {
+            let diags = lint_sql(sql);
+            assert!(
+                diags
+                    .iter()
+                    .any(|diag| matches!(diag.rule, LintRule::ParseError)),
+                "invalid deferrability combination must not parse: {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_fk_set_action_column_lists_parse() {
+        let supported = [
+            "CREATE TABLE parent (a INT, b INT, PRIMARY KEY (a, b)); CREATE TABLE child (a INT, b INT, FOREIGN KEY (a, b) REFERENCES parent (a, b) ON DELETE SET NULL (b));",
+            "CREATE TABLE parent (a INT, b INT, PRIMARY KEY (a, b)); CREATE TABLE child (a INT DEFAULT 1, b INT DEFAULT 2, FOREIGN KEY (a, b) REFERENCES parent (a, b) ON DELETE SET DEFAULT (b));",
+        ];
+
+        for sql in supported {
+            assert!(
+                !lint_sql(sql)
+                    .iter()
+                    .any(|diag| matches!(diag.rule, LintRule::ParseError)),
+                "expected supported SQL: {sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_fk_set_action_column_list_preserved_when_fixing_alter() {
+        let sql = "ALTER TABLE child ADD CONSTRAINT child_parent_fk FOREIGN KEY (a, b) REFERENCES parent (a, b) ON DELETE SET DEFAULT (b), ADD COLUMN note TEXT;";
+        let fixed = fix_sql(sql);
+        assert!(
+            fixed
+                .sql
+                .contains("ON DELETE SET DEFAULT (b) NOT VALID, ADD COLUMN note TEXT"),
+            "unexpected fixed SQL: {}",
+            fixed.sql
+        );
+        assert!(
+            lint_sql(&fixed.sql).is_empty(),
+            "{:?}",
+            lint_sql(&fixed.sql)
+        );
+    }
+
+    #[test]
+    fn test_supported_set_constraints_parse() {
+        let supported = [
+            "SET CONSTRAINTS ALL DEFERRED;",
+            "SET CONSTRAINTS fk_ref IMMEDIATE;",
+            "SET CONSTRAINTS public.fk_ref, \"MixedCase\" DEFERRED;",
+        ];
+
+        for sql in supported {
+            assert!(lint_sql(sql).is_empty(), "expected supported SQL: {sql}");
+            let fixed = fix_sql(sql);
+            assert!(
+                fixed.diagnostics.is_empty(),
+                "expected no fix diagnostics for: {sql}"
+            );
+            assert_eq!(fixed.sql, format!("{sql}\n"));
+        }
+    }
+
+    #[test]
+    fn test_invalid_set_constraints_still_reports_parse_error() {
+        let sql = "SET CONSTRAINTS ALL EVENTUALLY;";
+        let diags = lint_sql(sql);
+        assert!(
+            diags
+                .iter()
+                .any(|diag| matches!(diag.rule, LintRule::ParseError)),
+            "invalid constraint mode must not bypass parsing: {diags:?}"
+        );
     }
 
     #[test]
@@ -974,12 +1131,9 @@ ALTER TABLE ONLY public.t ALTER COLUMN id SET DEFAULT nextval('public.t_id_seq':
         );
     }
 
-    /// A `SET DEFAULT nextval('external_seq')` whose CREATE SEQUENCE lives in a
-    /// different file (or wasn't dumped) must NOT be silently collapsed —
-    /// dropping the SET DEFAULT without a replacement would lose the column's
-    /// auto-increment behavior. The collapse skips it; the existing
-    /// per-statement rule (`AtUnsupportedAlterColumnSetDefault`) still flags
-    /// the SET DEFAULT as Unfixable, so the user is told.
+    /// A `SET DEFAULT nextval('external_seq')` whose CREATE SEQUENCE isn't in
+    /// the input must NOT be collapsed into the CREATE TABLE (no matching
+    /// sequence to fold), and the `nextval` default must be preserved verbatim.
     #[test]
     fn test_fix_sql_preserves_cross_file_sequence_default() {
         let sql = "\
@@ -1000,14 +1154,6 @@ ALTER TABLE ONLY public.t ALTER COLUMN id SET DEFAULT nextval('public.external_s
             result.sql.to_lowercase().contains("nextval"),
             "cross-file SET DEFAULT must NOT be silently dropped, got:\n{}",
             result.sql
-        );
-        assert!(
-            result.diagnostics.iter().any(|d| matches!(
-                d.rule,
-                LintRule::AtUnsupportedAlterColumnSetDefault
-            ) && matches!(d.fix_result, FixResult::Unfixable)),
-            "SET DEFAULT should be flagged Unfixable so the user notices, got: {:?}",
-            result.diagnostics
         );
     }
 
@@ -1080,9 +1226,8 @@ ALTER TABLE ONLY public.\"T\" ALTER COLUMN \"Id\" SET DEFAULT nextval('public.\"
     }
 
     /// Multi-op ALTER TABLE bundling SET DEFAULT with sibling operations (here:
-    /// ADD CONSTRAINT … PRIMARY KEY) must NOT collapse — the per-statement
-    /// `AtUnsupportedAlterColumnSetDefault` rule still flags the SET DEFAULT
-    /// Unfixable so the user is told, but the PRIMARY KEY survives untouched.
+    /// ADD CONSTRAINT … PRIMARY KEY) must NOT be collapsed into the SERIAL
+    /// idiom, and the unrelated PRIMARY KEY must survive untouched.
     #[test]
     fn test_fix_sql_serial_idiom_preserves_unrelated_alter_ops() {
         let sql = "\
@@ -1107,14 +1252,6 @@ ADD CONSTRAINT t_pkey PRIMARY KEY (id);
             result.sql.to_uppercase().contains("PRIMARY KEY"),
             "the unrelated ADD CONSTRAINT t_pkey PRIMARY KEY must survive, got:\n{}",
             result.sql
-        );
-        assert!(
-            result.diagnostics.iter().any(|d| matches!(
-                d.rule,
-                LintRule::AtUnsupportedAlterColumnSetDefault
-            ) && matches!(d.fix_result, FixResult::Unfixable)),
-            "SET DEFAULT should be flagged Unfixable, got: {:?}",
-            result.diagnostics
         );
     }
 

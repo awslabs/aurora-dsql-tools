@@ -3,6 +3,7 @@ use sqlparser::ast::Statement;
 
 pub(crate) mod constraint_collapse;
 pub mod errors;
+pub(crate) mod identity_idiom;
 pub(crate) mod name_match;
 pub(crate) mod serial_idiom;
 

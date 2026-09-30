@@ -17,6 +17,11 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "CREATE INDEX ASYNC idx ON t USING btree(col);",
         "Fixed",
     ),
+    (
+        "index-asc",
+        "CREATE INDEX ASYNC idx ON t(col ASC);",
+        "Fixed",
+    ),
     ("seq-missing-cache", "CREATE SEQUENCE s;", "Fixed"),
     (
         "identity-missing-cache",
@@ -43,6 +48,11 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "CREATE TABLE t (name VARCHAR(100) COLLATE pg_catalog.\"C\");",
         "Fixed",
     ),
+    (
+        "fk-enforced",
+        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id) ENFORCED);",
+        "Fixed",
+    ),
     // ── Tier 2: FixedWithWarning ──────────────────────────────────────
     // Async index builds change timing semantics (index not ready on return).
     (
@@ -51,8 +61,18 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "FixedWithWarning",
     ),
     (
+        "validate-constraint-async",
+        "ALTER TABLE t VALIDATE CONSTRAINT c1;",
+        "FixedWithWarning",
+    ),
+    (
         "index-concurrently",
         "CREATE INDEX CONCURRENTLY idx ON t(col);",
+        "FixedWithWarning",
+    ),
+    (
+        "index-desc",
+        "CREATE INDEX ASYNC idx ON t(col DESC);",
         "FixedWithWarning",
     ),
     // Sequence widening to BIGINT changes the consumable range.
@@ -103,18 +123,18 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
         "FixedWithWarning",
     ),
     (
-        "column-fk",
-        "CREATE TABLE t (id INT, cid INT REFERENCES c(id));",
-        "FixedWithWarning",
-    ),
-    (
-        "table-fk",
-        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id));",
-        "FixedWithWarning",
-    ),
-    (
         "alter-fk",
         "ALTER TABLE t ADD CONSTRAINT fk_c FOREIGN KEY (cid) REFERENCES c(id);",
+        "FixedWithWarning",
+    ),
+    (
+        "alter-check",
+        "ALTER TABLE t ADD CONSTRAINT ck_positive CHECK (value > 0);",
+        "FixedWithWarning",
+    ),
+    (
+        "fk-not-enforced",
+        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id) NOT ENFORCED);",
         "FixedWithWarning",
     ),
     (
@@ -185,7 +205,7 @@ const FIX_TIER_CASES: &[(&str, &str, &str)] = &[
     (
         "alter-add-col-fk",
         "ALTER TABLE t ADD COLUMN cid INT REFERENCES c(id);",
-        "FixedWithWarning",
+        "Unfixable",
     ),
     (
         "collate-en-us",
@@ -284,6 +304,16 @@ fn fix_tier_matrix() {
     }
 }
 
+#[test]
+fn foreign_key_enforcement_fix_preserves_deferrability() {
+    let result = fix_sql(
+        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id) DEFERRABLE INITIALLY DEFERRED ENFORCED);",
+    );
+
+    assert!(result.sql.contains("DEFERRABLE INITIALLY DEFERRED"));
+    assert!(!result.sql.contains("ENFORCED"));
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // ROUNDTRIP MATRIX
 // ═══════════════════════════════════════════════════════════════════════
@@ -358,6 +388,16 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
         "CREATE INDEX ASYNC idx ON t(col);\n",
     ),
     (
+        "validate-constraint-async",
+        "ALTER TABLE t VALIDATE CONSTRAINT c1;",
+        "ALTER TABLE ASYNC t VALIDATE CONSTRAINT c1;\n",
+    ),
+    (
+        "alter-check",
+        "ALTER TABLE t ADD CONSTRAINT ck_positive CHECK (value > 0);",
+        "ALTER TABLE t ADD CONSTRAINT ck_positive CHECK (value > 0) NOT VALID;\n",
+    ),
+    (
         "index-using-btree",
         "CREATE INDEX ASYNC idx ON t USING btree(col);",
         "CREATE INDEX ASYNC idx ON t(col);\n",
@@ -381,6 +421,16 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
         "index-using-no-async-after-cols",
         "CREATE INDEX idx ON t(col) USING btree;",
         "CREATE INDEX ASYNC idx ON t(col);\n",
+    ),
+    (
+        "index-asc",
+        "CREATE INDEX ASYNC idx ON t(col ASC);",
+        "CREATE INDEX ASYNC idx ON t(col);\n",
+    ),
+    (
+        "index-desc-nulls-first",
+        "CREATE INDEX ASYNC idx ON t(col DESC NULLS FIRST);",
+        "CREATE INDEX ASYNC idx ON t(col NULLS FIRST);\n",
     ),
     // Sequence fixes
     (
@@ -420,16 +470,16 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
         "BEGIN ISOLATION LEVEL SERIALIZABLE;",
         "BEGIN ISOLATION LEVEL REPEATABLE READ;\n",
     ),
-    // FK removal
+    // Supported foreign keys are preserved.
     (
         "column-fk",
         "CREATE TABLE t (id INT, cid INT REFERENCES c(id));",
-        "CREATE TABLE t (\n  id INT,\n  cid INT  \n);\n",
+        "CREATE TABLE t (id INT, cid INT REFERENCES c(id));\n",
     ),
     (
         "table-fk",
         "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id));",
-        "CREATE TABLE t (\n  id INT,\n  cid INT  \n);\n",
+        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id));\n",
     ),
     // Clause removal
     (
@@ -461,7 +511,7 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
     (
         "alter-add-col-fk",
         "ALTER TABLE t ADD COLUMN cid INT REFERENCES c(id);",
-        "ALTER TABLE t ADD COLUMN cid INT;\n",
+        "ALTER TABLE t ADD COLUMN cid INT REFERENCES c(id);\n",
     ),
     (
         "alter-add-col-collate",
@@ -489,17 +539,17 @@ const SNAPSHOT_CASES: &[(&str, &str, &str)] = &[
         "CREATE TABLE t (\n  name VARCHAR(100) COLLATE \"C\",\n  city VARCHAR(50) COLLATE \"en_US\",\n  notes TEXT COLLATE \"en_US.utf8\"\n);",
         "CREATE TABLE t (\n  name VARCHAR(100),\n  city VARCHAR(50),\n  notes TEXT  \n);\n",
     ),
-    // Mixed ALTER TABLE: FK removed, other ops kept
+    // Mixed ALTER TABLE: the FK gains NOT VALID and the other operation remains.
     (
         "alter-mixed-fk-col",
         "ALTER TABLE t ADD CONSTRAINT fk_c FOREIGN KEY (cid) REFERENCES c(id), ADD COLUMN x INT;",
-        "ALTER TABLE t ADD COLUMN x INT;\n",
+        "ALTER TABLE t ADD CONSTRAINT fk_c FOREIGN KEY (cid) REFERENCES c(id) NOT VALID, ADD COLUMN x INT;\n",
     ),
     // Multi-fix on one statement
     (
         "serial-plus-fk",
         "CREATE TABLE t (id SERIAL PRIMARY KEY, cid INT REFERENCES c(id));",
-        "CREATE TABLE t (\n  id BIGINT PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY ( CACHE 1 ),\n  cid INT  \n);\n",
+        "CREATE TABLE t (\n  id BIGINT PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY ( CACHE 1 ),\n  cid INT REFERENCES c (id)  \n);\n",
     ),
     // Whole-list collapse rules — pin the rendered text so a sqlparser
     // Display regression that silently drops INCLUDE (still valid SQL,
@@ -655,6 +705,154 @@ fn fix_rollback_transaction_not_split() {
     );
 }
 
+/// End-to-end on the DDL a REAL `pg_dump` of an Aurora DSQL cluster emits for
+/// an identity-PK table with a UNIQUE, a JSON column (lz4-compressed by DSQL),
+/// and a covering PK. Captured verbatim from a live cluster. Every construct
+/// must collapse/strip cleanly: zero ParseError/Unfixable, identity inline on
+/// the CREATE TABLE, and the trailing `setval` left intact (it lands on the
+/// inline identity's implicit sequence, which PostgreSQL auto-names
+/// `<table>_<column>_seq` — the same name pg_dump's setval targets).
+#[test]
+fn fix_real_dsql_dump_round_trips_clean() {
+    let ddl = "\
+CREATE TABLE public.t (
+    id bigint NOT NULL,
+    email text NOT NULL,
+    payload json
+);
+ALTER TABLE ONLY public.t ALTER COLUMN payload SET COMPRESSION lz4;
+ALTER TABLE public.t ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.t_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+SELECT pg_catalog.setval('public.t_id_seq', 2, true);
+ALTER TABLE ONLY public.t
+    ADD CONSTRAINT t_email_key UNIQUE (email);
+ALTER TABLE ONLY public.t
+    ADD CONSTRAINT t_pkey PRIMARY KEY (id) INCLUDE (email, payload);
+";
+    let result = fix_sql(ddl);
+
+    // No unfixable diagnostics — the whole DSQL-native dump is handled.
+    let unfixable: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.fix_result, FixResult::Unfixable))
+        .collect();
+    assert!(
+        unfixable.is_empty(),
+        "real DSQL dump must fix cleanly, got unfixable: {unfixable:?}"
+    );
+
+    let upper = result.sql.to_uppercase();
+    // Identity folded inline; standalone ADD GENERATED gone.
+    assert!(
+        upper.contains("GENERATED BY DEFAULT AS IDENTITY"),
+        "identity must be inline, got:\n{}",
+        result.sql
+    );
+    assert!(
+        !upper.contains("ADD GENERATED"),
+        "standalone ADD GENERATED must be removed, got:\n{}",
+        result.sql
+    );
+    // SET COMPRESSION stripped.
+    assert!(
+        !upper.contains("SET COMPRESSION"),
+        "SET COMPRESSION must be stripped, got:\n{}",
+        result.sql
+    );
+    // setval preserved — it advances the inline identity's implicit sequence.
+    assert!(
+        result.sql.contains("setval"),
+        "trailing setval must be preserved, got:\n{}",
+        result.sql
+    );
+    // PK/UNIQUE folded onto the CREATE TABLE (existing collapse rules).
+    assert!(
+        upper.matches("CONSTRAINT").count() >= 2,
+        "PK + UNIQUE must fold into the CREATE TABLE, got:\n{}",
+        result.sql
+    );
+
+    // Re-lint the fixed SQL: must be free of ParseError now.
+    let re = dsql_lint::lint_sql(&result.sql);
+    assert!(
+        !re.iter().any(|d| matches!(d.rule, LintRule::ParseError)),
+        "fixed SQL must re-lint without ParseError, got: {re:?}"
+    );
+}
+
+/// L1 end-to-end: a tuned `CACHE 65536` survives the collapse and re-lints
+/// clean (DSQL accepts `CACHE >= 65536`), rather than being downgraded to 1.
+#[test]
+fn fix_real_dsql_dump_preserves_tuned_cache() {
+    let ddl = "\
+CREATE TABLE public.t (id bigint NOT NULL);
+ALTER TABLE public.t ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.t_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 65536
+);
+";
+    let result = fix_sql(ddl);
+    assert!(
+        result.sql.contains("65536"),
+        "tuned CACHE 65536 must be preserved, got:\n{}",
+        result.sql
+    );
+    let re = dsql_lint::lint_sql(&result.sql);
+    assert!(
+        !re.iter()
+            .any(|d| matches!(d.rule, LintRule::ParseError | LintRule::IdentityCache)),
+        "fixed SQL with CACHE 65536 must re-lint clean, got: {re:?}"
+    );
+}
+
+/// L1 end-to-end: an out-of-range source cache is preserved through the
+/// identity collapse and then clamped to 1 "for free" by the downstream CACHE
+/// validation when the rewritten CREATE TABLE is re-checked — emitting an
+/// `IdentityCache` `FixedWithWarning`. Guards the cross-pass coupling the PR
+/// relies on (fold preserves CACHE n -> per-statement re-lint clamps it).
+#[test]
+fn fix_out_of_range_identity_cache_is_clamped_with_warning() {
+    let ddl = "\
+CREATE TABLE public.t (id bigint NOT NULL);
+ALTER TABLE public.t ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.t_id_seq CACHE 100
+);
+";
+    let result = fix_sql(ddl);
+    let upper = result.sql.to_uppercase();
+    // `contains("CACHE 1")` alone is satisfied by un-clamped `CACHE 100`; assert
+    // the value is actually 1 by requiring the closing paren and rejecting 100.
+    assert!(
+        upper.contains("CACHE 1 )") || upper.contains("CACHE 1)"),
+        "out-of-range CACHE 100 must be clamped to CACHE 1, got:\n{}",
+        result.sql
+    );
+    assert!(
+        !upper.contains("CACHE 100"),
+        "clamped output must not retain CACHE 100, got:\n{}",
+        result.sql
+    );
+    let warned = result.diagnostics.iter().any(|d| {
+        d.rule == LintRule::IdentityCache && matches!(d.fix_result, FixResult::FixedWithWarning(_))
+    });
+    assert!(
+        warned,
+        "clamp must surface an IdentityCache FixedWithWarning, got: {:?}",
+        result.diagnostics
+    );
+}
+
 #[test]
 fn fix_unclosed_multi_ddl_transaction_unchanged() {
     let sql = "BEGIN;\nCREATE TABLE a (id INT);\nCREATE TABLE b (id INT);";
@@ -784,13 +982,15 @@ fn fix_single_ddl_plus_dml_in_txn_emits_diagnostic_and_splits() {
 // Cases with bespoke assertions that don't fit a matrix row.
 
 #[test]
-fn fix_alter_fk_removed_entirely() {
+fn fix_alter_fk_adds_not_valid() {
     let result = fix_sql("ALTER TABLE t ADD CONSTRAINT fk_c FOREIGN KEY (cid) REFERENCES c(id);");
-    assert_eq!(
-        result.sql, "",
-        "ALTER TABLE with only FK should produce empty output"
-    );
+    assert!(result.sql.contains("ADD CONSTRAINT"));
+    assert!(result.sql.contains("NOT VALID"));
     assert_eq!(result.diagnostics.len(), 1);
+    assert!(matches!(
+        result.diagnostics[0].fix_result,
+        FixResult::FixedWithWarning(_)
+    ));
 }
 
 #[test]
@@ -798,6 +998,14 @@ fn fix_clean_statement_verbatim() {
     let sql = "CREATE TABLE orders (id UUID PRIMARY KEY, amount DECIMAL(10,2))";
     let result = fix_sql(sql);
     assert_eq!(result.sql.trim(), format!("{sql};"));
+    assert!(result.diagnostics.is_empty());
+}
+
+#[test]
+fn fix_unique_using_index_is_unchanged() {
+    let sql = "ALTER TABLE users ADD CONSTRAINT users_email_key UNIQUE USING INDEX users_email_unique_idx;";
+    let result = fix_sql(sql);
+    assert_eq!(result.sql, format!("{sql}\n"));
     assert!(result.diagnostics.is_empty());
 }
 
