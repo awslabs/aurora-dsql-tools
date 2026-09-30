@@ -2,7 +2,7 @@
 
 use sqlparser::{
     ast::Statement,
-    dialect::PostgreSqlDialect,
+    dialect::{Dialect, PostgreSqlDialect},
     parser::Parser,
     tokenizer::{Token, Tokenizer},
 };
@@ -26,46 +26,135 @@ pub enum FixResult {
 ///
 /// When serialized (via the `serde` feature), each variant becomes its
 /// `snake_case` form — e.g. `SerialType` → `"serial_type"`. These strings
-/// are the on-wire identifier documented in the README rule-vocabulary
-/// table, so variant renames change the JSON output.
+/// are the on-wire identifier; variant renames change the JSON output.
 ///
-/// The enum is `#[non_exhaustive]`: new rules can be added in minor
-/// releases, and downstream consumers must include a `_` arm when matching.
+/// **Not stable for external pattern matching.** The set of variants grows
+/// as new rules are added, and existing variants may be renamed or split.
+/// External consumers should treat `LintRule` as opaque (or match on the
+/// serde string form) rather than relying on exhaustive matches.
+#[doc(hidden)]
+#[allow(deprecated)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize),
     serde(rename_all = "snake_case")
 )]
-#[non_exhaustive]
 pub enum LintRule {
     SerialType,
-    JsonType,
     ArrayType,
+    // Retained for source compatibility; no diagnostics emit this legacy rule.
     ForeignKey,
+    ForeignKeyMatchPartial,
+    ForeignKeyEnforced,
+    ForeignKeyNotValid,
+    CheckNotValid,
     TempTable,
     PartitionBy,
     Inherits,
     CreateTableAs,
     Tablespace,
     IdentityType,
+    IdentityNotNull,
     IdentityCache,
     IdentityCacheMissing,
+    NumericBounds,
     IndexAsync,
     IndexConcurrently,
     IndexUsing,
-    IndexExpression,
+    IndexSortDirection,
+    // Retained for source compatibility; no diagnostics emit this legacy rule.
     IndexPartial,
+    IndexVolatileFunction,
     Truncate,
     SequenceType,
     SequenceCache,
     SequenceCacheMissing,
     AddColumnConstraint,
+    Collation,
     TransactionIsolation,
     SetTransaction,
-    UnsupportedAlterTableOp,
-    UnsupportedStatement,
+    // ALTER TABLE operations — one variant per rejected operation arm.
+    AtUnsupportedAlterColumnSetType,
+    AtUnsupportedAlterColumnSetNotNull,
+    AtUnsupportedAlterColumnAddGenerated,
+    // Retained for source compatibility; no diagnostics emit this legacy rule.
+    AtUnsupportedAddCheck,
+    AtUnsupportedAddPrimaryKey,
+    AtUnsupportedAddUnique,
+    // Retained for source compatibility; no diagnostics emit this legacy rule.
+    AtUnsupportedDropConstraint,
+    AtUnsupportedPrimaryKeyUsingIndex,
+    // Retained for source compatibility; no diagnostics emit this legacy rule.
+    AtUnsupportedUniqueUsingIndex,
+    AtUnsupportedRowLevelSecurity,
+    AtUnsupportedReplicaIdentity,
+    ValidateConstraintAsync,
+    AtUnsupportedRewriteRule,
+    // Top-level statement rejections — one variant per arm.
+    UnsupportedTempView,
+    UnsupportedMaterializedView,
+    UnsupportedCreateTrigger,
+    UnsupportedCreateExtension,
+    UnsupportedCreateFunctionNonSql,
+    UnsupportedCreateProcedure,
+    UnsupportedCreateDatabase,
+    UnsupportedCreatePolicy,
+    UnsupportedSavepoint,
+    UnsupportedReleaseSavepoint,
+    UnsupportedRollbackToSavepoint,
+    UnsupportedDeclareCursor,
+    UnsupportedCreateType,
+    UnsupportedCreateServer,
+    UnsupportedVacuum,
+    UnsupportedAlterIndex,
+    UnsupportedCopyFromFile,
+    UnsupportedLockTable,
+    UnsupportedAlterAggregate,
+    UnsupportedAlterFunctionProperty,
+    UnsupportedAlterPolicy,
+    UnsupportedAlterType,
+    UnsupportedAlterRoleProperty,
+    UnsupportedAlterRoleSet,
+    UnsupportedAlterUser,
+    UnsupportedDropMaterializedView,
+    UnsupportedDropType,
+    UnsupportedDropTrigger,
+    UnsupportedDropPolicy,
+    UnsupportedListen,
+    UnsupportedUnlisten,
+    UnsupportedNotify,
+    UnsupportedLoad,
+    UnsupportedPrepare,
+    UnsupportedDeallocate,
+    UnsupportedDiscard,
+    UnsupportedPartitionOf,
+    UnsupportedOnCommit,
+    UnsupportedCreateTableWithStorageParameters,
     MultiDdlTransaction,
+    MixedDdlDmlTransaction,
+    SerialSequenceIdiom,
+    AlterAddUniqueCollapse,
+    AlterAddPrimaryKeyCollapse,
+    PrimaryKeyRemoval,
+    // DSQL-native pg_dump idioms (a dump taken from a DSQL cluster emits DDL
+    // it cannot itself re-ingest; these collapse/strip it back to a loadable
+    // form). See `rules::identity_idiom`.
+    IdentityAddGeneratedCollapse,
+    AlterColumnSetCompressionStrip,
+    // MySQL → DSQL translation warnings (emitted only by `fix_sql_mysql`).
+    // Each marks a lossy transform whose output is valid DSQL but not
+    // semantically identical to the MySQL source — surfaced as
+    // `FixedWithWarning` so `Fixed` stays reserved for faithful rewrites.
+    MysqlUnsignedWidened,
+    MysqlEnumToVarchar,
+    MysqlSetToText,
+    MysqlAutoIncrementToIdentity,
+    MysqlOnUpdateDropped,
+    MysqlInvalidDefaultDropped,
+    MysqlIndexPrefixDropped,
+    MysqlIndexRenamed,
+    MysqlDataStatementDropped,
     ParseError,
 }
 
@@ -123,8 +212,17 @@ fn loc_to_byte(input: &str, offsets: &[usize], line: u64, col: u64) -> usize {
 /// apples-to-oranges diff between what the lint engine sees per statement
 /// and what the grammar oracle sees per statement.
 pub(crate) fn split_statements(input: &str) -> Result<Vec<(usize, String)>, String> {
-    let dialect = PostgreSqlDialect {};
-    let all_tokens = Tokenizer::new(&dialect, input)
+    split_statements_dialect(input, &PostgreSqlDialect {})
+}
+
+/// Dialect-generic statement splitter. `fix_sql_mysql` reuses this with
+/// `MySqlDialect` to slice statement text from the source bytes — rebuilding
+/// from tokens double-unescapes string literals and corrupts data.
+pub(crate) fn split_statements_dialect(
+    input: &str,
+    dialect: &dyn Dialect,
+) -> Result<Vec<(usize, String)>, String> {
+    let all_tokens = Tokenizer::new(dialect, input)
         .tokenize_with_location()
         .map_err(|e| e.to_string())?;
 
@@ -197,8 +295,27 @@ fn is_ddl(stmt: &Statement) -> bool {
             | Statement::CreateServer(_)
             | Statement::AlterTable(_)
             | Statement::AlterIndex { .. }
+            | Statement::AlterFunction(_)
+            | Statement::AlterPolicy(_)
+            | Statement::AlterType(_)
+            | Statement::AlterRole { .. }
+            | Statement::AlterUser(_)
+            | Statement::AlterDefaultPrivileges { .. }
             | Statement::Drop { .. }
+            | Statement::DropRoutine { .. }
+            | Statement::DropTrigger(_)
+            | Statement::DropPolicy(_)
             | Statement::Truncate(_)
+    )
+}
+
+fn is_dml(stmt: &Statement) -> bool {
+    matches!(
+        stmt,
+        Statement::Insert(_)
+            | Statement::Update { .. }
+            | Statement::Delete(_)
+            | Statement::Merge { .. }
     )
 }
 
@@ -227,19 +344,40 @@ fn multi_ddl_txn_diagnostic(
         message: format!(
             "Transaction contains {ddl_count} DDL statements. DSQL supports only one DDL statement per transaction."
         ),
-        suggestion: "Split into separate transactions: wrap each DDL statement in its own BEGIN/COMMIT block.".to_string(),
+        suggestion: "Split into separate transactions: wrap each DDL statement in its own BEGIN/COMMIT block. Note: this changes semantics — the original transaction's atomicity guarantee is lost. If a later statement fails, earlier statements remain committed.".to_string(),
         fix_result,
     }
 }
 
-/// Cross-statement pass: detect transaction blocks (BEGIN … COMMIT) with more
-/// than one DDL statement. DSQL allows only one DDL per transaction.
+fn mixed_ddl_dml_txn_diagnostic(
+    line: usize,
+    ddl_count: usize,
+    dml_count: usize,
+    begin_text: &str,
+    fix_result: FixResult,
+) -> Diagnostic {
+    Diagnostic {
+        rule: LintRule::MixedDdlDmlTransaction,
+        line,
+        statement: begin_text.to_string(),
+        message: format!(
+            "Transaction mixes DDL and DML ({ddl_count} DDL, {dml_count} DML). DSQL does not allow DDL and DML in the same transaction."
+        ),
+        suggestion: "Split into separate transactions so each BEGIN/COMMIT block contains either DDL or DML, not both. Note: this changes semantics — the original transaction's atomicity guarantee is lost. If a later statement fails, earlier statements remain committed.".to_string(),
+        fix_result,
+    }
+}
+
+/// Cross-statement pass: detect transaction blocks (BEGIN … COMMIT) that
+/// violate DSQL's single-transaction constraints — either >1 DDL statement,
+/// or any mix of DDL and DML.
 fn check_ddl_transactions(stmts: &[(usize, String)], diagnostics: &mut Vec<Diagnostic>) {
     let dialect = PostgreSqlDialect {};
     let mut in_txn = false;
     let mut txn_begin_line: usize = 0;
     let mut txn_begin_text = String::new();
     let mut ddl_count: usize = 0;
+    let mut dml_count: usize = 0;
 
     for (line_num, stmt_text) in stmts {
         let parsed = match Parser::parse_sql(&dialect, stmt_text.trim()) {
@@ -267,25 +405,43 @@ fn check_ddl_transactions(stmts: &[(usize, String)], diagnostics: &mut Vec<Diagn
                 txn_begin_line = *line_num;
                 txn_begin_text = stmt_text.to_string();
                 ddl_count = 0;
+                dml_count = 0;
             } else if is_txn_end(stmt) {
-                if in_txn && ddl_count > 1 && is_commit(stmt) {
-                    diagnostics.push(multi_ddl_txn_diagnostic(
-                        txn_begin_line,
-                        ddl_count,
-                        &txn_begin_text,
-                        FixResult::Unfixable,
-                    ));
+                if in_txn && is_commit(stmt) {
+                    if ddl_count > 1 {
+                        diagnostics.push(multi_ddl_txn_diagnostic(
+                            txn_begin_line,
+                            ddl_count,
+                            &txn_begin_text,
+                            FixResult::Unfixable,
+                        ));
+                    }
+                    if ddl_count >= 1 && dml_count >= 1 {
+                        diagnostics.push(mixed_ddl_dml_txn_diagnostic(
+                            txn_begin_line,
+                            ddl_count,
+                            dml_count,
+                            &txn_begin_text,
+                            FixResult::Unfixable,
+                        ));
+                    }
                 }
                 in_txn = false;
-            } else if in_txn && is_ddl(stmt) {
-                ddl_count += 1;
+            } else if in_txn {
+                if is_ddl(stmt) {
+                    ddl_count += 1;
+                } else if is_dml(stmt) {
+                    dml_count += 1;
+                }
             }
         }
     }
 }
 
-/// Fix pass: split transaction blocks containing multiple DDL statements so
-/// each DDL gets its own BEGIN/COMMIT wrapper.
+/// Fix pass: split transaction blocks that DSQL would reject — either >1
+/// DDL statement, or a mix of DDL and DML. Each DDL ends up in its own
+/// BEGIN/COMMIT wrapper; runs of non-DDL statements are bundled into their
+/// own block.
 fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<Diagnostic>) {
     let dialect = PostgreSqlDialect {};
 
@@ -307,6 +463,7 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
         let begin_idx = i;
         let begin_line = parts[begin_idx].0;
         let mut ddl_indices = Vec::new();
+        let mut dml_count = 0;
         let mut commit_idx = None;
 
         let mut nested_begin_indices = Vec::new();
@@ -338,6 +495,8 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
                 nested_begin_indices.push(j);
             } else if p.iter().any(is_ddl) {
                 ddl_indices.push(j);
+            } else if p.iter().any(is_dml) {
+                dml_count += 1;
             }
         }
 
@@ -349,12 +508,13 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
             }
         };
 
-        if ddl_indices.len() <= 1 {
+        let ddl_count = ddl_indices.len();
+        let needs_split = ddl_count > 1 || (ddl_count >= 1 && dml_count >= 1);
+        if !needs_split {
             i = commit_idx + 1;
             continue;
         }
 
-        let ddl_count = ddl_indices.len();
         let begin_text = parts[begin_idx].1.clone();
 
         let mut replacement: Vec<(usize, String)> = Vec::new();
@@ -391,20 +551,38 @@ fn fix_ddl_transactions(parts: &mut Vec<(usize, String)>, diagnostics: &mut Vec<
         let range_len = commit_idx - begin_idx + 1;
         parts.splice(begin_idx..begin_idx + range_len, replacement);
 
-        diagnostics.push(multi_ddl_txn_diagnostic(
-            begin_line,
-            ddl_count,
-            &begin_text,
-            FixResult::FixedWithWarning(
-                "Split multi-DDL transaction into individual BEGIN/COMMIT blocks".to_string(),
-            ),
-        ));
+        if ddl_count > 1 {
+            diagnostics.push(multi_ddl_txn_diagnostic(
+                begin_line,
+                ddl_count,
+                &begin_text,
+                FixResult::FixedWithWarning(
+                    "Split multi-DDL transaction into individual BEGIN/COMMIT blocks; atomicity guarantee LOST — if a later statement fails after fix, earlier statements remain committed. Review carefully before applying.".to_string(),
+                ),
+            ));
+        }
+        if ddl_count >= 1 && dml_count >= 1 {
+            diagnostics.push(mixed_ddl_dml_txn_diagnostic(
+                begin_line,
+                ddl_count,
+                dml_count,
+                &begin_text,
+                FixResult::FixedWithWarning(
+                    "Split mixed DDL+DML transaction; atomicity guarantee LOST — if a later statement fails after fix, earlier statements remain committed. Review carefully before applying.".to_string(),
+                ),
+            ));
+        }
 
         i = begin_idx + replacement_len;
     }
 }
 
-/// Rules take `&mut` and may mutate the AST — kept intentionally so each rule is a single code path for both lint and fix, avoiding duplicated logic that can drift.
+/// Per-statement rules in `errors.rs` take `&mut Statement` and may
+/// mutate the AST — one code path for both lint and fix, so the two
+/// modes can't drift. Multi-statement idiom rules (`serial_idiom`,
+/// `constraint_collapse`) expose paired `check_*` / `fix_*` entry
+/// points instead, since their fix mode rewrites and removes parts
+/// rather than mutating a single AST.
 pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
     let dialect = PostgreSqlDialect {};
     let mut diagnostics = Vec::new();
@@ -423,6 +601,18 @@ pub fn lint_sql(sql: &str) -> Vec<Diagnostic> {
             return diagnostics;
         }
     };
+
+    // Pre-passes: surface multi-statement idioms (SERIAL expansion,
+    // standalone PK/UNIQUE ALTERs) as a single high-level diagnostic.
+    // The per-statement loop still runs (this is lint, not fix), so
+    // the lower-level Unfixable rules also fire alongside.
+    rules::serial_idiom::check_serial_idioms(&stmts, &mut diagnostics);
+    rules::constraint_collapse::check_alter_add_unique(&stmts, &mut diagnostics);
+    rules::constraint_collapse::check_alter_add_primary_key(&stmts, &mut diagnostics);
+    rules::identity_idiom::check_identity_alter_targets(&stmts, &mut diagnostics);
+    rules::identity_idiom::check_identity_adds(&stmts, &mut diagnostics);
+    rules::identity_idiom::check_set_compression(&stmts, &mut diagnostics);
+    rules::errors::check_primary_key_removals(&stmts, &mut diagnostics);
 
     for (line_num, stmt_text) in &stmts {
         if stmt_text.trim().is_empty() {
@@ -469,27 +659,45 @@ pub struct FixOutput {
 }
 
 pub fn fix_sql(sql: &str) -> FixOutput {
+    let stmts = match split_statements(sql) {
+        Ok(s) => s,
+        Err(e) => {
+            return FixOutput {
+                sql: sql.to_string(),
+                diagnostics: vec![Diagnostic {
+                    rule: LintRule::ParseError,
+                    line: 1,
+                    statement: String::new(),
+                    message: format!("Failed to tokenize SQL: {e}"),
+                    suggestion: "Fix the SQL syntax and try again.".to_string(),
+                    fix_result: FixResult::Unfixable,
+                }],
+            };
+        }
+    };
+    fix_statements(stmts)
+}
+
+/// The DSQL-compatibility gate, entered from already-split `(line, text)`
+/// statements. `fix_sql_mysql` calls this directly with source line numbers, so
+/// gate diagnostics need no remap. Each statement parses independently, so one
+/// unparseable statement can't disable the gate for the rest.
+pub(crate) fn fix_statements(mut stmts: Vec<(usize, String)>) -> FixOutput {
     let dialect = PostgreSqlDialect {};
     let mut all_diagnostics = Vec::new();
     let mut fixed_parts: Vec<(usize, String)> = Vec::new();
 
-    let stmts = match split_statements(sql) {
-        Ok(s) => s,
-        Err(e) => {
-            all_diagnostics.push(Diagnostic {
-                rule: LintRule::ParseError,
-                line: 1,
-                statement: String::new(),
-                message: format!("Failed to tokenize SQL: {e}"),
-                suggestion: "Fix the SQL syntax and try again.".to_string(),
-                fix_result: FixResult::Unfixable,
-            });
-            return FixOutput {
-                sql: sql.to_string(),
-                diagnostics: all_diagnostics,
-            };
-        }
-    };
+    // Pre-passes: collapse multi-statement idioms BEFORE the per-statement
+    // loop, so the loop never emits Unfixable diagnostics on statements
+    // we just folded away (or ParseError on the unparseable
+    // `ALTER SEQUENCE ... OWNED BY` line that the SERIAL idiom drops).
+    rules::serial_idiom::fix_serial_idioms(&mut stmts, &mut all_diagnostics);
+    rules::constraint_collapse::fix_alter_add_unique(&mut stmts, &mut all_diagnostics);
+    rules::constraint_collapse::fix_alter_add_primary_key(&mut stmts, &mut all_diagnostics);
+    rules::identity_idiom::check_identity_alter_targets(&stmts, &mut all_diagnostics);
+    rules::identity_idiom::fix_identity_adds(&mut stmts, &mut all_diagnostics);
+    rules::identity_idiom::fix_set_compression(&mut stmts, &mut all_diagnostics);
+    rules::errors::check_primary_key_removals(&stmts, &mut all_diagnostics);
 
     for (line_num, stmt_text) in &stmts {
         if stmt_text.trim().is_empty() {
@@ -587,6 +795,123 @@ mod tests {
     }
 
     #[test]
+    fn test_supported_alter_constraint_parses() {
+        let supported = [
+            "ALTER TABLE child ALTER CONSTRAINT child_parent_fkey DEFERRABLE;",
+            "ALTER TABLE child ALTER CONSTRAINT child_parent_fkey NOT DEFERRABLE;",
+            "ALTER TABLE child ALTER CONSTRAINT child_parent_fkey DEFERRABLE INITIALLY DEFERRED;",
+            "ALTER TABLE ONLY public.child ALTER CONSTRAINT child_parent_fkey DEFERRABLE INITIALLY IMMEDIATE;",
+            "ALTER TABLE IF EXISTS ONLY public.child * ALTER CONSTRAINT child_parent_fkey INITIALLY DEFERRED;",
+            "ALTER TABLE child ALTER CONSTRAINT child_parent_fkey NOT DEFERRABLE INITIALLY IMMEDIATE;",
+        ];
+
+        for sql in supported {
+            assert!(lint_sql(sql).is_empty(), "expected supported SQL: {sql}");
+            let fixed = fix_sql(sql);
+            assert!(
+                fixed.diagnostics.is_empty(),
+                "expected no fix diagnostics for: {sql}"
+            );
+            assert_eq!(fixed.sql, format!("{sql}\n"));
+        }
+    }
+
+    #[test]
+    fn test_invalid_alter_constraint_still_reports_parse_error() {
+        for sql in [
+            "ALTER TABLE child ALTER CONSTRAINT child_parent_fkey SOMETIMES DEFERRED;",
+            "ALTER TABLE child ALTER CONSTRAINT child_parent_fkey ENFORCED;",
+        ] {
+            let diags = lint_sql(sql);
+            assert!(
+                diags
+                    .iter()
+                    .any(|diag| matches!(diag.rule, LintRule::ParseError)),
+                "invalid deferrability combination must not parse: {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_fk_set_action_column_lists_parse() {
+        let supported = [
+            "CREATE TABLE parent (a INT, b INT, PRIMARY KEY (a, b)); CREATE TABLE child (a INT, b INT, FOREIGN KEY (a, b) REFERENCES parent (a, b) ON DELETE SET NULL (b));",
+            "CREATE TABLE parent (a INT, b INT, PRIMARY KEY (a, b)); CREATE TABLE child (a INT DEFAULT 1, b INT DEFAULT 2, FOREIGN KEY (a, b) REFERENCES parent (a, b) ON DELETE SET DEFAULT (b));",
+        ];
+
+        for sql in supported {
+            assert!(
+                !lint_sql(sql)
+                    .iter()
+                    .any(|diag| matches!(diag.rule, LintRule::ParseError)),
+                "expected supported SQL: {sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_fk_set_action_column_list_preserved_when_fixing_alter() {
+        let sql = "ALTER TABLE child ADD CONSTRAINT child_parent_fk FOREIGN KEY (a, b) REFERENCES parent (a, b) ON DELETE SET DEFAULT (b), ADD COLUMN note TEXT;";
+        let fixed = fix_sql(sql);
+        assert!(
+            fixed
+                .sql
+                .contains("ON DELETE SET DEFAULT (b) NOT VALID, ADD COLUMN note TEXT"),
+            "unexpected fixed SQL: {}",
+            fixed.sql
+        );
+        assert!(
+            lint_sql(&fixed.sql).is_empty(),
+            "{:?}",
+            lint_sql(&fixed.sql)
+        );
+    }
+
+    #[test]
+    fn test_supported_set_constraints_parse() {
+        let supported = [
+            "SET CONSTRAINTS ALL DEFERRED;",
+            "SET CONSTRAINTS fk_ref IMMEDIATE;",
+            "SET CONSTRAINTS public.fk_ref, \"MixedCase\" DEFERRED;",
+        ];
+
+        for sql in supported {
+            assert!(lint_sql(sql).is_empty(), "expected supported SQL: {sql}");
+            let fixed = fix_sql(sql);
+            assert!(
+                fixed.diagnostics.is_empty(),
+                "expected no fix diagnostics for: {sql}"
+            );
+            assert_eq!(fixed.sql, format!("{sql}\n"));
+        }
+    }
+
+    #[test]
+    fn test_invalid_set_constraints_still_reports_parse_error() {
+        let sql = "SET CONSTRAINTS ALL EVENTUALLY;";
+        let diags = lint_sql(sql);
+        assert!(
+            diags
+                .iter()
+                .any(|diag| matches!(diag.rule, LintRule::ParseError)),
+            "invalid constraint mode must not bypass parsing: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn test_pgdump_create_sequence_parses() {
+        // pg_dump emits CREATE SEQUENCE option clauses in an order the parser
+        // must accept regardless of permutation; this pins that contract.
+        let sql = "CREATE SEQUENCE public.t_id_seq AS integer \
+                   START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;";
+        let diags = lint_sql(sql);
+        assert!(
+            !diags.iter().any(|d| matches!(d.rule, LintRule::ParseError)),
+            "pg_dump CREATE SEQUENCE must parse without errors, got: {diags:?}"
+        );
+    }
+
+    #[test]
     fn test_split_preserves_newlines() {
         let sql = "CREATE TABLE t (\n    id INT\n);\nSELECT 1;";
         let stmts = split_statements(sql).unwrap();
@@ -615,6 +940,399 @@ mod tests {
         assert_eq!(
             result.sql.trim(),
             sql.trim_end_matches(';').trim().to_owned() + ";"
+        );
+    }
+
+    /// pg_dump's full 4-statement SERIAL expansion must collapse into a single
+    /// CREATE TABLE with an inline identity column. The CREATE SEQUENCE,
+    /// ALTER SEQUENCE OWNED BY, and ALTER COLUMN SET DEFAULT statements must
+    /// all disappear; non-SERIAL columns and their NOT NULL stay; no
+    /// ParseError is emitted (the OWNED BY line is removed before parsing it
+    /// would matter); exactly one SerialSequenceIdiom diagnostic surfaces.
+    #[test]
+    fn test_fix_sql_collapses_pgdump_serial_idiom() {
+        let sql = "\
+CREATE TABLE public.t (id integer NOT NULL, x text NOT NULL);
+CREATE SEQUENCE public.t_id_seq AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+ALTER SEQUENCE public.t_id_seq OWNED BY public.t.id;
+ALTER TABLE ONLY public.t ALTER COLUMN id SET DEFAULT nextval('public.t_id_seq'::regclass);
+";
+        let result = fix_sql(sql);
+        let out = &result.sql;
+
+        let upper = out.to_uppercase();
+        assert!(
+            upper.contains("BIGINT") && upper.contains("GENERATED BY DEFAULT AS IDENTITY"),
+            "expected inline identity column, got:\n{out}"
+        );
+        assert!(
+            upper.contains("CACHE 1"),
+            "expected CACHE 1 in identity options, got:\n{out}"
+        );
+        assert!(
+            !out.to_lowercase().contains("nextval"),
+            "nextval should be gone, got:\n{out}"
+        );
+        assert!(
+            !out.to_uppercase().contains("CREATE SEQUENCE"),
+            "CREATE SEQUENCE should be gone, got:\n{out}"
+        );
+        assert!(
+            !out.to_uppercase().contains("ALTER SEQUENCE"),
+            "ALTER SEQUENCE OWNED BY should be gone, got:\n{out}"
+        );
+        assert!(
+            !out.to_uppercase().contains("SET DEFAULT"),
+            "SET DEFAULT should be gone, got:\n{out}"
+        );
+        // Non-SERIAL column and its NOT NULL must survive.
+        assert!(
+            out.contains("x text") || out.to_uppercase().contains("X TEXT"),
+            "non-SERIAL column `x text` should be preserved, got:\n{out}"
+        );
+        assert_eq!(
+            out.matches("NOT NULL").count(),
+            2,
+            "exactly 2 NOT NULLs should be preserved (id + x), got:\n{out}"
+        );
+
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.rule, LintRule::ParseError)),
+            "no ParseError should remain after collapse, got: {:?}",
+            result.diagnostics
+        );
+
+        let idiom_diags: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.rule, LintRule::SerialSequenceIdiom))
+            .collect();
+        assert_eq!(
+            idiom_diags.len(),
+            1,
+            "expected exactly 1 SerialSequenceIdiom diagnostic, got: {:?}",
+            result.diagnostics
+        );
+    }
+
+    /// A free-standing CREATE SEQUENCE (no matching SET DEFAULT) is NOT a
+    /// SERIAL idiom — leaving it alone is correct, even if other rules flag
+    /// it for missing CACHE etc. Verifies we don't over-collapse.
+    #[test]
+    fn test_fix_sql_does_not_collapse_freestanding_sequence() {
+        let sql = "\
+CREATE TABLE public.t (id integer NOT NULL, x text);
+CREATE SEQUENCE public.t_id_seq AS integer START WITH 1 INCREMENT BY 1 CACHE 1;
+";
+        let result = fix_sql(sql);
+        let out = &result.sql;
+
+        assert!(
+            out.to_uppercase().contains("CREATE SEQUENCE"),
+            "free-standing CREATE SEQUENCE should be kept, got:\n{out}"
+        );
+        assert!(
+            !out.contains("GENERATED BY DEFAULT AS IDENTITY"),
+            "id column must NOT become identity without a SET DEFAULT, got:\n{out}"
+        );
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.rule, LintRule::SerialSequenceIdiom)),
+            "no SerialSequenceIdiom diagnostic should fire, got: {:?}",
+            result.diagnostics
+        );
+    }
+
+    /// Two independent SERIAL idioms in the same dump must each collapse
+    /// independently. After fixing, each table has its own inline identity
+    /// and there are exactly two SerialSequenceIdiom diagnostics.
+    #[test]
+    fn test_fix_sql_collapses_two_serial_idioms() {
+        let sql = "\
+CREATE TABLE public.a (id integer NOT NULL);
+CREATE SEQUENCE public.a_id_seq AS integer START WITH 1 INCREMENT BY 1 CACHE 1;
+ALTER SEQUENCE public.a_id_seq OWNED BY public.a.id;
+ALTER TABLE ONLY public.a ALTER COLUMN id SET DEFAULT nextval('public.a_id_seq'::regclass);
+CREATE TABLE public.b (id integer NOT NULL);
+CREATE SEQUENCE public.b_id_seq AS integer START WITH 1 INCREMENT BY 1 CACHE 1;
+ALTER SEQUENCE public.b_id_seq OWNED BY public.b.id;
+ALTER TABLE ONLY public.b ALTER COLUMN id SET DEFAULT nextval('public.b_id_seq'::regclass);
+";
+        let result = fix_sql(sql);
+        let out = &result.sql;
+
+        let upper = out.to_uppercase();
+        assert_eq!(
+            upper.matches("GENERATED BY DEFAULT AS IDENTITY").count(),
+            2,
+            "expected 2 inline identity columns, got:\n{out}"
+        );
+        assert_eq!(
+            upper.matches("BIGINT").count(),
+            2,
+            "expected 2 BIGINT columns, got:\n{out}"
+        );
+        assert!(
+            !out.to_lowercase().contains("nextval"),
+            "no nextval should remain, got:\n{out}"
+        );
+        assert!(
+            !out.to_uppercase().contains("CREATE SEQUENCE"),
+            "no CREATE SEQUENCE should remain, got:\n{out}"
+        );
+        assert!(
+            !out.to_uppercase().contains("ALTER SEQUENCE"),
+            "no ALTER SEQUENCE should remain, got:\n{out}"
+        );
+
+        let idiom_diags = result
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.rule, LintRule::SerialSequenceIdiom))
+            .count();
+        assert_eq!(idiom_diags, 2, "expected 2 SerialSequenceIdiom diagnostics");
+    }
+
+    /// `bigserial` expands to the same 4-statement idiom as `SERIAL`, but the
+    /// CREATE TABLE column is `bigint NOT NULL` instead of `integer NOT NULL`.
+    /// The collapse must still apply: the column becomes
+    /// `BIGINT GENERATED BY DEFAULT AS IDENTITY (CACHE 1)`, and the
+    /// CREATE SEQUENCE / OWNED BY / SET DEFAULT all disappear.
+    #[test]
+    fn test_fix_sql_collapses_bigserial_idiom() {
+        let sql = "\
+CREATE TABLE public.t (id bigint NOT NULL, x text);
+CREATE SEQUENCE public.t_id_seq START WITH 1 INCREMENT BY 1 CACHE 1;
+ALTER SEQUENCE public.t_id_seq OWNED BY public.t.id;
+ALTER TABLE ONLY public.t ALTER COLUMN id SET DEFAULT nextval('public.t_id_seq'::regclass);
+";
+        let result = fix_sql(sql);
+        let upper = result.sql.to_uppercase();
+        assert!(
+            upper.contains("BIGINT") && upper.contains("GENERATED BY DEFAULT AS IDENTITY"),
+            "bigserial expansion should collapse to inline identity, got:\n{}",
+            result.sql
+        );
+        assert!(!upper.contains("CREATE SEQUENCE"));
+        assert!(!upper.contains("ALTER SEQUENCE"));
+        assert!(!upper.contains("NEXTVAL"));
+        assert_eq!(
+            result
+                .diagnostics
+                .iter()
+                .filter(|d| matches!(d.rule, LintRule::SerialSequenceIdiom))
+                .count(),
+            1
+        );
+    }
+
+    /// A `SET DEFAULT nextval('external_seq')` whose CREATE SEQUENCE isn't in
+    /// the input must NOT be collapsed into the CREATE TABLE (no matching
+    /// sequence to fold), and the `nextval` default must be preserved verbatim.
+    #[test]
+    fn test_fix_sql_preserves_cross_file_sequence_default() {
+        let sql = "\
+CREATE TABLE public.t (id integer NOT NULL, x text);
+ALTER TABLE ONLY public.t ALTER COLUMN id SET DEFAULT nextval('public.external_seq'::regclass);
+";
+        let result = fix_sql(sql);
+
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.rule, LintRule::SerialSequenceIdiom)),
+            "no SerialSequenceIdiom should fire without a matching CREATE SEQUENCE, got: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            result.sql.to_lowercase().contains("nextval"),
+            "cross-file SET DEFAULT must NOT be silently dropped, got:\n{}",
+            result.sql
+        );
+    }
+
+    /// A column already declared as `GENERATED BY DEFAULT AS IDENTITY` is not
+    /// part of any SERIAL idiom and must pass through unchanged. Guards against
+    /// the collapse pre-pass touching columns that already comply.
+    #[test]
+    fn test_fix_sql_leaves_inline_identity_alone() {
+        let sql =
+            "CREATE TABLE public.t (id BIGINT GENERATED BY DEFAULT AS IDENTITY (CACHE 1) NOT NULL, x text);";
+        let result = fix_sql(sql);
+
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.rule, LintRule::SerialSequenceIdiom)),
+            "no SerialSequenceIdiom diagnostic for already-inline identity, got: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            result.sql.contains("GENERATED BY DEFAULT AS IDENTITY"),
+            "identity declaration should round-trip, got:\n{}",
+            result.sql
+        );
+    }
+
+    /// Quoted, mixed-case identifiers: pg_dump emits the SERIAL idiom verbatim
+    /// for tables/columns whose names aren't lowercase-folded. The collapse must
+    /// still match (sequence-name normalization strips quotes from the
+    /// `nextval` literal so it agrees with the AST-derived identifier).
+    #[test]
+    fn test_fix_sql_collapses_idiom_with_quoted_mixed_case_identifiers() {
+        let sql = "\
+CREATE TABLE public.\"T\" (\"Id\" integer NOT NULL, x text);
+CREATE SEQUENCE public.\"T_Id_seq\" AS integer START WITH 1 INCREMENT BY 1 CACHE 1;
+ALTER SEQUENCE public.\"T_Id_seq\" OWNED BY public.\"T\".\"Id\";
+ALTER TABLE ONLY public.\"T\" ALTER COLUMN \"Id\" SET DEFAULT nextval('public.\"T_Id_seq\"'::regclass);
+";
+        let result = fix_sql(sql);
+        let upper = result.sql.to_uppercase();
+        assert!(
+            upper.contains("BIGINT") && upper.contains("GENERATED BY DEFAULT AS IDENTITY"),
+            "quoted mixed-case idiom must collapse to inline identity, got:\n{}",
+            result.sql
+        );
+        assert!(
+            !upper.contains("CREATE SEQUENCE"),
+            "CREATE SEQUENCE for quoted name should be gone, got:\n{}",
+            result.sql
+        );
+        assert!(
+            !upper.contains("ALTER SEQUENCE"),
+            "ALTER SEQUENCE OWNED BY for quoted name should be gone, got:\n{}",
+            result.sql
+        );
+        assert!(
+            !result.sql.to_lowercase().contains("nextval"),
+            "nextval should be gone, got:\n{}",
+            result.sql
+        );
+        assert_eq!(
+            result
+                .diagnostics
+                .iter()
+                .filter(|d| matches!(d.rule, LintRule::SerialSequenceIdiom))
+                .count(),
+            1
+        );
+    }
+
+    /// Multi-op ALTER TABLE bundling SET DEFAULT with sibling operations (here:
+    /// ADD CONSTRAINT … PRIMARY KEY) must NOT be collapsed into the SERIAL
+    /// idiom, and the unrelated PRIMARY KEY must survive untouched.
+    #[test]
+    fn test_fix_sql_serial_idiom_preserves_unrelated_alter_ops() {
+        let sql = "\
+CREATE TABLE public.t (id integer NOT NULL, x text);
+CREATE SEQUENCE public.t_id_seq CACHE 1;
+ALTER TABLE ONLY public.t \
+ALTER COLUMN id SET DEFAULT nextval('public.t_id_seq'::regclass), \
+ADD CONSTRAINT t_pkey PRIMARY KEY (id);
+";
+        let result = fix_sql(sql);
+
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.rule, LintRule::SerialSequenceIdiom)),
+            "no SerialSequenceIdiom should fire when SET DEFAULT shares an ALTER \
+             TABLE with other operations, got: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            result.sql.to_uppercase().contains("PRIMARY KEY"),
+            "the unrelated ADD CONSTRAINT t_pkey PRIMARY KEY must survive, got:\n{}",
+            result.sql
+        );
+    }
+
+    /// A column already declared `GENERATED ALWAYS AS IDENTITY` plus an erroneous
+    /// pg_dump-shaped SET DEFAULT trio: collapse must NOT produce a CREATE TABLE
+    /// with two `GENERATED ... AS IDENTITY` clauses (which is invalid SQL). The
+    /// existing identity option is replaced by the canonical
+    /// `GENERATED BY DEFAULT AS IDENTITY (CACHE 1)` shape.
+    #[test]
+    fn test_fix_sql_serial_idiom_does_not_double_identity() {
+        let sql = "\
+CREATE TABLE public.t (id BIGINT GENERATED ALWAYS AS IDENTITY (CACHE 1) NOT NULL, x text);
+CREATE SEQUENCE public.t_id_seq CACHE 1;
+ALTER SEQUENCE public.t_id_seq OWNED BY public.t.id;
+ALTER TABLE ONLY public.t ALTER COLUMN id SET DEFAULT nextval('public.t_id_seq'::regclass);
+";
+        let result = fix_sql(sql);
+        let upper = result.sql.to_uppercase();
+        assert_eq!(
+            upper.matches("GENERATED").count(),
+            1,
+            "exactly one identity clause must remain, got:\n{}",
+            result.sql
+        );
+        assert!(
+            upper.contains("GENERATED BY DEFAULT AS IDENTITY"),
+            "the surviving identity must be the canonical BY DEFAULT shape, got:\n{}",
+            result.sql
+        );
+    }
+
+    /// Inline-`PRIMARY KEY` column option must survive the SERIAL→identity
+    /// rewrite (only DEFAULT and existing identity options are dropped).
+    #[test]
+    fn test_fix_sql_serial_idiom_preserves_primary_key_option() {
+        let sql = "\
+CREATE TABLE public.t (id integer NOT NULL PRIMARY KEY, x text);
+CREATE SEQUENCE public.t_id_seq CACHE 1;
+ALTER SEQUENCE public.t_id_seq OWNED BY public.t.id;
+ALTER TABLE ONLY public.t ALTER COLUMN id SET DEFAULT nextval('public.t_id_seq'::regclass);
+";
+        let result = fix_sql(sql);
+        let upper = result.sql.to_uppercase();
+        assert!(
+            upper.contains("PRIMARY KEY"),
+            "PRIMARY KEY column option must survive, got:\n{}",
+            result.sql
+        );
+        assert!(
+            upper.contains("GENERATED BY DEFAULT AS IDENTITY"),
+            "the column must still become an identity, got:\n{}",
+            result.sql
+        );
+    }
+
+    /// The `FixedWithWarning` warning text is the entire reason this rule
+    /// emits a warning instead of a plain `Fixed` — it tells the user the
+    /// identity counter was NOT advanced past existing data, so backfill needs
+    /// a manual reset. Pin the substring so a future refactor can't silently
+    /// reword the warning into something less actionable.
+    #[test]
+    fn test_fix_sql_serial_idiom_warning_mentions_counter_reset() {
+        let sql = "\
+CREATE TABLE public.t (id integer NOT NULL);
+CREATE SEQUENCE public.t_id_seq CACHE 1;
+ALTER SEQUENCE public.t_id_seq OWNED BY public.t.id;
+ALTER TABLE ONLY public.t ALTER COLUMN id SET DEFAULT nextval('public.t_id_seq'::regclass);
+";
+        let result = fix_sql(sql);
+        let warning = result
+            .diagnostics
+            .iter()
+            .find_map(|d| match (&d.rule, &d.fix_result) {
+                (LintRule::SerialSequenceIdiom, FixResult::FixedWithWarning(s)) => Some(s.clone()),
+                _ => None,
+            })
+            .expect("expected a SerialSequenceIdiom FixedWithWarning diagnostic");
+        let lower = warning.to_lowercase();
+        assert!(
+            lower.contains("counter") && lower.contains("reset"),
+            "warning must tell the user to reset the identity counter, got: {warning}"
         );
     }
 }

@@ -49,7 +49,9 @@ CREATE TABLE misc_types (
     col_boolean     BOOLEAN,
     col_bool        BOOL,
     col_bytea       BYTEA,
-    col_uuid        UUID
+    col_uuid        UUID,
+    col_json        JSON,
+    col_jsonb       JSONB
 );
 
 -- Identity columns (both flavors)

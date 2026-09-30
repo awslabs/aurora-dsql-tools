@@ -23,7 +23,8 @@ fn fix_clean_exits_0() {
 fn fix_all_fixed_no_warnings_exits_0() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("fixable.sql");
-    std::fs::write(&input, "CREATE INDEX idx ON t(col);").unwrap();
+    // Pure Tier-1 Fixed (no warning): a missing-CACHE sequence gets CACHE 1.
+    std::fs::write(&input, "CREATE SEQUENCE s;").unwrap();
 
     let status = dsql_lint_bin()
         .arg("--fix")
@@ -38,8 +39,8 @@ fn fix_all_fixed_no_warnings_exits_0() {
 fn fix_with_warnings_exits_3() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("warn.sql");
-    // FK removal produces FixedWithWarning
-    std::fs::write(&input, "CREATE TABLE t (id INT, cid INT REFERENCES c(id));").unwrap();
+    // Synchronous index creation becomes asynchronous.
+    std::fs::write(&input, "CREATE INDEX idx_t_id ON t(id);").unwrap();
 
     let status = dsql_lint_bin()
         .arg("--fix")
@@ -85,10 +86,10 @@ fn fix_unfixable_exits_1() {
 fn fix_mixed_unfixable_and_warning_exits_1() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("mixed.sql");
-    // FK removal (warning) + TRUNCATE (unfixable) — unfixable takes precedence
+    // Async index rewrite (warning) + TRUNCATE (unfixable) — unfixable takes precedence
     std::fs::write(
         &input,
-        "CREATE TABLE t (id INT, cid INT REFERENCES c(id));\nTRUNCATE TABLE foo;",
+        "CREATE INDEX idx_t_id ON t(id);\nTRUNCATE TABLE foo;",
     )
     .unwrap();
 
@@ -161,12 +162,12 @@ fn lint_text_labels_match_fix_result_variant() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("mixed.sql");
     // SERIAL → FixedWithWarning (WARNING)
-    // CREATE INDEX without ASYNC → Fixed (INFO)
+    // COLLATE "C" → Fixed (INFO)
     // TRUNCATE → Unfixable (ERROR)
     std::fs::write(
         &input,
         "CREATE TABLE t (id SERIAL PRIMARY KEY);\n\
-         CREATE INDEX idx ON t(id);\n\
+         CREATE TABLE u (name VARCHAR(100) COLLATE \"C\");\n\
          TRUNCATE TABLE t;",
     )
     .unwrap();
@@ -190,13 +191,13 @@ fn lint_text_labels_match_fix_result_variant() {
 
 #[test]
 fn lint_mode_exits_1_on_fixed_only_diagnostics() {
-    // Regression: CREATE INDEX without ASYNC produces a diagnostic with
+    // Regression: a missing-CACHE CREATE SEQUENCE produces a diagnostic with
     // fix_result = Fixed. The harmonized summary split counts it under
     // neither errors nor warnings, but lint mode must still exit 1 — the
     // input is not DSQL-compatible as written.
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("fixable.sql");
-    std::fs::write(&input, "CREATE INDEX idx ON t(col);").unwrap();
+    std::fs::write(&input, "CREATE SEQUENCE s;").unwrap();
 
     let status = dsql_lint_bin()
         .arg(input.to_str().unwrap())

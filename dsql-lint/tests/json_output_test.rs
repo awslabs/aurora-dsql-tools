@@ -126,7 +126,8 @@ fn json_lint_multiline_preview_collapsed() {
 fn json_fix_mode_file_has_output_file() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("fix.sql");
-    std::fs::write(&input, "CREATE INDEX idx ON t(col);").unwrap();
+    // Tier-1 Fixed (no warning) so --fix exits 0.
+    std::fs::write(&input, "CREATE SEQUENCE s;").unwrap();
 
     let output = dsql_lint_bin()
         .arg("--fix")
@@ -414,11 +415,11 @@ fn json_fix_summary_buckets_are_disjoint() {
     // equals the diagnostic total.
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("mixed.sql");
-    // Fixed: CREATE INDEX → ASYNC. FixedWithWarning: SERIAL → IDENTITY.
+    // Fixed: COLLATE "C" → dropped. FixedWithWarning: SERIAL → IDENTITY.
     // Unfixable: TRUNCATE.
     std::fs::write(
         &input,
-        "CREATE INDEX idx ON t(col);\n\
+        "CREATE TABLE c (name VARCHAR(100) COLLATE \"C\");\n\
          CREATE TABLE t (id SERIAL PRIMARY KEY);\n\
          TRUNCATE TABLE foo;",
     )

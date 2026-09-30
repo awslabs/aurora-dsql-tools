@@ -8,22 +8,48 @@
 //! CI runs them via `RUSTFLAGS='--cfg dsql_cluster'` with `DSQL_ENDPOINT` set.
 //!
 //! To run locally:
-//!   DSQL_ENDPOINT=<host> RUSTFLAGS='--cfg dsql_cluster' cargo test -- --test-threads=1
+//!   DSQL_ENDPOINT=<host> RUSTFLAGS='--cfg dsql_cluster' cargo test
 //!
 //! Prerequisites: `aws` CLI and `psql` in PATH, valid AWS credentials.
+//!
+//! ## Isolation model
+//!
+//! Each `#[test]` owns a per-test DSQL schema, created in `ClusterScope::new`
+//! and dropped in `Drop`. All SQL routes through that schema via
+//! `PGOPTIONS=-c search_path=…`, so unqualified table names like `_clust_base`
+//! resolve to the test's own schema. CI runs the tests serially because DDL
+//! catalog versions remain cluster-wide even when schemas are isolated.
+//!
+//! OC001 (schema-version conflict) is *not* schema-scoped per DSQL docs: any
+//! catalog mutation anywhere bumps the cluster-wide catalog version. The
+//! `with_oc001_retry` helper absorbs these for single-statement operations.
+//! Multi-statement files cannot be retried in place (partial state from a
+//! half-applied file would re-fail with "already exists"); callers wrap
+//! `exec_file_once` in their own loop with `cx.reset()` between attempts.
 #![cfg(dsql_cluster)]
 
 mod common;
 
 use std::process::Command;
+use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 
-use dsql_lint::{fix_sql, LintRule};
+use dsql_lint::{fix_sql, fix_sql_mysql, lint_sql, FixResult, LintRule};
 use strum::IntoEnumIterator;
 
-const MAX_RETRIES: usize = 5;
-const RETRY_BASE_MS: u64 = 2000;
+// Keep retries for transient cluster-wide catalog conflicts even though CI
+// serializes this test binary.
+const OC001_MAX_RETRIES: usize = 12;
+const OC001_BASE_DELAY_MS: u64 = 300;
+// Per-fixture retry cap for the multi-DDL fix path in
+// `lint_rule_fixtures_validated_on_cluster`. Each retry resets the schema and
+// re-runs setup, so the worst-case wall time per fixture grows linearly.
+const FIXTURE_FIX_PATH_MAX_RETRIES: usize = 5;
+// Token lifetime in seconds requested from `aws dsql generate-db-connect-admin-auth-token`.
+// The CLI default is 900s (15 min); the parallelized cluster suite can outrun
+// that, so request a 1h token and reuse it via `cluster_creds()`.
+const TOKEN_EXPIRY_SECS: &str = "3600";
 
 fn endpoint() -> String {
     std::env::var("DSQL_ENDPOINT").expect("DSQL_ENDPOINT must be set to a DSQL cluster hostname")
@@ -31,6 +57,20 @@ fn endpoint() -> String {
 
 fn region() -> String {
     std::env::var("DSQL_REGION").unwrap_or_else(|_| "us-east-1".to_string())
+}
+
+/// Returns `(endpoint, token)` cached across all tests in this binary so we
+/// don't pay the AWS-CLI roundtrip per `#[test]`.
+fn cluster_creds() -> (String, String) {
+    static CREDS: OnceLock<(String, String)> = OnceLock::new();
+    CREDS
+        .get_or_init(|| {
+            let ep = endpoint();
+            let region = region();
+            let token = generate_token(&ep, &region);
+            (ep, token)
+        })
+        .clone()
 }
 
 fn generate_token(endpoint: &str, region: &str) -> String {
@@ -42,6 +82,8 @@ fn generate_token(endpoint: &str, region: &str) -> String {
             endpoint,
             "--region",
             region,
+            "--expires-in",
+            TOKEN_EXPIRY_SECS,
         ])
         .output()
         .expect("failed to run `aws` CLI");
@@ -53,19 +95,41 @@ fn generate_token(endpoint: &str, region: &str) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
-fn psql_cmd(endpoint: &str, token: &str) -> Command {
+/// Runs `op` and retries on OC001 with linear backoff (300ms × attempt).
+/// All other errors propagate immediately. The final OC001 returns the error
+/// to the caller rather than retrying again.
+fn with_oc001_retry<F, T>(mut op: F) -> Result<T, String>
+where
+    F: FnMut() -> Result<T, String>,
+{
+    for attempt in 0..OC001_MAX_RETRIES {
+        match op() {
+            Ok(v) => return Ok(v),
+            Err(e) if e.contains("OC001") && attempt < OC001_MAX_RETRIES - 1 => {
+                thread::sleep(Duration::from_millis(
+                    OC001_BASE_DELAY_MS * (attempt as u64 + 1),
+                ));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("loop returns on every iteration when attempts > 0")
+}
+
+fn psql_cmd(endpoint: &str, token: &str, schema: &str) -> Command {
     let mut cmd = Command::new("psql");
     cmd.env("PGHOST", endpoint)
         .env("PGPORT", "5432")
         .env("PGUSER", "admin")
         .env("PGPASSWORD", token)
         .env("PGDATABASE", "postgres")
-        .env("PGSSLMODE", "require");
+        .env("PGSSLMODE", "require")
+        .env("PGOPTIONS", format!("-c search_path={schema},public"));
     cmd
 }
 
-fn run_sql_once(endpoint: &str, token: &str, sql: &str) -> Result<String, String> {
-    let output = psql_cmd(endpoint, token)
+fn exec_one(endpoint: &str, token: &str, schema: &str, sql: &str) -> Result<String, String> {
+    let output = psql_cmd(endpoint, token, schema)
         .args(["-c", sql])
         .output()
         .expect("failed to run `psql`");
@@ -76,77 +140,152 @@ fn run_sql_once(endpoint: &str, token: &str, sql: &str) -> Result<String, String
     }
 }
 
-/// Run SQL with retries for DSQL OC001 (schema updated by another transaction).
-fn run_sql(endpoint: &str, token: &str, sql: &str) -> Result<String, String> {
-    for attempt in 0..MAX_RETRIES {
-        match run_sql_once(endpoint, token, sql) {
-            Ok(out) => return Ok(out),
-            Err(err) if err.contains("OC001") && attempt < MAX_RETRIES - 1 => {
-                thread::sleep(Duration::from_millis(RETRY_BASE_MS * (attempt as u64 + 1)));
-            }
-            Err(err) => return Err(err),
-        }
-    }
-    unreachable!()
-}
-
-fn run_sql_file(endpoint: &str, token: &str, sql: &str) -> Result<String, String> {
+fn exec_file(endpoint: &str, token: &str, schema: &str, sql: &str) -> Result<String, String> {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.sql");
     std::fs::write(&path, sql).unwrap();
-    for attempt in 0..MAX_RETRIES {
-        let output = psql_cmd(endpoint, token)
-            .args(["-f", path.to_str().unwrap()])
-            .output()
-            .expect("failed to run `psql`");
-        if output.status.success() {
-            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
-        }
-        let err = String::from_utf8_lossy(&output.stderr).to_string();
-        if err.contains("OC001") && attempt < MAX_RETRIES - 1 {
-            thread::sleep(Duration::from_millis(RETRY_BASE_MS * (attempt as u64 + 1)));
-            continue;
-        }
-        return Err(err);
+    // ON_ERROR_STOP=1 makes psql exit non-zero on the first SQL error;
+    // without it, multi-statement scripts always exit 0, causing
+    // false-positive "succeeded" verdicts for cluster validation.
+    let output = psql_cmd(endpoint, token, schema)
+        .args(["-v", "ON_ERROR_STOP=1", "-f", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run `psql`");
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
     }
-    unreachable!()
 }
 
-fn cleanup(endpoint: &str, token: &str, sql: &str) {
-    for attempt in 0..MAX_RETRIES {
-        match run_sql_once(endpoint, token, sql) {
-            Ok(_) => return,
-            Err(err) if err.contains("OC001") && attempt < MAX_RETRIES - 1 => {
-                thread::sleep(Duration::from_millis(RETRY_BASE_MS * (attempt as u64 + 1)));
+/// RAII handle for one test's isolated DSQL schema.
+struct ClusterScope {
+    ep: String,
+    token: String,
+    schema: String,
+}
+
+impl ClusterScope {
+    /// Creates a fresh per-test schema. Drops any leftover state from a
+    /// previously panicked run before recreating.
+    fn new(name: &str) -> Self {
+        let (ep, token) = cluster_creds();
+        let schema = format!("t_{name}");
+        let scope = Self { ep, token, schema };
+        with_oc001_retry(|| {
+            exec_one(
+                &scope.ep,
+                &scope.token,
+                "public",
+                &format!("DROP SCHEMA IF EXISTS {} CASCADE;", scope.schema),
+            )
+        })
+        .expect("ClusterScope: failed to drop pre-existing schema");
+        with_oc001_retry(|| {
+            exec_one(
+                &scope.ep,
+                &scope.token,
+                "public",
+                &format!("CREATE SCHEMA {};", scope.schema),
+            )
+        })
+        .expect("ClusterScope: failed to create schema");
+        scope
+    }
+
+    /// Drops and recreates the schema. Used for partial-state recovery in
+    /// the multi-DDL fix-path retry loop.
+    fn reset(&self) -> Result<(), String> {
+        with_oc001_retry(|| {
+            exec_one(
+                &self.ep,
+                &self.token,
+                "public",
+                &format!("DROP SCHEMA IF EXISTS {} CASCADE;", self.schema),
+            )
+        })?;
+        with_oc001_retry(|| {
+            exec_one(
+                &self.ep,
+                &self.token,
+                "public",
+                &format!("CREATE SCHEMA {};", self.schema),
+            )
+        })?;
+        Ok(())
+    }
+
+    /// Run a single SQL statement in this scope's schema. Retries on OC001.
+    fn exec(&self, sql: &str) -> Result<String, String> {
+        with_oc001_retry(|| exec_one(&self.ep, &self.token, &self.schema, sql))
+    }
+
+    /// Run a multi-statement file. **No automatic retry** — partial state
+    /// from a half-applied file would re-fail with "already exists" on retry.
+    /// Callers needing retry-with-recovery wrap this in their own loop and
+    /// call `reset()` between attempts.
+    fn exec_file_once(&self, sql: &str) -> Result<String, String> {
+        exec_file(&self.ep, &self.token, &self.schema, sql)
+    }
+
+    /// Run a multi-statement file with OC001 retries, applying `cleanup_sql`
+    /// between attempts to wipe partial state from a half-applied file.
+    fn exec_file_retry(&self, sql: &str, cleanup_sql: &str) -> Result<String, String> {
+        for attempt in 0..OC001_MAX_RETRIES {
+            match exec_file(&self.ep, &self.token, &self.schema, sql) {
+                Ok(v) => return Ok(v),
+                Err(e) if e.contains("OC001") && attempt < OC001_MAX_RETRIES - 1 => {
+                    thread::sleep(Duration::from_millis(
+                        OC001_BASE_DELAY_MS * (attempt as u64 + 1),
+                    ));
+                    if !cleanup_sql.is_empty() {
+                        run_cleanup_stmts(self, cleanup_sql);
+                    }
+                }
+                Err(e) => return Err(e),
             }
-            _ => return,
+        }
+        unreachable!("loop returns on every iteration when attempts > 0")
+    }
+
+    /// Execute SQL whose statement count isn't known at the call site.
+    /// `fix_sql` may turn a single-statement input into multi-statement output
+    /// (e.g. SERIAL fix splits into CREATE TABLE + companion DDL), so the
+    /// caller can't pick `exec` vs `exec_file_retry` upfront. Dispatches via
+    /// `;\n` substring — the same heuristic the original code used.
+    fn exec_auto(&self, sql: &str, cleanup_sql: &str) -> Result<String, String> {
+        if sql.contains(";\n") {
+            self.exec_file_retry(sql, cleanup_sql)
+        } else {
+            self.exec(sql)
         }
     }
 }
 
-fn run_cleanup_stmts(endpoint: &str, token: &str, cleanup_sql: &str) {
-    for stmt in cleanup_sql.split(';') {
-        let stmt = stmt.trim();
-        if !stmt.is_empty() {
-            cleanup(endpoint, token, &format!("{stmt};"));
+impl Drop for ClusterScope {
+    fn drop(&mut self) {
+        // Best-effort cleanup — cluster gets torn down after CI anyway. We
+        // log on failure so a flaky teardown is debuggable, but never panic
+        // (panicking from Drop during a panic aborts the process).
+        if let Err(err) = with_oc001_retry(|| {
+            exec_one(
+                &self.ep,
+                &self.token,
+                "public",
+                &format!("DROP SCHEMA IF EXISTS {} CASCADE;", self.schema),
+            )
+        }) {
+            eprintln!("WARN: drop schema {} failed: {err}", self.schema);
         }
     }
-}
-
-fn ensure_base_table(endpoint: &str, token: &str) {
-    run_sql(
-        endpoint,
-        token,
-        "CREATE TABLE IF NOT EXISTS _clust_base (id INT, col INT);",
-    )
-    .expect("Failed to create base table for cluster tests");
 }
 
 // ═══════════════════════════════════════════════════════════════════════
 // 1. FIX VALIDATION MATRIX
 // ═══════════════════════════════════════════════════════════════════════
 // Each entry: (label, unfixed_sql, cleanup_sql)
-// The test runs fix_sql on the input, then executes the result on the cluster.
+// cleanup_sql runs between cases to keep the scope's schema reusable
+// across iterations (e.g. `_clust_base` mutations from `alter-*` cases).
 
 const FIX_MATRIX: &[(&str, &str, &str)] = &[
     // Tier 1 — Fixed
@@ -237,16 +376,6 @@ const FIX_MATRIX: &[(&str, &str, &str)] = &[
     ),
     // Tier 2 — FixedWithWarning
     (
-        "column-fk",
-        "CREATE TABLE _clust_fk1 (id INT, cid INT REFERENCES _clust_base(id));",
-        "DROP TABLE IF EXISTS _clust_fk1;",
-    ),
-    (
-        "table-fk",
-        "CREATE TABLE _clust_fk2 (id INT, cid INT, FOREIGN KEY (cid) REFERENCES _clust_base(id));",
-        "DROP TABLE IF EXISTS _clust_fk2;",
-    ),
-    (
         "temp-table",
         "CREATE TEMP TABLE _clust_temp (id INT);",
         "DROP TABLE IF EXISTS _clust_temp;",
@@ -298,47 +427,47 @@ const FIX_MATRIX: &[(&str, &str, &str)] = &[
         "ALTER TABLE _clust_base DROP COLUMN IF EXISTS extra_data;",
     ),
     (
-        "alter-add-col-fk",
-        "ALTER TABLE _clust_base ADD COLUMN extra_ref INT REFERENCES _clust_base(id);",
-        "ALTER TABLE _clust_base DROP COLUMN IF EXISTS extra_ref;",
-    ),
-    (
         "alter-fk-only",
         "ALTER TABLE _clust_base ADD CONSTRAINT _clust_fk FOREIGN KEY (col) REFERENCES _clust_base(id);",
-        "",
+        "ALTER TABLE _clust_base DROP CONSTRAINT IF EXISTS _clust_fk;",
     ),
     (
         "alter-mixed-fk-col",
         "ALTER TABLE _clust_base ADD CONSTRAINT _clust_fk2 FOREIGN KEY (col) REFERENCES _clust_base(id), ADD COLUMN mix_col INT;",
-        "ALTER TABLE _clust_base DROP COLUMN IF EXISTS mix_col;",
+        "ALTER TABLE _clust_base DROP CONSTRAINT IF EXISTS _clust_fk2; ALTER TABLE _clust_base DROP COLUMN IF EXISTS mix_col;",
     ),
     (
         "begin-read-committed",
         "BEGIN ISOLATION LEVEL READ COMMITTED;",
         "ROLLBACK;",
     ),
-    // Unfixable — identity in ALTER TABLE ADD COLUMN
-    (
-        "alter-add-col-identity",
-        "ALTER TABLE _clust_base ADD COLUMN ident_col BIGINT GENERATED ALWAYS AS IDENTITY;",
-        "ALTER TABLE _clust_base DROP COLUMN IF EXISTS ident_col;",
-    ),
 ];
+
+/// Apply each statement in a `;`-separated cleanup string. Used between
+/// FIX_MATRIX cases that mutate `_clust_base` so subsequent cases see a
+/// pristine base table.
+fn run_cleanup_stmts(cx: &ClusterScope, cleanup_sql: &str) {
+    for stmt in cleanup_sql.split(';') {
+        let stmt = stmt.trim();
+        if !stmt.is_empty() {
+            if let Err(err) = cx.exec(&format!("{stmt};")) {
+                eprintln!("WARN: cleanup `{stmt}` failed: {err}");
+            }
+        }
+    }
+}
 
 #[test]
 fn fix_matrix_against_cluster() {
-    let ep = endpoint();
-    let region = region();
-    let token = generate_token(&ep, &region);
-    cleanup(&ep, &token, "DROP TABLE IF EXISTS _clust_base CASCADE;");
-    ensure_base_table(&ep, &token);
+    let cx = ClusterScope::new("fix_matrix");
+    cx.exec("CREATE TABLE _clust_base (id INT PRIMARY KEY, col INT);")
+        .expect("base table setup");
 
     let mut failures = Vec::new();
 
     for (label, input_sql, cleanup_sql) in FIX_MATRIX {
-        // Pre-cleanup: remove leftover objects from previous runs
         if !cleanup_sql.is_empty() {
-            cleanup(&ep, &token, cleanup_sql);
+            run_cleanup_stmts(&cx, cleanup_sql);
         }
 
         let result = fix_sql(input_sql);
@@ -348,24 +477,35 @@ fn fix_matrix_against_cluster() {
             continue;
         }
 
-        let exec_result = if fixed.contains(";\n") {
-            run_sql_file(&ep, &token, fixed)
-        } else {
-            run_sql(&ep, &token, fixed)
-        };
+        // FIX_MATRIX is the "fixable → executes clean" matrix. An Unfixable
+        // diagnostic means fix_sql returned the input unchanged, which would
+        // be (correctly) rejected by the cluster — covered elsewhere by
+        // `lint_rule_fixtures_validated_on_cluster`. Such entries don't
+        // belong here.
+        let has_unfixable = result
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.fix_result, FixResult::Unfixable));
+        if has_unfixable {
+            failures.push(format!(
+                "[{label}] entry produced Unfixable diagnostics — does not belong in FIX_MATRIX\n  Input: {input_sql}"
+            ));
+            if !cleanup_sql.is_empty() {
+                run_cleanup_stmts(&cx, cleanup_sql);
+            }
+            continue;
+        }
 
-        if let Err(err) = exec_result {
+        if let Err(err) = cx.exec_auto(fixed, cleanup_sql) {
             failures.push(format!(
                 "[{label}]\n  Input:  {input_sql}\n  Fixed:  {fixed}\n  Error:  {err}"
             ));
         }
 
         if !cleanup_sql.is_empty() {
-            cleanup(&ep, &token, cleanup_sql);
+            run_cleanup_stmts(&cx, cleanup_sql);
         }
     }
-
-    cleanup(&ep, &token, "DROP TABLE IF EXISTS _clust_base CASCADE;");
 
     assert!(
         failures.is_empty(),
@@ -380,19 +520,13 @@ fn fix_matrix_against_cluster() {
 
 #[test]
 fn fix_multi_statement_against_cluster() {
-    let ep = endpoint();
-    let region = region();
-    let token = generate_token(&ep, &region);
-
-    cleanup(&ep, &token, "DROP INDEX IF EXISTS _clust_multi_idx;");
-    cleanup(&ep, &token, "DROP TABLE IF EXISTS _clust_multi;");
+    let cx = ClusterScope::new("fix_multi");
 
     let input = "CREATE TABLE _clust_multi (id SERIAL PRIMARY KEY);\nCREATE INDEX _clust_multi_idx ON _clust_multi(id);";
     let result = fix_sql(input);
 
-    let exec_result = run_sql_file(&ep, &token, &result.sql);
-    cleanup(&ep, &token, "DROP INDEX IF EXISTS _clust_multi_idx;");
-    cleanup(&ep, &token, "DROP TABLE IF EXISTS _clust_multi;");
+    let cleanup = "DROP INDEX IF EXISTS _clust_multi_idx; DROP TABLE IF EXISTS _clust_multi;";
+    let exec_result = cx.exec_file_retry(&result.sql, cleanup);
 
     assert!(
         exec_result.is_ok(),
@@ -410,24 +544,22 @@ fn fix_multi_statement_against_cluster() {
 
 #[test]
 fn clean_types_accepted_by_cluster() {
-    let ep = endpoint();
-    let region = region();
-    let token = generate_token(&ep, &region);
+    let cx = ClusterScope::new("clean_types");
 
     let mut failures = Vec::new();
 
     for (label, col_type) in common::SUPPORTED_TYPES {
         let tbl = format!("_clust_type_{}", label.replace('-', "_"));
-        let drop = format!("DROP TABLE IF EXISTS {tbl};");
-        cleanup(&ep, &token, &drop);
+        // Pre-clean in case a previous iteration's cleanup raced or failed.
+        let _ = cx.exec(&format!("DROP TABLE IF EXISTS {tbl};"));
 
         let sql = format!("CREATE TABLE {tbl} (col {col_type});");
-        if let Err(err) = run_sql(&ep, &token, &sql) {
+        if let Err(err) = cx.exec(&sql) {
             failures.push(format!(
                 "[{label}] {col_type}\n  SQL: {sql}\n  Error: {err}"
             ));
         }
-        cleanup(&ep, &token, &drop);
+        let _ = cx.exec(&format!("DROP TABLE IF EXISTS {tbl};"));
     }
 
     assert!(
@@ -445,34 +577,81 @@ fn clean_types_accepted_by_cluster() {
 
 #[test]
 fn clean_statements_accepted_by_cluster() {
-    let ep = endpoint();
-    let region = region();
-    let token = generate_token(&ep, &region);
-
-    cleanup(&ep, &token, "DROP TABLE IF EXISTS _clean_base CASCADE;");
-    run_sql(&ep, &token, "CREATE TABLE _clean_base (id INT, name TEXT);").expect("setup failed");
+    let cx = ClusterScope::new("clean_stmts");
+    cx.exec("CREATE TABLE _clean_base (id INT, name TEXT);")
+        .expect("base table setup");
 
     let mut failures = Vec::new();
 
     for (label, sql, setup_sql, cleanup_sql) in common::CLEAN_STATEMENTS {
         if !setup_sql.is_empty() {
-            run_cleanup_stmts(&ep, &token, setup_sql);
+            run_cleanup_stmts(&cx, setup_sql);
         }
 
-        if let Err(err) = run_sql(&ep, &token, sql) {
+        if let Err(err) = cx.exec(sql) {
             failures.push(format!("[{label}] {sql}\n  Error: {err}"));
         }
 
         if !cleanup_sql.is_empty() {
-            run_cleanup_stmts(&ep, &token, cleanup_sql);
+            run_cleanup_stmts(&cx, cleanup_sql);
         }
     }
-
-    cleanup(&ep, &token, "DROP TABLE IF EXISTS _clean_base CASCADE;");
 
     assert!(
         failures.is_empty(),
         "Clean statement failures against DSQL cluster:\n\n{}",
+        failures.join("\n\n")
+    );
+}
+
+#[test]
+fn drop_primary_key_constraint_rejected_by_cluster() {
+    let cx = ClusterScope::new("drop_pk_constraint");
+    cx.exec(
+        "CREATE TABLE _drop_pk_constraint (
+            id UUID,
+            CONSTRAINT _drop_pk_constraint_pkey PRIMARY KEY (id)
+        );",
+    )
+    .expect("table setup");
+
+    assert!(
+        cx.exec(
+            "ALTER TABLE _drop_pk_constraint
+             DROP CONSTRAINT _drop_pk_constraint_pkey;"
+        )
+        .is_err(),
+        "DSQL should reject dropping a primary key constraint"
+    );
+}
+
+#[test]
+fn additional_rejection_cases_rejected_by_cluster() {
+    let cx = ClusterScope::new("additional_rejections");
+    cx.exec("CREATE TABLE _clust_base (id INT PRIMARY KEY, col INT);")
+        .expect("base table setup");
+
+    let mut failures = Vec::new();
+
+    for (label, sql, rule) in common::ADDITIONAL_CLUSTER_REJECTION_CASES {
+        let diags = lint_sql(sql);
+        if !diags.iter().any(|d| d.rule == *rule) {
+            failures.push(format!(
+                "[{label}] expected `{rule:?}` diagnostic\n  SQL: {sql}\n  Got: {diags:?}"
+            ));
+            continue;
+        }
+
+        if cx.exec(sql).is_ok() {
+            failures.push(format!(
+                "[{label}] expected DSQL to reject statement, but it succeeded\n  SQL: {sql}"
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "Additional rejection failures against DSQL cluster:\n\n{}",
         failures.join("\n\n")
     );
 }
@@ -484,17 +663,9 @@ fn clean_statements_accepted_by_cluster() {
 
 #[test]
 fn index_variants_accepted_by_cluster() {
-    let ep = endpoint();
-    let region = region();
-    let token = generate_token(&ep, &region);
-
-    cleanup(&ep, &token, "DROP TABLE IF EXISTS _clust_idxtbl CASCADE;");
-    run_sql(
-        &ep,
-        &token,
-        "CREATE TABLE _clust_idxtbl (id INT, name TEXT, val INT);",
-    )
-    .expect("setup failed");
+    let cx = ClusterScope::new("index_variants");
+    cx.exec("CREATE TABLE _clust_idxtbl (id INT, name TEXT, val INT);")
+        .expect("setup failed");
 
     let cases: &[(&str, &str, &str)] = &[
         (
@@ -521,19 +692,38 @@ fn index_variants_accepted_by_cluster() {
 
     let mut failures = Vec::new();
     for (label, sql, cleanup_sql) in cases {
-        cleanup(&ep, &token, cleanup_sql);
-        if let Err(err) = run_sql(&ep, &token, sql) {
+        let _ = cx.exec(cleanup_sql);
+        if let Err(err) = cx.exec(sql) {
             failures.push(format!("[{label}] {sql}\n  Error: {err}"));
         }
-        cleanup(&ep, &token, cleanup_sql);
+        let _ = cx.exec(cleanup_sql);
     }
-
-    cleanup(&ep, &token, "DROP TABLE IF EXISTS _clust_idxtbl CASCADE;");
 
     assert!(
         failures.is_empty(),
         "Index variant failures:\n\n{}",
         failures.join("\n\n")
+    );
+}
+
+#[test]
+fn unique_index_promotion_accepted_by_cluster() {
+    let cx = ClusterScope::new("unique_index_promotion");
+    let sql = "\
+CREATE TABLE _clust_users (id INT PRIMARY KEY, email TEXT);
+CREATE UNIQUE INDEX ASYNC _clust_users_email_idx ON _clust_users(email)
+\\gset
+CALL sys.wait_for_job(:'job_id');
+ALTER TABLE _clust_users
+  ADD CONSTRAINT _clust_users_email_key
+  UNIQUE USING INDEX _clust_users_email_idx;";
+    let cleanup = "DROP TABLE IF EXISTS _clust_users;";
+    let result = cx.exec_file_retry(sql, cleanup);
+
+    assert!(
+        result.is_ok(),
+        "DSQL should accept UNIQUE USING INDEX after the async unique index is valid: {}",
+        result.unwrap_err()
     );
 }
 
@@ -543,9 +733,7 @@ fn index_variants_accepted_by_cluster() {
 
 #[test]
 fn sequence_variants_accepted_by_cluster() {
-    let ep = endpoint();
-    let region = region();
-    let token = generate_token(&ep, &region);
+    let cx = ClusterScope::new("seq_variants");
 
     let cases: &[(&str, &str, &str)] = &[
         (
@@ -572,11 +760,11 @@ fn sequence_variants_accepted_by_cluster() {
 
     let mut failures = Vec::new();
     for (label, sql, cleanup_sql) in cases {
-        cleanup(&ep, &token, cleanup_sql);
-        if let Err(err) = run_sql(&ep, &token, sql) {
+        let _ = cx.exec(cleanup_sql);
+        if let Err(err) = cx.exec(sql) {
             failures.push(format!("[{label}] {sql}\n  Error: {err}"));
         }
-        cleanup(&ep, &token, cleanup_sql);
+        let _ = cx.exec(cleanup_sql);
     }
 
     assert!(
@@ -595,20 +783,18 @@ fn sequence_variants_accepted_by_cluster() {
 
 #[test]
 fn clean_multi_statement_cases_accepted_by_cluster() {
-    let ep = endpoint();
-    let region = region();
-    let token = generate_token(&ep, &region);
+    let cx = ClusterScope::new("clean_multi");
 
     let mut failures = Vec::new();
 
     for (label, sql, cleanup_sql) in common::CLEAN_MULTI_STATEMENT_CASES {
-        run_cleanup_stmts(&ep, &token, cleanup_sql);
+        run_cleanup_stmts(&cx, cleanup_sql);
 
-        if let Err(err) = run_sql_file(&ep, &token, sql) {
+        if let Err(err) = cx.exec_file_retry(sql, cleanup_sql) {
             failures.push(format!("[{label}]\n  SQL: {sql}\n  Error: {err}"));
         }
 
-        run_cleanup_stmts(&ep, &token, cleanup_sql);
+        run_cleanup_stmts(&cx, cleanup_sql);
     }
 
     assert!(
@@ -621,73 +807,138 @@ fn clean_multi_statement_cases_accepted_by_cluster() {
 // ═══════════════════════════════════════════════════════════════════════
 // 8. LINT RULE COVERAGE — compiler-enforced via LintRule enum
 // ═══════════════════════════════════════════════════════════════════════
-// Iterates every LintRule variant via cluster_test_for_rule (exhaustive
-// match — new variant without arm = compile error). For fixable rules,
-// runs fix_sql and executes the result on the cluster. Unfixable rules
-// are validated by the unit test in integration_test.rs.
+// Iterates every LintRule variant via fixture_for_rule (exhaustive match —
+// new variant without arm = compile error). For each rule:
+//   • The unfixed input must be rejected by DSQL (proves the rule is needed)
+//   • If fix_sql produces non-Unfixable output, the fixed SQL must run clean
+//
+// Runs sequentially in the test's own schema. The cargo harness parallelizes
+// across the 8 cluster #[test] fns, so single-threaded iteration here is
+// fine — total wall time is bounded by the slowest test, not the sum.
 
 #[test]
-#[ignore = "requires DSQL cluster — run via `cargo test --ignored` with DSQL_ENDPOINT set"]
-fn lint_rule_fixes_execute_on_cluster() {
-    use dsql_lint::FixResult;
+fn lint_rule_fixtures_validated_on_cluster() {
+    let cx = ClusterScope::new("rule_fixtures");
 
-    let ep = endpoint();
-    let region = region();
-    let token = generate_token(&ep, &region);
-
-    cleanup(&ep, &token, "DROP TABLE IF EXISTS _clust_base CASCADE;");
-    ensure_base_table(&ep, &token);
+    let rules: Vec<LintRule> = LintRule::iter()
+        .filter(|r| common::fixture_for_rule(*r).is_some())
+        .collect();
 
     let mut failures = Vec::new();
 
-    for rule in LintRule::iter() {
-        let Some((sql, _expected_msg)) = common::cluster_test_for_rule(rule) else {
+    // Reset to an empty schema, recreate the shared `_clust_base` table that
+    // most fixtures reference, then apply the fixture's own setup SQL. Returns
+    // a formatted error string on failure so the caller can attribute it to
+    // the right phase ("setup", "fix-path setup", "retry N setup", …).
+    let reset_with_setup = |fix: &common::RuleFixture, phase: &str| -> Result<(), String> {
+        cx.reset()
+            .map_err(|e| format!("{phase} reset failed: {e}"))?;
+        cx.exec("CREATE TABLE _clust_base (id INT PRIMARY KEY, col INT);")
+            .map_err(|e| format!("{phase} _clust_base setup failed: {e}"))?;
+        if !fix.setup_sql.is_empty() {
+            cx.exec(fix.setup_sql).map_err(|e| {
+                format!(
+                    "{phase} setup failed\n  Setup: {}\n  Error: {e}",
+                    fix.setup_sql
+                )
+            })?;
+        }
+        Ok(())
+    };
+
+    for rule in rules {
+        let fix = common::fixture_for_rule(rule).expect("filtered above");
+
+        // Assertion 1: linter produces a diagnostic for this rule.
+        let diags = lint_sql(fix.sql);
+        if !diags.iter().any(|d| d.rule == rule) {
+            failures.push(format!(
+                "[{rule:?}] fixture does not produce a `{rule:?}` diagnostic\n  Input: {}\n  Got: {diags:?}",
+                fix.sql
+            ));
             continue;
+        }
+
+        // Assertion 2: DSQL rejects the unfixed input.
+        if let Err(err) = reset_with_setup(&fix, "reject-path") {
+            failures.push(format!("[{rule:?}] {err}"));
+            continue;
+        }
+        let reject_result = if fix.sql.contains(";\n") {
+            cx.exec_file_once(fix.sql)
+        } else {
+            cx.exec(fix.sql)
         };
+        if reject_result.is_ok() {
+            failures.push(format!(
+                "[{rule:?}] expected DSQL to reject unfixed input, but it succeeded. \
+                 Check if DSQL now supports this feature — if so, remove the rule. \
+                 Otherwise the fixture's setup may have masked the rejection (e.g. the \
+                 referenced object exists when it shouldn't, or vice versa).\n  Input: {}",
+                fix.sql
+            ));
+        }
 
-        let result = fix_sql(sql);
-
+        // Assertion 3: fix_sql's output runs clean on the cluster (when
+        // fixable). Filter to the rule under test so an unrelated `Unfixable`
+        // diagnostic (e.g. a fixture that incidentally trips another rule)
+        // doesn't silently skip fix-path validation for *this* rule.
+        let result = fix_sql(fix.sql);
         let has_unfixable = result
             .diagnostics
             .iter()
+            .filter(|d| d.rule == rule)
             .any(|d| matches!(d.fix_result, FixResult::Unfixable));
         if has_unfixable || result.sql.is_empty() {
             continue;
         }
 
-        // Clean up objects that might exist from a previous run
-        cleanup(&ep, &token, "DROP TABLE IF EXISTS _r CASCADE;");
-        cleanup(&ep, &token, "DROP TABLE IF EXISTS _r_a CASCADE;");
-        cleanup(&ep, &token, "DROP TABLE IF EXISTS _r_b CASCADE;");
-        cleanup(&ep, &token, "DROP SEQUENCE IF EXISTS _r_seq;");
-        cleanup(&ep, &token, "DROP INDEX IF EXISTS _r_idx;");
-
-        let exec_result = if result.sql.contains(";\n") {
-            run_sql_file(&ep, &token, &result.sql)
-        } else {
-            run_sql(&ep, &token, &result.sql)
-        };
-
-        if let Err(err) = exec_result {
-            failures.push(format!(
-                "[{rule:?}]\n  Input: {sql}\n  Fixed: {}\n  Error: {err}",
-                result.sql
-            ));
+        if let Err(err) = reset_with_setup(&fix, "fix-path") {
+            failures.push(format!("[{rule:?}] {err}"));
+            continue;
         }
 
-        // Clean up
-        cleanup(&ep, &token, "DROP TABLE IF EXISTS _r CASCADE;");
-        cleanup(&ep, &token, "DROP TABLE IF EXISTS _r_a CASCADE;");
-        cleanup(&ep, &token, "DROP TABLE IF EXISTS _r_b CASCADE;");
-        cleanup(&ep, &token, "DROP SEQUENCE IF EXISTS _r_seq;");
-        cleanup(&ep, &token, "DROP INDEX IF EXISTS _r_idx;");
+        // Multi-statement fix paths can leave partial state when an OC001
+        // hits mid-file; reset between retries so each attempt starts clean.
+        let mut last_err = None;
+        for retry in 0..FIXTURE_FIX_PATH_MAX_RETRIES {
+            if retry > 0 {
+                if let Err(err) = reset_with_setup(&fix, &format!("retry-{retry}")) {
+                    last_err = Some(err);
+                    break;
+                }
+            }
+            let attempt = if result.sql.contains(";\n") {
+                cx.exec_file_once(&result.sql)
+            } else {
+                cx.exec(&result.sql)
+            };
+            match attempt {
+                Ok(_) => {
+                    last_err = None;
+                    break;
+                }
+                Err(e) if e.contains("OC001") => {
+                    last_err = Some(e);
+                    continue;
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    break;
+                }
+            }
+        }
+        if let Some(err) = last_err {
+            failures.push(format!(
+                "[{rule:?}]\n  Input: {}\n  Fixed: {}\n  Error: {err}",
+                fix.sql, result.sql
+            ));
+        }
     }
-
-    cleanup(&ep, &token, "DROP TABLE IF EXISTS _clust_base CASCADE;");
 
     assert!(
         failures.is_empty(),
-        "LintRule fix-and-execute failures against DSQL cluster:\n\n{}",
+        "LintRule fixture failures against DSQL cluster:\n\n{}",
         failures.join("\n\n")
     );
 }
@@ -728,30 +979,200 @@ const DDL_TXN_FIX_CASES: &[(&str, &str, &str)] = &[
 
 #[test]
 fn ddl_transaction_fix_against_cluster() {
-    let ep = endpoint();
-    let region = region();
-    let token = generate_token(&ep, &region);
+    let cx = ClusterScope::new("ddl_txn_fix");
 
     let mut failures = Vec::new();
 
     for (label, input_sql, cleanup_sql) in DDL_TXN_FIX_CASES {
-        run_cleanup_stmts(&ep, &token, cleanup_sql);
+        run_cleanup_stmts(&cx, cleanup_sql);
 
         let result = fix_sql(input_sql);
 
-        if let Err(err) = run_sql_file(&ep, &token, &result.sql) {
+        if let Err(err) = cx.exec_file_retry(&result.sql, cleanup_sql) {
             failures.push(format!(
                 "[{label}]\n  Input:  {input_sql}\n  Fixed:  {}\n  Error:  {err}",
                 result.sql
             ));
         }
 
-        run_cleanup_stmts(&ep, &token, cleanup_sql);
+        run_cleanup_stmts(&cx, cleanup_sql);
     }
 
     assert!(
         failures.is_empty(),
         "DDL transaction fix failures against DSQL cluster:\n\n{}",
+        failures.join("\n\n")
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 10. MYSQL TRANSLATION VALIDATION
+// ═══════════════════════════════════════════════════════════════════════
+// mysqldump DDL → fix_sql_mysql → execute on DSQL. The unit tests only check
+// the translated output is syntactically clean against the lenient PostgreSQL
+// parser; this proves it actually applies on a real cluster. Several entries
+// produce multi-statement output (a secondary KEY lifts to a separate
+// CREATE INDEX), routed to exec_file_retry by exec_auto via the `;\n` check.
+// cleanup_sql MUST be backtick-free — DSQL rejects backticks.
+
+const MYSQL_FIX_MATRIX: &[(&str, &str, &str)] = &[
+    (
+        "tinyint-as-bool",
+        "CREATE TABLE `_my_bool` (`id` int NOT NULL, `flag` tinyint(1)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_bool;",
+    ),
+    (
+        "unsigned-family",
+        "CREATE TABLE `_my_uns` (`a` int unsigned, `b` bigint unsigned, `c` smallint unsigned, \
+         `d` mediumint unsigned, `e` tinyint unsigned) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_uns;",
+    ),
+    (
+        "datetime-enum-set-year",
+        "CREATE TABLE `_my_misc` (`created` datetime, `kind` enum('a','b','c'), \
+         `perms` set('r','w'), `yr` year) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_misc;",
+    ),
+    (
+        "auto-increment",
+        "CREATE TABLE `_my_ai` (`id` int NOT NULL AUTO_INCREMENT, PRIMARY KEY (`id`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_ai;",
+    ),
+    (
+        "secondary-key-lifted", // multi-statement: CREATE TABLE + CREATE INDEX ASYNC
+        "CREATE TABLE `_my_idx` (`id` int NOT NULL, `name` varchar(50), \
+         PRIMARY KEY (`id`), KEY `idx_name` (`name`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_idx;",
+    ),
+    (
+        "anonymous-key-lifted",
+        "CREATE TABLE `_my_anon` (`id` int NOT NULL, `name` varchar(50), \
+         PRIMARY KEY (`id`), KEY (`name`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_anon;",
+    ),
+    (
+        "unique-key",
+        "CREATE TABLE `_my_uk` (`id` int NOT NULL, `email` varchar(255), \
+         PRIMARY KEY (`id`), UNIQUE KEY `uk_email` (`email`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_uk;",
+    ),
+    (
+        "composite-pk",
+        "CREATE TABLE `_my_cpk` (`a` int NOT NULL, `b` int NOT NULL, PRIMARY KEY (`a`,`b`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_cpk;",
+    ),
+    (
+        "check-constraint",
+        "CREATE TABLE `_my_chk` (`id` int NOT NULL, `qty` int, \
+         CONSTRAINT `ck_qty` CHECK (`qty` >= 0), PRIMARY KEY (`id`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_chk;",
+    ),
+    (
+        "on-update-timestamp", // ON UPDATE stripped, DEFAULT CURRENT_TIMESTAMP kept
+        "CREATE TABLE `_my_ts` (`id` int NOT NULL, \
+         `updated` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, \
+         PRIMARY KEY (`id`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_ts;",
+    ),
+    (
+        "column-comment-charset", // inline COMMENT / CHARACTER SET / COLLATE stripped
+        "CREATE TABLE `_my_cc` (`id` int NOT NULL, \
+         `name` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci COMMENT 'a note', \
+         PRIMARY KEY (`id`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_cc;",
+    ),
+    (
+        "realistic-full", // many constructs at once, the way a real mysqldump table looks
+        "CREATE TABLE `_my_full` (\
+         `id` int NOT NULL AUTO_INCREMENT, \
+         `active` tinyint(1) DEFAULT '1', \
+         `views` bigint unsigned DEFAULT '0', \
+         `kind` enum('post','page') DEFAULT 'post', \
+         `created` datetime, \
+         `meta` json, \
+         PRIMARY KEY (`id`), \
+         UNIQUE KEY `uk_kind` (`kind`), \
+         KEY `idx_created` (`created`)) \
+         ENGINE=InnoDB AUTO_INCREMENT=42 DEFAULT CHARSET=utf8mb4;",
+        "DROP TABLE IF EXISTS _my_full;",
+    ),
+    (
+        "mysqldump-noise", // full dump shape: DROP/SET/LOCK/UNLOCK/DISABLE KEYS noise
+        "DROP TABLE IF EXISTS `_my_noise`;\n\
+         /*!40101 SET @saved_cs_client = @@character_set_client */;\n\
+         CREATE TABLE `_my_noise` (`id` int NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB;\n\
+         /*!40101 SET character_set_client = @saved_cs_client */;\n\
+         LOCK TABLES `_my_noise` WRITE;\n\
+         UNLOCK TABLES;\n\
+         /*!40000 ALTER TABLE `_my_noise` DISABLE KEYS */;",
+        "DROP TABLE IF EXISTS _my_noise;",
+    ),
+    (
+        "binary-types", // PROBE: do BLOB/BINARY/VARBINARY/BIT actually apply on DSQL?
+        "CREATE TABLE `_my_bin` (`id` int NOT NULL, `data` blob, `b` binary(16), \
+         `vb` varbinary(255), `bit1` bit(1), PRIMARY KEY (`id`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_bin;",
+    ),
+    (
+        // PROBE: recast DEFAULTs must type-check at CREATE (DSQL validates the
+        // DEFAULT/type pairing; MySQL doesn't): bare-number/quoted/bit-literal
+        // booleans, bit -> bytea hex, dropped zero-date.
+        "defaults-recast",
+        "CREATE TABLE `_my_def` (`id` int NOT NULL, \
+         `a` tinyint(1) NOT NULL DEFAULT 0, `b` tinyint(1) DEFAULT '1', \
+         `f` bit(1) DEFAULT b'1', `m` bit(8) DEFAULT b'00000010', \
+         `d` datetime NOT NULL DEFAULT '0000-00-00 00:00:00', \
+         PRIMARY KEY (`id`)) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_def;",
+    ),
+    (
+        "unique-prefix", // UNIQUE KEY with a col(N) prefix -> full-column UNIQUE
+        "CREATE TABLE `_my_pfx` (`id` int NOT NULL, `name` varchar(200), \
+         PRIMARY KEY (`id`), UNIQUE KEY `uk_name` (`name`(20))) ENGINE=InnoDB;",
+        "DROP TABLE IF EXISTS _my_pfx;",
+    ),
+];
+
+#[test]
+fn fix_mysql_matrix_against_cluster() {
+    let cx = ClusterScope::new("mysql_fix");
+
+    let mut failures = Vec::new();
+
+    for (label, input_sql, cleanup_sql) in MYSQL_FIX_MATRIX {
+        run_cleanup_stmts(&cx, cleanup_sql);
+
+        let result = fix_sql_mysql(input_sql);
+
+        // A translated mysqldump table should never be Unfixable — that would
+        // mean a MySQL construct reached the Postgres gate untranslated.
+        let unfixable: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.fix_result, FixResult::Unfixable))
+            .collect();
+        if !unfixable.is_empty() {
+            failures.push(format!(
+                "[{label}] translation left unfixable diagnostics: {unfixable:?}\n  Input: {input_sql}\n  Output: {}",
+                result.sql
+            ));
+            run_cleanup_stmts(&cx, cleanup_sql);
+            continue;
+        }
+
+        if let Err(err) = cx.exec_auto(&result.sql, cleanup_sql) {
+            failures.push(format!(
+                "[{label}]\n  Input:  {input_sql}\n  Fixed:  {}\n  Error:  {err}",
+                result.sql
+            ));
+        }
+
+        run_cleanup_stmts(&cx, cleanup_sql);
+    }
+
+    assert!(
+        failures.is_empty(),
+        "MySQL translation failures against DSQL cluster:\n\n{}",
         failures.join("\n\n")
     );
 }

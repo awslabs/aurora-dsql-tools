@@ -10,7 +10,7 @@
 
 mod common;
 
-use dsql_lint::{lint_sql, LintRule};
+use dsql_lint::{fix_sql, lint_sql, LintRule};
 use strum::IntoEnumIterator;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -27,6 +27,31 @@ fn supported_types_produce_zero_errors() {
         assert!(
             diags.is_empty(),
             "[{label}] Supported type `{col_type}` triggered errors:\n  SQL: {sql}\n  Errors: {diags:?}"
+        );
+    }
+}
+
+#[test]
+fn supported_foreign_key_forms_produce_zero_errors() {
+    let cases = [
+        "CREATE TABLE child (parent_id INT REFERENCES parent);",
+        "CREATE TABLE child (parent_id INT REFERENCES parent(id) ON DELETE CASCADE ON UPDATE SET NULL DEFERRABLE INITIALLY DEFERRED);",
+        "CREATE TABLE child (parent_id INT DEFAULT 1 REFERENCES parent(id) ON DELETE SET DEFAULT ON UPDATE RESTRICT);",
+        "CREATE TABLE child (a INT, b INT, FOREIGN KEY (a, b) REFERENCES parent(a, b) MATCH FULL);",
+        "CREATE TABLE node (id INT PRIMARY KEY, parent_id INT REFERENCES node(id));",
+        "ALTER TABLE child ADD CONSTRAINT child_parent_fkey FOREIGN KEY (parent_id) REFERENCES parent(id) NOT VALID;",
+        "ALTER TABLE child ALTER CONSTRAINT child_parent_fkey DEFERRABLE INITIALLY IMMEDIATE;",
+        "ALTER TABLE child ALTER CONSTRAINT child_parent_fkey NOT DEFERRABLE;",
+        "ALTER TABLE child DROP CONSTRAINT child_parent_fkey;",
+        "SET CONSTRAINTS ALL DEFERRED;",
+        "SET CONSTRAINTS child_parent_fkey IMMEDIATE;",
+    ];
+
+    for sql in cases {
+        let diags = lint_sql(sql);
+        assert!(
+            diags.is_empty(),
+            "Supported foreign key SQL triggered errors:\n  SQL: {sql}\n  Errors: {diags:?}"
         );
     }
 }
@@ -70,18 +95,21 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "CREATE TABLE t (id SERIAL2 PRIMARY KEY);",
         "SERIAL2",
     ),
-    // JSONB
-    ("json", "CREATE TABLE t (id INT, data JSONB);", "JSONB"),
-    // Foreign keys — column-level and table-level
+    // Unsupported foreign key forms
     (
-        "fk",
-        "CREATE TABLE t (id INT, cid INT REFERENCES c(id));",
-        "FOREIGN KEY",
+        "fk-match",
+        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id) MATCH PARTIAL);",
+        "MATCH PARTIAL",
     ),
     (
-        "fk",
-        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id));",
-        "FOREIGN KEY",
+        "fk-enforced",
+        "CREATE TABLE t (id INT, cid INT, FOREIGN KEY (cid) REFERENCES c(id) ENFORCED);",
+        "ENFORCED",
+    ),
+    (
+        "fk-not-enforced",
+        "CREATE TABLE t (id INT, cid INT REFERENCES c(id) NOT ENFORCED);",
+        "NOT ENFORCED",
     ),
     // Temp tables
     ("temp", "CREATE TEMP TABLE t (id INT);", "TEMPORARY"),
@@ -143,30 +171,20 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "USING",
     ),
     (
-        "index-expr",
-        "CREATE INDEX ASYNC idx ON t (lower(name));",
-        "Expression",
-    ),
-    (
         "index-concurrently",
         "CREATE INDEX CONCURRENTLY idx ON t(col);",
         "CONCURRENTLY",
     ),
     (
-        "index-partial",
-        "CREATE INDEX ASYNC idx ON t(col) WHERE col > 0;",
-        "Partial",
+        "index-volatile-partial-predicate",
+        "CREATE INDEX ASYNC idx ON t(col) WHERE random() > 0.5;",
+        "random",
     ),
     // ALTER TABLE
     (
         "alter-serial",
         "ALTER TABLE t ADD COLUMN id SERIAL;",
         "SERIAL",
-    ),
-    (
-        "alter-json",
-        "ALTER TABLE t ADD COLUMN data JSONB;",
-        "JSONB",
     ),
     (
         "alter-array",
@@ -176,12 +194,12 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
     (
         "alter-fk-column",
         "ALTER TABLE t ADD COLUMN cid INT REFERENCES c(id);",
-        "FOREIGN KEY",
+        "ADD COLUMN",
     ),
     (
         "alter-fk-constraint",
         "ALTER TABLE t ADD CONSTRAINT fk_c FOREIGN KEY (cid) REFERENCES c(id);",
-        "FOREIGN KEY",
+        "NOT VALID",
     ),
     // INHERITS clause
     (
@@ -267,6 +285,92 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "ALTER INDEX idx_name RENAME TO idx_new;",
         "ALTER INDEX",
     ),
+    // ALTER FUNCTION — only property-change Actions are rejected here.
+    // OWNER TO / RENAME TO / SET SCHEMA are covered by FALSE_POSITIVE_CASES in common/mod.rs.
+    (
+        "alter-function-immutable",
+        "ALTER FUNCTION fn() IMMUTABLE;",
+        "ALTER FUNCTION",
+    ),
+    (
+        "alter-function-strict",
+        "ALTER FUNCTION fn() STRICT;",
+        "ALTER FUNCTION",
+    ),
+    // ALTER AGGREGATE — entire family rejected
+    (
+        "alter-aggregate-rename",
+        "ALTER AGGREGATE my_agg(integer) RENAME TO new_agg;",
+        "ALTER AGGREGATE",
+    ),
+    (
+        "alter-aggregate-owner",
+        "ALTER AGGREGATE my_agg(*) OWNER TO admin;",
+        "ALTER AGGREGATE",
+    ),
+    // ALTER POLICY
+    (
+        "alter-policy",
+        "ALTER POLICY p ON t USING (true);",
+        "ALTER POLICY",
+    ),
+    // ALTER TYPE
+    (
+        "alter-type-add-value",
+        "ALTER TYPE mood ADD VALUE 'neutral';",
+        "ALTER TYPE",
+    ),
+    (
+        "alter-type-rename",
+        "ALTER TYPE mood RENAME TO feeling;",
+        "ALTER TYPE",
+    ),
+    // ALTER ROLE — WithOptions and Set are rejected
+    (
+        "alter-role-password",
+        "ALTER ROLE r WITH PASSWORD 'pw';",
+        "PASSWORD",
+    ),
+    (
+        "alter-role-valid-until",
+        "ALTER ROLE r VALID UNTIL 'infinity';",
+        "VALID UNTIL",
+    ),
+    (
+        "alter-role-superuser",
+        "ALTER ROLE r SUPERUSER;",
+        "SUPERUSER",
+    ),
+    (
+        "alter-role-createrole",
+        "ALTER ROLE r CREATEROLE;",
+        "CREATEROLE",
+    ),
+    (
+        "alter-role-multi-option",
+        "ALTER ROLE r WITH PASSWORD 'pw' VALID UNTIL 'infinity' SUPERUSER;",
+        "PASSWORD, VALID UNTIL, SUPERUSER",
+    ),
+    (
+        "alter-role-set",
+        "ALTER ROLE r SET work_mem = '64MB';",
+        "ALTER ROLE",
+    ),
+    // ALTER USER — blanket-rejected (alias of ALTER ROLE in PostgreSQL).
+    (
+        "alter-user-password",
+        "ALTER USER u WITH PASSWORD 'pw';",
+        "ALTER USER",
+    ),
+    // DROP MATERIALIZED VIEW / TYPE / TRIGGER / POLICY
+    (
+        "drop-materialized-view",
+        "DROP MATERIALIZED VIEW mv;",
+        "MATERIALIZED VIEW 'mv'",
+    ),
+    ("drop-type", "DROP TYPE mood;", "DROP TYPE 'mood'"),
+    ("drop-trigger", "DROP TRIGGER trg ON t;", "DROP TRIGGER"),
+    ("drop-policy", "DROP POLICY p ON t;", "DROP POLICY"),
     // Identity column with non-BIGINT type
     (
         "identity-non-bigint",
@@ -340,27 +444,6 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "ALTER TABLE t NO FORCE ROW LEVEL SECURITY;",
         "ROW LEVEL SECURITY",
     ),
-    // ALTER TABLE — Triggers
-    (
-        "alter-enable-trigger",
-        "ALTER TABLE t ENABLE TRIGGER trg1;",
-        "ENABLE TRIGGER",
-    ),
-    (
-        "alter-disable-trigger",
-        "ALTER TABLE t DISABLE TRIGGER trg1;",
-        "DISABLE TRIGGER",
-    ),
-    (
-        "alter-enable-always-trigger",
-        "ALTER TABLE t ENABLE ALWAYS TRIGGER trg1;",
-        "ENABLE ALWAYS TRIGGER",
-    ),
-    (
-        "alter-enable-replica-trigger",
-        "ALTER TABLE t ENABLE REPLICA TRIGGER trg1;",
-        "ENABLE REPLICA TRIGGER",
-    ),
     // ALTER TABLE — Replica Identity
     (
         "alter-replica-identity",
@@ -372,18 +455,6 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "alter-validate-constraint",
         "ALTER TABLE t VALIDATE CONSTRAINT c1;",
         "VALIDATE CONSTRAINT",
-    ),
-    // Mixed expression index (simple + expression column)
-    (
-        "index-mixed-expr",
-        "CREATE INDEX ASYNC idx ON t (col, lower(name));",
-        "Expression",
-    ),
-    // CompoundIdentifier in index (composite-type field access = expression)
-    (
-        "index-compound-id",
-        "CREATE INDEX ASYNC idx ON t(a.b);",
-        "Expression",
     ),
     // ENABLE/DISABLE RULE
     (
@@ -410,11 +481,6 @@ const ERROR_CASES: &[(&str, &str, &str)] = &[
         "pk-using-index",
         "ALTER TABLE t ADD PRIMARY KEY USING INDEX my_idx;",
         "PRIMARY KEY USING INDEX",
-    ),
-    (
-        "unique-using-index",
-        "ALTER TABLE t ADD UNIQUE USING INDEX my_idx;",
-        "UNIQUE USING INDEX",
     ),
     // COPY
     // COPY with server-side file path
@@ -474,6 +540,54 @@ fn suggested_async_index_is_valid() {
     );
 }
 
+#[test]
+fn partial_index_is_supported() {
+    let sql = "CREATE INDEX ASYNC idx_test ON t(col) WHERE col > 0;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.is_empty(),
+        "Partial indexes should be valid, got: {diags:?}"
+    );
+}
+
+#[test]
+fn async_validate_constraint_is_valid() {
+    // The ASYNC form is the correct DSQL syntax and must lint clean.
+    let sql = "ALTER TABLE ASYNC t VALIDATE CONSTRAINT c1;";
+    let diags = lint_sql(sql);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.rule == LintRule::ValidateConstraintAsync),
+        "ALTER TABLE ASYNC ... VALIDATE CONSTRAINT should be valid, got: {diags:?}"
+    );
+}
+
+#[test]
+fn check_constraint_two_phase_workflow_is_valid() {
+    let sql = "\
+ALTER TABLE t ADD CONSTRAINT ck_positive CHECK (value > 0) NOT VALID;
+ALTER TABLE ASYNC t VALIDATE CONSTRAINT ck_positive;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.is_empty(),
+        "Two-phase CHECK constraint workflow should be valid, got: {diags:?}"
+    );
+}
+
+#[test]
+fn unique_using_index_is_valid() {
+    let sql = "\
+ALTER TABLE users
+  ADD CONSTRAINT users_email_key
+  UNIQUE USING INDEX users_email_unique_idx;";
+    let diags = lint_sql(sql);
+    assert!(
+        diags.is_empty(),
+        "UNIQUE USING INDEX should be valid, got: {diags:?}"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // 4. FALSE-POSITIVE MATRIX
 // ═══════════════════════════════════════════════════════════════════════
@@ -522,12 +636,147 @@ fn additional_error_detection_matrix() {
 }
 
 #[test]
+fn locale_expression_collation_is_rejected() {
+    for sql in [
+        "SELECT name COLLATE \"en_US\" FROM t;",
+        "SELECT name COLLATE public.\"C\" FROM t;",
+    ] {
+        let diags = lint_sql(sql);
+        assert!(
+            diags.iter().any(|d| d.rule == LintRule::Collation),
+            "Expected Collation diagnostic for:\n  {sql}\n  got: {diags:?}"
+        );
+    }
+}
+
+#[test]
 fn additional_false_positive_matrix() {
     for (sql, unexpected) in common::ADDITIONAL_FALSE_POSITIVES {
         let diags = lint_sql(sql);
         assert!(
             !diags.iter().any(|d| d.message.contains(unexpected)),
             "Unexpected error containing {unexpected:?} for:\n  {sql}\n  got: {diags:?}"
+        );
+    }
+}
+
+#[test]
+fn validated_supported_syntax_is_clean() {
+    for sql in [
+        "SELECT * FROM t FOR KEY SHARE;",
+        "ALTER GROUP old_group RENAME TO new_group;",
+        "ALTER USER old_user RENAME TO new_user;",
+        "ALTER DEFAULT PRIVILEGES IN SCHEMA s GRANT SELECT ON TABLES TO PUBLIC;",
+        "ALTER ROUTINE s.f() RENAME TO g;",
+        "ALTER ROUTINE s.g() OWNER TO CURRENT_USER;",
+        "ALTER ROUTINE s.g() SET SCHEMA other_schema;",
+        "GRANT EXECUTE ON ROUTINE s.g() TO PUBLIC;",
+        "REVOKE EXECUTE ON ROUTINE s.g() FROM PUBLIC;",
+        "COMMENT ON ROUTINE s.g() IS 'routine comment';",
+        "DROP ROUTINE other_schema.g();",
+        "CREATE SCHEMA s CREATE SEQUENCE s.seq CACHE 1;",
+        "CREATE SCHEMA s GRANT USAGE ON SCHEMA s TO PUBLIC;",
+        "CREATE SCHEMA s REVOKE USAGE ON SCHEMA s FROM PUBLIC;",
+    ] {
+        let diags = lint_sql(sql);
+        assert!(
+            diags.is_empty(),
+            "Supported DSQL SQL triggered diagnostics:\n  SQL: {sql}\n  Diagnostics: {diags:?}"
+        );
+    }
+}
+
+#[test]
+fn validated_identity_alter_semantics() {
+    for cache in [1, 65536] {
+        let sql = format!(
+            "CREATE TABLE t (id BIGINT NOT NULL);\n\
+             ALTER TABLE t ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (CACHE {cache});"
+        );
+        assert!(
+            lint_sql(&sql).is_empty(),
+            "Valid identity ALTER triggered diagnostics:\n{sql}\n{:?}",
+            lint_sql(&sql)
+        );
+    }
+
+    for (sql, expected) in [
+        (
+            "ALTER TABLE t ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY;",
+            "CACHE",
+        ),
+        (
+            "ALTER TABLE t ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (CACHE 100);",
+            "CACHE value",
+        ),
+        (
+            "CREATE TABLE t (id INTEGER NOT NULL);\n\
+             ALTER TABLE t ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (CACHE 1);",
+            "BIGINT",
+        ),
+        (
+            "CREATE TABLE t (id BIGINT);\n\
+             ALTER TABLE t ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (CACHE 1);",
+            "NOT NULL",
+        ),
+    ] {
+        let diags = lint_sql(sql);
+        assert!(
+            diags.iter().any(|d| d.message.contains(expected)),
+            "Expected {expected:?} diagnostic for:\n{sql}\nGot: {diags:?}"
+        );
+    }
+
+    let fixed = fix_sql("ALTER TABLE t ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY;").sql;
+    assert!(
+        fixed.contains("CACHE 1") && lint_sql(&fixed).is_empty(),
+        "Identity ALTER fix did not add CACHE 1:\n{fixed}"
+    );
+}
+
+#[test]
+fn validated_numeric_index_and_primary_key_semantics() {
+    for sql in [
+        "CREATE TABLE t (n NUMERIC(1000, -1000));",
+        "CREATE INDEX ASYNC idx_lower ON t ((lower(name)));",
+        "CREATE TABLE t (id INT, CONSTRAINT t_check CHECK (id > 0));\n\
+         ALTER TABLE t DROP CONSTRAINT t_check;",
+        "CREATE TABLE t (id INT, CONSTRAINT t_unique UNIQUE (id));\n\
+         ALTER TABLE t DROP CONSTRAINT t_unique;",
+        "CREATE TABLE parent (id INT PRIMARY KEY);\n\
+         CREATE TABLE t (id INT, parent_id INT, CONSTRAINT t_fk FOREIGN KEY (parent_id) REFERENCES parent(id));\n\
+         ALTER TABLE t DROP CONSTRAINT t_fk;",
+    ] {
+        let diags = lint_sql(sql);
+        assert!(
+            diags.is_empty(),
+            "Valid DSQL SQL triggered diagnostics:\n{sql}\n{diags:?}"
+        );
+    }
+
+    for (sql, expected) in [
+        ("CREATE TABLE t (n NUMERIC(1001, 0));", "numeric"),
+        ("CREATE TABLE t (n NUMERIC(1000, 1001));", "numeric"),
+        ("CREATE TABLE t (n NUMERIC(1000, -1001));", "numeric"),
+        ("CREATE INDEX ASYNC idx_random ON t ((random()));", "random"),
+        ("CREATE INDEX ASYNC idx_now ON t ((now()));", "now"),
+        (
+            "CREATE TABLE t (id UUID CONSTRAINT t_pkey PRIMARY KEY);\n\
+             ALTER TABLE t DROP CONSTRAINT t_pkey;",
+            "primary key",
+        ),
+        (
+            "CREATE TABLE t (id UUID PRIMARY KEY);\n\
+             ALTER TABLE t DROP COLUMN id;",
+            "primary key",
+        ),
+    ] {
+        let diags = lint_sql(sql);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.to_lowercase().contains(expected)),
+            "Expected {expected:?} diagnostic for:\n{sql}\nGot: {diags:?}"
         );
     }
 }
@@ -674,8 +923,6 @@ fn fixture_sample_migration() {
 
     let expected = &[
         "SERIAL",
-        "FOREIGN KEY",
-        "JSONB",
         "TRUNCATE",
         "TEMPORARY",
         "array",
@@ -705,19 +952,20 @@ fn fixture_sample_migration() {
 // ═══════════════════════════════════════════════════════════════════════
 // 8. LINT RULE COVERAGE ENFORCEMENT
 // ═══════════════════════════════════════════════════════════════════════
-// The exhaustive match in `cluster_test_for_rule` is the primary
-// enforcement: new LintRule variant without a match arm = compile error.
-// This test validates that every non-None mapping actually produces
-// the expected diagnostic, catching stale or wrong SQL/message pairs.
+// The exhaustive match in `fixture_for_rule` is the primary enforcement:
+// a new LintRule variant without a match arm = compile error. This test
+// validates that every non-None fixture actually produces the expected
+// diagnostic, catching stale or wrong SQL/message pairs.
 
 #[test]
 fn lint_rule_mapping_produces_expected_diagnostics() {
     for rule in LintRule::iter() {
-        if let Some((sql, expected_msg)) = common::cluster_test_for_rule(rule) {
-            let diags = lint_sql(sql);
+        if let Some(fix) = common::fixture_for_rule(rule) {
+            let diags = lint_sql(fix.sql);
             assert!(
-                diags.iter().any(|d| d.rule == rule && d.message.contains(expected_msg)),
-                "Rule {rule:?} mapping SQL doesn't trigger expected diagnostic.\n  SQL: {sql}\n  Expected: {expected_msg}\n  Got: {diags:?}"
+                diags.iter().any(|d| d.rule == rule && d.message.contains(fix.expected_msg_substr)),
+                "Rule {rule:?} fixture doesn't trigger expected diagnostic.\n  SQL: {}\n  Expected: {}\n  Got: {diags:?}",
+                fix.sql, fix.expected_msg_substr,
             );
         }
     }

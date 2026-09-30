@@ -92,6 +92,12 @@ CREATE TABLE _t (col BYTEA);
 -- label: uuid
 CREATE TABLE _t (col UUID);
 
+-- label: json
+CREATE TABLE _t (col JSON);
+
+-- label: jsonb
+CREATE TABLE _t (col JSONB);
+
 -- label: identity-always
 CREATE TABLE _t (col BIGINT GENERATED ALWAYS AS IDENTITY (CACHE 1));
 

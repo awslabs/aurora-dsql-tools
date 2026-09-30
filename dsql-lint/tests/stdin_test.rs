@@ -71,7 +71,9 @@ fn fix_from_stdin_to_stdout_text_mode() {
         .unwrap();
 
     let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
+    // ASYNC conversion is now FixedWithWarning (async build changes timing), so
+    // --fix exits 3; the fixed SQL is still emitted on stdout.
+    assert_eq!(output.status.code(), Some(3));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("ASYNC"),
@@ -100,7 +102,8 @@ fn fix_from_stdin_json_mode_embeds_fixed_sql() {
         .unwrap();
 
     let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
+    // ASYNC conversion is FixedWithWarning, so --fix exits 3 (not 0).
+    assert_eq!(output.status.code(), Some(3));
     assert!(
         output.stderr.is_empty(),
         "JSON mode must not write to stderr"
@@ -150,7 +153,8 @@ fn fix_from_stdin_to_output_file() {
         .unwrap();
 
     let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
+    // ASYNC conversion is FixedWithWarning, so --fix exits 3 (not 0).
+    assert_eq!(output.status.code(), Some(3));
     let content = std::fs::read_to_string(&output_path).unwrap();
     assert!(content.contains("ASYNC"));
 }

@@ -13,14 +13,14 @@ CREATE TABLE users (
     name TEXT
 );
 
--- FOREIGN KEY (error)
+-- Supported inline FOREIGN KEY
 CREATE TABLE orders (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
--- JSONB column (error)
+-- JSONB is supported in DSQL — should NOT produce an error
 CREATE TABLE events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     payload JSONB

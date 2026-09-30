@@ -1,0 +1,53 @@
+name: pgdump-proxy CI
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+    inputs:
+      checkout-ref:
+        description: "Exact commit to test; defaults to the triggering ref"
+        required: false
+        type: string
+        default: ""
+  push:
+    branches: [main]
+    paths:
+      - 'pgdump-proxy/**'
+      - '.github/workflows/pgdump-proxy-ci.yml'
+
+defaults:
+  run:
+    working-directory: pgdump-proxy
+
+jobs:
+  test:
+    name: Self-test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # The proxy targets 3.9+ (`from __future__ import annotations` for the
+        # `X | None` syntax). Pin the floor and a current version.
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Byte-compile (syntax check)
+        run: python -m compileall dsql_pgdump_proxy.py
+
+      - name: Run proxy self-test
+        run: python dsql_pgdump_proxy.py --self-test
+
+      - name: Verify optimized mode cannot skip assertions
+        run: |
+          if python -O dsql_pgdump_proxy.py --self-test; then
+            echo "self-test unexpectedly succeeded with assertions disabled"
+            exit 1
+          fi
