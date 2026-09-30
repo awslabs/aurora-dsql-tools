@@ -4,17 +4,18 @@ permissions:
   contents: read
 
 on:
+  workflow_call:
+    inputs:
+      checkout-ref:
+        description: "Exact commit to test; defaults to the triggering ref"
+        required: false
+        type: string
+        default: ""
   push:
     branches: [main]
     paths:
       - 'pgdump-proxy/**'
       - '.github/workflows/pgdump-proxy-ci.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'pgdump-proxy/**'
-      - '.github/workflows/pgdump-proxy-ci.yml'
-  workflow_dispatch:
 
 defaults:
   run:
@@ -31,6 +32,8 @@ jobs:
         python-version: ["3.9", "3.12"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -39,5 +42,12 @@ jobs:
       - name: Byte-compile (syntax check)
         run: python -m compileall dsql_pgdump_proxy.py
 
-      - name: Run statement-classifier self-test
+      - name: Run proxy self-test
         run: python dsql_pgdump_proxy.py --self-test
+
+      - name: Verify optimized mode cannot skip assertions
+        run: |
+          if python -O dsql_pgdump_proxy.py --self-test; then
+            echo "self-test unexpectedly succeeded with assertions disabled"
+            exit 1
+          fi

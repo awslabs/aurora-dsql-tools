@@ -18,3 +18,6 @@ dsql-lint/nuget-runtime/bin/
 dsql-lint/nuget-runtime/obj/
 dsql-lint/nuget-runtime/tests/bin/
 dsql-lint/nuget-runtime/tests/obj/
+# Gradle build artifacts
+flyway/build/
+flyway/.gradle/

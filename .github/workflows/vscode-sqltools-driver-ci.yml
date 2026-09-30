@@ -3,20 +3,24 @@ name: SQLTools Driver CI
 permissions: {}
 
 on:
+  workflow_call:
+    inputs:
+      checkout-ref:
+        description: "Exact commit to test; defaults to the triggering ref"
+        required: false
+        type: string
+        default: ""
+      run-integration:
+        description: "Allow jobs that use AWS credentials"
+        required: false
+        type: boolean
+        default: true
   push:
     branches: [main]
     paths:
       - 'vscode/sqltools-driver/**'
       - '.github/workflows/vscode-sqltools-driver-ci.yml'
       - '.github/workflows/dsql-cluster-*.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'vscode/sqltools-driver/**'
-      - '.github/workflows/vscode-sqltools-driver-ci.yml'
-      - '.github/workflows/dsql-cluster-*.yml'
-  workflow_dispatch:
-
 defaults:
   run:
     working-directory: vscode/sqltools-driver
@@ -30,6 +34,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -53,6 +59,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -71,6 +79,7 @@ jobs:
           fi
 
   create-cluster:
+    if: github.event_name != 'pull_request' || inputs.run-integration
     needs: [lint-and-format]
     uses: ./.github/workflows/dsql-cluster-create.yml
     with:
@@ -95,8 +104,40 @@ jobs:
       - id: vscode-versions
         run: echo "matrix=[\"current\", \"1.97.2\"]" >> $GITHUB_OUTPUT
 
-  test:
-    name: Test (Node ${{ matrix.node-version }}, VS Code ${{ matrix.vscode-version }})
+  unit-test:
+    name: Unit Test (Node ${{ matrix.node-version }}, VS Code ${{ matrix.vscode-version }})
+    needs: setup
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        node-version: ${{ fromJson(needs.setup.outputs.node-versions) }}
+        vscode-version: ${{ fromJson(needs.setup.outputs.vscode-versions) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        env:
+          TEST_VSCODE_VERSION: ${{ matrix.vscode-version != 'current' && matrix.vscode-version || '' }}
+        run: xvfb-run -a npm run test:unit
+
+  integration-test:
+    name: Integration Test (Node ${{ matrix.node-version }}, VS Code ${{ matrix.vscode-version }})
     needs: [setup, create-cluster]
     runs-on: ubuntu-latest
     permissions:
@@ -112,6 +153,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -127,18 +170,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run tests
+      - name: Run integration tests
         env:
           CLUSTER_ENDPOINT: ${{ needs.create-cluster.outputs.cluster-endpoint }}
           REGION: ${{ needs.create-cluster.outputs.region }}
           TEST_VSCODE_VERSION: ${{ matrix.vscode-version != 'current' && matrix.vscode-version || '' }}
-        run: |
-          xvfb-run -a npm run test:unit
-          xvfb-run -a npm run test:integration
+        run: xvfb-run -a npm run test:integration
 
   delete-cluster:
     if: always() && needs.create-cluster.result == 'success'
-    needs: [create-cluster, test]
+    needs: [create-cluster, integration-test]
     uses: ./.github/workflows/dsql-cluster-delete.yml
     with:
       cluster-id: ${{ needs.create-cluster.outputs.cluster-id }}
