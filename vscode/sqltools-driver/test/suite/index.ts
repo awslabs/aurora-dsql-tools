@@ -11,10 +11,12 @@
  */
 
 import * as path from 'path';
-import Mocha from 'mocha';
 import { glob } from 'glob';
 
-export function run(): Promise<void> {
+export async function run(): Promise<void> {
+  // Mocha 12 is ESM-only. TypeScript's Node16 module mode preserves this
+  // dynamic import when emitting the surrounding CommonJS test runner.
+  const { default: Mocha } = await import('mocha');
   const testSuite = process.env.TEST_SUITE;
   const testPattern = testSuite ? `**/${testSuite}.test.js` : '**/**.test.js';
 
