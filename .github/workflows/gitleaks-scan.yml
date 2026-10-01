@@ -24,21 +24,13 @@ jobs:
         with:
           ref: ${{ inputs.checkout-ref }}
 
-      - name: Gitleaks trusted checkout
-        if: github.event_name == 'workflow_dispatch'
+      - name: Scan with Gitleaks
         run: |
-          args=(--path=/repo --verbose --redact)
+          args=(git --verbose --redact --no-banner /repo)
           if [[ -f "$GITHUB_WORKSPACE/.github/.gitleaks.toml" ]]; then
-            args+=(--config-path=/repo/.github/.gitleaks.toml)
+            args+=(--config=/repo/.github/.gitleaks.toml)
           fi
           docker run --rm \
             --volume "$GITHUB_WORKSPACE:/repo:ro" \
-            zricethezav/gitleaks:v7.4.0 \
+            zricethezav/gitleaks:v8.30.1 \
             "${args[@]}"
-
-      - name: gitleaks
-        if: github.event_name != 'workflow_dispatch'
-        uses: gitleaks/gitleaks-action@v3.0.0
-        env:
-          # GitHub Token automatically created on run
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
