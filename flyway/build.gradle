@@ -10,7 +10,7 @@ plugins {
 group = 'software.amazon.dsql'
 version = '3.0.0'
 
-def flywayVersion = '11.9.0'
+def flywayVersion = '13.3.0'
 def lombokVersion = '1.18.32'
 
 repositories {
