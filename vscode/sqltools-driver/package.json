@@ -66,8 +66,7 @@
     "@sqltools/base-driver": "latest",
     "@sqltools/types": "latest",
     "@types/pg": "^8.15.6",
-    "pg": "^8.16.3",
-    "uuid": "^14.0.1"
+    "pg": "^8.16.3"
   },
   "devDependencies": {
     "@types/glob": "^8.1.0",
