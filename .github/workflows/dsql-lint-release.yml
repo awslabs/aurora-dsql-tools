@@ -127,7 +127,7 @@ jobs:
           node dsql-lint/npm/dsql-lint/bin/dsql-lint --version
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dsql-lint-${{ matrix.platform }}
           path: dsql-lint/npm/dsql-lint-${{ matrix.platform }}/
@@ -191,7 +191,7 @@ jobs:
           dsql-lint --version
 
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheel-${{ matrix.platform }}
           path: dsql-lint/pypi/dist/*.whl
