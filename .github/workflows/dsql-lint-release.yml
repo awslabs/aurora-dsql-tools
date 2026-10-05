@@ -228,7 +228,7 @@ jobs:
           echo "Publishing npm packages version $VERSION"
 
       - name: Download all platform artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts/
           pattern: dsql-lint-*
@@ -297,7 +297,7 @@ jobs:
 
     steps:
       - name: Download all wheel artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist/
           pattern: wheel-*
@@ -349,7 +349,7 @@ jobs:
           echo "Publishing NuGet package version $VERSION"
 
       - name: Download all platform artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts/
           pattern: dsql-lint-*
@@ -424,7 +424,7 @@ jobs:
           echo "Publishing NuGet Runtime package version $VERSION"
 
       - name: Download all platform artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts/
           pattern: dsql-lint-*
