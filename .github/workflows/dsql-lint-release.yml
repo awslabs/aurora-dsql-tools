@@ -1,7 +1,7 @@
 name: Release dsql-lint
 
 # Consolidated release workflow: builds platform binaries once and fans out
-# to crates.io, npm (wrapper + 5 platform packages), PyPI (5 platform
+# to crates.io, npm (wrapper + 6 platform packages), PyPI (6 platform
 # wheels), and NuGet (.NET global tool) so one tag push produces an aligned
 # release across all four registries.
 
@@ -51,7 +51,8 @@ jobs:
         # runner's arch (GitHub's `macos-latest` is arm64, so darwin-x64 is a
         # cross-compile; ubuntu-latest is x64, so linux-arm64 is a cross-
         # compile). Used to skip the post-build smoke-test on rows where the
-        # artifact can't execute on the runner.
+        # artifact can't execute on the runner. win32-arm64 builds natively on
+        # `windows-11-arm` so the MSVC toolchain handles psm's ARM64 assembly.
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
@@ -70,6 +71,9 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             platform: win32-x64
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            platform: win32-arm64
 
     runs-on: ${{ matrix.os }}
 
@@ -94,14 +98,14 @@ jobs:
         working-directory: dsql-lint
 
       - name: Stage binary (unix)
-        if: matrix.os != 'windows-latest'
+        if: runner.os != 'Windows'
         run: |
           mkdir -p dsql-lint/npm/dsql-lint-${{ matrix.platform }}/bin
           cp dsql-lint/target/${{ matrix.target }}/release/dsql-lint \
              dsql-lint/npm/dsql-lint-${{ matrix.platform }}/bin/dsql-lint
 
       - name: Stage binary (windows)
-        if: matrix.os == 'windows-latest'
+        if: runner.os == 'Windows'
         run: |
           New-Item -ItemType Directory -Force -Path dsql-lint/npm/dsql-lint-${{ matrix.platform }}/bin | Out-Null
           cp dsql-lint/target/${{ matrix.target }}/release/dsql-lint.exe `
@@ -121,7 +125,7 @@ jobs:
           mkdir -p "dsql-lint/npm/dsql-lint/node_modules/@aws"
           ln -s "$PWD/dsql-lint/npm/dsql-lint-${{ matrix.platform }}" \
                 "dsql-lint/npm/dsql-lint/node_modules/$pkg"
-          if [ "${{ matrix.os }}" != "windows-latest" ]; then
+          if [ "$RUNNER_OS" != "Windows" ]; then
             chmod +x "dsql-lint/npm/dsql-lint-${{ matrix.platform }}/bin/dsql-lint"
           fi
           node dsql-lint/npm/dsql-lint/bin/dsql-lint --version
@@ -156,6 +160,9 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             platform: win32-x64
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            platform: win32-arm64
 
     runs-on: ${{ matrix.os }}
 
@@ -235,7 +242,7 @@ jobs:
 
       - name: Stamp versions and stage platform packages
         run: |
-          for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64; do
+          for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64 win32-arm64; do
             # Copy only the binary (and, for Windows, the .exe) into the
             # destination bin/. `cp -r src/ dst/` with an existing dst/ would
             # produce dst/bin/dsql-lint (one level too deep) — same footgun as
@@ -276,6 +283,7 @@ jobs:
             dsql-lint/npm/dsql-lint-linux-arm64 \
             dsql-lint/npm/dsql-lint-linux-x64 \
             dsql-lint/npm/dsql-lint-win32-x64 \
+            dsql-lint/npm/dsql-lint-win32-arm64 \
             dsql-lint/npm/dsql-lint; do
             package_name=$(node -p "require('./$package_dir/package.json').name")
             if npm view "$package_name@$VERSION" version >/dev/null 2>&1; then
@@ -362,12 +370,13 @@ jobs:
             ["linux-arm64"]="linux-arm64"
             ["linux-x64"]="linux-x64"
             ["win32-x64"]="win-x64"
+            ["win32-arm64"]="win-arm64"
           )
           for platform in "${!RID_MAP[@]}"; do
             rid="${RID_MAP[$platform]}"
             dest="dsql-lint/nuget/runtimes/$rid/native"
             rm -f "$dest/.gitkeep"
-            if [ "$platform" = "win32-x64" ]; then
+            if [[ "$platform" == win32-* ]]; then
               cp "artifacts/dsql-lint-$platform/bin/dsql-lint.exe" "$dest/"
             else
               cp "artifacts/dsql-lint-$platform/bin/dsql-lint" "$dest/"
@@ -437,12 +446,13 @@ jobs:
             ["linux-arm64"]="linux-arm64"
             ["linux-x64"]="linux-x64"
             ["win32-x64"]="win-x64"
+            ["win32-arm64"]="win-arm64"
           )
           for platform in "${!RID_MAP[@]}"; do
             rid="${RID_MAP[$platform]}"
             dest="dsql-lint/nuget-runtime/runtimes/$rid/native"
             rm -f "$dest/.gitkeep"
-            if [ "$platform" = "win32-x64" ]; then
+            if [[ "$platform" == win32-* ]]; then
               cp "artifacts/dsql-lint-$platform/bin/dsql-lint.exe" "$dest/"
             else
               cp "artifacts/dsql-lint-$platform/bin/dsql-lint" "$dest/"

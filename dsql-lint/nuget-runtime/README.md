@@ -41,7 +41,7 @@ The package exposes a `$(DsqlLintExe)` MSBuild property for use in custom build 
 |----|-------------|
 | Linux | x64, arm64 |
 | macOS | x64, arm64 |
-| Windows | x64 |
+| Windows | x64, arm64 |
 
 ## Links
 
