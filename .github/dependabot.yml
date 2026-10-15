@@ -4,6 +4,10 @@ updates:
     directory: "/vscode/sqltools-driver"
     schedule:
       interval: "weekly"
+    ignore:
+      # typescript-eslint supports typescript <6.1.0; TS 7 drops the JS compiler API it depends on
+      - dependency-name: "typescript"
+        versions: [">=6.1.0"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
