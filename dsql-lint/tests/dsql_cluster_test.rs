@@ -415,6 +415,33 @@ const FIX_MATRIX: &[(&str, &str, &str)] = &[
         "CREATE INDEX ASYNC _clust_idx_hash ON _clust_base USING hash(col);",
         "DROP INDEX IF EXISTS _clust_idx_hash;",
     ),
+    // pg_dump SERIAL idioms collapse to identity columns, and the sequence's
+    // OWNED BY and OWNER TO statements go with them however they are written.
+    (
+        "serial-idiom-owned-by-line-break",
+        "CREATE TABLE _clust_si1 (id integer NOT NULL);\n\
+         CREATE SEQUENCE _clust_si1_id_seq AS integer START WITH 1 INCREMENT BY 1 CACHE 1;\n\
+         ALTER SEQUENCE _clust_si1_id_seq\nOWNED BY _clust_si1.id;\n\
+         ALTER TABLE ONLY _clust_si1 ALTER COLUMN id SET DEFAULT nextval('_clust_si1_id_seq'::regclass);",
+        "DROP TABLE IF EXISTS _clust_si1;",
+    ),
+    (
+        "serial-idiom-commented-owned-by",
+        "CREATE TABLE _clust_si2 (id integer NOT NULL);\n\
+         CREATE SEQUENCE _clust_si2_id_seq CACHE 1;\n\
+         ALTER /* owned */ SEQUENCE _clust_si2_id_seq OWNED BY _clust_si2.id;\n\
+         ALTER TABLE ONLY _clust_si2 ALTER COLUMN id SET DEFAULT nextval('_clust_si2_id_seq'::regclass);",
+        "DROP TABLE IF EXISTS _clust_si2;",
+    ),
+    (
+        "serial-idiom-sequence-owner",
+        "CREATE TABLE _clust_si3 (id integer NOT NULL);\n\
+         CREATE SEQUENCE _clust_si3_id_seq CACHE 1;\n\
+         ALTER SEQUENCE _clust_si3_id_seq OWNER TO _clust_absent_role;\n\
+         ALTER SEQUENCE _clust_si3_id_seq OWNED BY _clust_si3.id;\n\
+         ALTER TABLE ONLY _clust_si3 ALTER COLUMN id SET DEFAULT nextval('_clust_si3_id_seq'::regclass);",
+        "DROP TABLE IF EXISTS _clust_si3;",
+    ),
     // Cross-cutting
     (
         "serial-plus-fk",
@@ -1367,6 +1394,119 @@ fn fix_mysql_matrix_against_cluster() {
     assert!(
         failures.is_empty(),
         "MySQL translation failures against DSQL cluster:\n\n{}",
+        failures.join("\n\n")
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 11. STATISTICS, VIEW, AND SEQUENCE RESTRICTIONS
+// ═══════════════════════════════════════════════════════════════════════
+// Each statement targets objects that exist, and each case names the server
+// error for its restriction, so an unrelated failure does not satisfy it.
+
+#[test]
+fn statistics_view_and_sequence_restrictions_rejected_by_cluster() {
+    let cx = ClusterScope::new("stats_view_seq");
+    for setup in [
+        "CREATE TABLE _clust_base (id INT PRIMARY KEY, col INT);",
+        "CREATE STATISTICS _clust_stats ON id, col FROM _clust_base;",
+        "CREATE SEQUENCE _clust_seq CACHE 1;",
+        "CREATE VIEW _clust_view AS SELECT id, col FROM _clust_base;",
+    ] {
+        cx.exec(setup).expect("setup");
+    }
+
+    let cases: &[(&str, &str, LintRule, &str)] = &[
+        (
+            "alter-sequence-cache",
+            "ALTER SEQUENCE _clust_seq CACHE 100;",
+            LintRule::SequenceCache,
+            "must be greater than or equal to 65536 or equal to 1",
+        ),
+        (
+            "alter-sequence-cache-below-minimum",
+            "ALTER SEQUENCE _clust_seq CACHE 65535;",
+            LintRule::SequenceCache,
+            "must be greater than or equal to 65536 or equal to 1",
+        ),
+        (
+            "alter-sequence-type",
+            "ALTER SEQUENCE _clust_seq AS INTEGER;",
+            LintRule::SequenceType,
+            "sequence type must be bigint",
+        ),
+        (
+            "statistics-target-above-range",
+            "ALTER STATISTICS _clust_stats SET STATISTICS 101;",
+            LintRule::StatisticsTarget,
+            "exceeds maximum allowed value of 100",
+        ),
+        (
+            "statistics-target-below-range",
+            "ALTER STATISTICS _clust_stats SET STATISTICS -2;",
+            LintRule::StatisticsTarget,
+            "is too low",
+        ),
+        (
+            "statistics-target-default",
+            "ALTER STATISTICS _clust_stats SET STATISTICS DEFAULT;",
+            LintRule::StatisticsTarget,
+            "syntax error at or near \"DEFAULT\"",
+        ),
+        (
+            "alter-view-as-query",
+            "ALTER VIEW _clust_view AS SELECT id FROM _clust_base;",
+            LintRule::UnsupportedAlterViewAsQuery,
+            "syntax error at or near \"AS\"",
+        ),
+        (
+            "two-statistics-ddl-in-txn",
+            "BEGIN;\nCREATE STATISTICS _clust_s2 ON col, id FROM _clust_base;\nALTER STATISTICS _clust_stats SET STATISTICS 50;\nCOMMIT;",
+            LintRule::MultiDdlTransaction,
+            "multiple ddl statements not supported in a transaction",
+        ),
+        (
+            "alter-sequence-with-dml",
+            "BEGIN;\nALTER SEQUENCE _clust_seq RESTART WITH 10;\nINSERT INTO _clust_base VALUES (1, 1);\nCOMMIT;",
+            LintRule::MixedDdlDmlTransaction,
+            "ddl and dml are not supported in the same transaction",
+        ),
+        (
+            "alter-view-with-dml",
+            "BEGIN;\nALTER VIEW _clust_view RENAME TO _clust_view2;\nINSERT INTO _clust_base VALUES (2, 2);\nCOMMIT;",
+            LintRule::MixedDdlDmlTransaction,
+            "ddl and dml are not supported in the same transaction",
+        ),
+    ];
+
+    let mut failures = Vec::new();
+    for (label, sql, rule, expected_error) in cases {
+        let diags = lint_sql(sql);
+        if !diags.iter().any(|d| d.rule == *rule) {
+            failures.push(format!(
+                "[{label}] expected `{rule:?}` diagnostic\n  SQL: {sql}\n  Got: {diags:?}"
+            ));
+            continue;
+        }
+        let result = if sql.contains(";\n") {
+            cx.exec_file_once(sql)
+        } else {
+            cx.exec(sql)
+        };
+        match result {
+            Ok(_) => failures.push(format!(
+                "[{label}] expected DSQL to reject statement, but it succeeded\n  SQL: {sql}"
+            )),
+            Err(err) if !err.contains(expected_error) => failures.push(format!(
+                "[{label}] DSQL rejected the statement with an unexpected error\n  SQL: {sql}\n  Expected: {expected_error}\n  Error: {err}"
+            )),
+            Err(_) => {}
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "Statistics, view, and sequence restriction failures:\n\n{}",
         failures.join("\n\n")
     );
 }

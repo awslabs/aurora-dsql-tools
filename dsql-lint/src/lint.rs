@@ -70,6 +70,7 @@ pub enum LintRule {
     SequenceType,
     SequenceCache,
     SequenceCacheMissing,
+    StatisticsTarget,
     AddColumnConstraint,
     Collation,
     TransactionIsolation,
@@ -108,6 +109,7 @@ pub enum LintRule {
     UnsupportedCreateServer,
     UnsupportedVacuum,
     UnsupportedAlterIndex,
+    UnsupportedAlterViewAsQuery,
     UnsupportedCopyFromFile,
     UnsupportedLockTable,
     UnsupportedAlterAggregate,
@@ -301,6 +303,11 @@ fn is_ddl(stmt: &Statement) -> bool {
             | Statement::AlterFunction(_)
             | Statement::AlterPolicy(_)
             | Statement::AlterType(_)
+            | Statement::AlterView { .. }
+            | Statement::AlterViewOperation { .. }
+            | Statement::AlterSequence(_)
+            | Statement::CreateStatistics(_)
+            | Statement::AlterStatistics(_)
             | Statement::AlterRole { .. }
             | Statement::AlterSchema(_)
             | Statement::AlterUser(_)
@@ -701,8 +708,7 @@ pub(crate) fn fix_statements(mut stmts: Vec<(usize, String)>) -> FixOutput {
 
     // Pre-passes: collapse multi-statement idioms BEFORE the per-statement
     // loop, so the loop never emits Unfixable diagnostics on statements
-    // we just folded away (or ParseError on the unparseable
-    // `ALTER SEQUENCE ... OWNED BY` line that the SERIAL idiom drops).
+    // we just folded away.
     rules::serial_idiom::fix_serial_idioms(&mut stmts, &mut all_diagnostics);
     rules::constraint_collapse::fix_alter_add_unique(&mut stmts, &mut all_diagnostics);
     rules::constraint_collapse::fix_alter_add_primary_key(&mut stmts, &mut all_diagnostics);
