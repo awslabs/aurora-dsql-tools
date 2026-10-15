@@ -899,6 +899,208 @@ fn parse_error_inside_transaction_warns() {
     );
 }
 
+#[test]
+fn catalog_ddl_transactions_are_detected() {
+    for (label, ddl) in common::CATALOG_DDL_CASES {
+        for body in [
+            format!("{ddl}\nCREATE TABLE t (id UUID PRIMARY KEY);"),
+            format!("CREATE TABLE t (id UUID PRIMARY KEY);\n{ddl}"),
+        ] {
+            let sql = format!("-- migration\nBEGIN;\n{body}\nCOMMIT;");
+            let diags = lint_sql(&sql);
+            let txn: Vec<_> = diags
+                .iter()
+                .filter(|d| d.rule == LintRule::MultiDdlTransaction)
+                .collect();
+            assert_eq!(txn.len(), 1, "[{label}] {sql}\n{diags:?}");
+            assert_eq!(txn[0].line, 2, "[{label}] transaction start line");
+            assert!(
+                txn[0].message.contains("2 DDL statements"),
+                "[{label}] {txn:?}"
+            );
+            assert!(
+                !diags.iter().any(|d| d.rule == LintRule::ParseError),
+                "[{label}] {diags:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn catalog_ddl_mixed_with_dml_is_detected() {
+    for (label, ddl) in common::CATALOG_DDL_CASES {
+        let sql = format!("BEGIN;\n{ddl}\nINSERT INTO t VALUES (gen_random_uuid());\nCOMMIT;");
+        let diags = lint_sql(&sql);
+        let mixed: Vec<_> = diags
+            .iter()
+            .filter(|d| d.rule == LintRule::MixedDdlDmlTransaction)
+            .collect();
+        assert_eq!(mixed.len(), 1, "[{label}] {diags:?}");
+        assert!(
+            mixed[0].message.contains("1 DDL, 1 DML"),
+            "[{label}] {mixed:?}"
+        );
+    }
+}
+
+#[test]
+fn catalog_ddl_transaction_boundaries_stay_clean() {
+    for (label, ddl) in common::CATALOG_DDL_CASES {
+        for sql in [
+            format!("{ddl}\nCREATE TABLE t (id UUID PRIMARY KEY);"),
+            format!(
+                "BEGIN;\n{ddl}\nCOMMIT;\nBEGIN;\nCREATE TABLE t (id UUID PRIMARY KEY);\nCOMMIT;"
+            ),
+            format!("BEGIN;\n{ddl}\nSELECT 1;\nCOMMIT;"),
+        ] {
+            let diags = lint_sql(&sql);
+            assert!(diags.is_empty(), "[{label}] {sql}\n{diags:?}");
+        }
+    }
+    let sql = "BEGIN; CREATE SCHEMA app CREATE SEQUENCE app.seq CACHE 1 GRANT USAGE ON SCHEMA app TO PUBLIC; COMMIT;";
+    assert!(
+        lint_sql(sql).is_empty(),
+        "a CREATE SCHEMA with nested elements is one DDL"
+    );
+}
+
+#[test]
+fn supported_aws_iam_statements_are_clean() {
+    for sql in [
+        "AWS IAM GRANT app_role TO 'arn:aws:iam::123456789012:role/app';",
+        "AWS IAM REVOKE app_role FROM 'arn:aws:iam::123456789012:role/app';",
+        r#"AWS IAM GRANT "App Role", reader TO 'arn:aws:iam::123456789012:role/app', E'arn:aws:iam::123456789012:user/reader';"#,
+        "aws /* mapping */ iam grant app_role to $arn$arn:aws:iam::123456789012:role/app$arn$;",
+    ] {
+        assert!(lint_sql(sql).is_empty(), "{sql}\n{:?}", lint_sql(sql));
+    }
+}
+
+#[test]
+fn malformed_aws_iam_statements_report_parse_errors() {
+    for sql in [
+        "AWS IAM GRANT app_role FROM 'arn:aws:iam::123456789012:role/app';",
+        "AWS IAM REVOKE app_role TO 'arn:aws:iam::123456789012:role/app';",
+        "AWS IAM GRANT 'app_role' TO 'arn:aws:iam::123456789012:role/app';",
+        r#"AWS IAM GRANT app_role TO "arn:aws:iam::123456789012:role/app";"#,
+        "AWS IAM GRANT app_role TO 123;",
+    ] {
+        let diags = lint_sql(sql);
+        assert_eq!(diags.len(), 1, "{sql}\n{diags:?}");
+        assert_eq!(diags[0].rule, LintRule::ParseError, "{sql}");
+    }
+}
+
+#[test]
+fn isolation_configuration_assignments_are_unfixable() {
+    for sql in [
+        "SET default_transaction_isolation = 'serializable';",
+        "SET SESSION default_transaction_isolation TO 'SERIALIZABLE';",
+        "SET LOCAL transaction_isolation = 'serializable';",
+        "SET TRANSACTION_ISOLATION TO 'serializable';",
+        "SET \"transaction_isolation\" TO 'serializable';",
+        "SET \"DEFAULT_TRANSACTION_ISOLATION\" = 'serializable';",
+        "SET default_transaction_isolation = 'repeatable read';",
+        "SET transaction_isolation = DEFAULT;",
+    ] {
+        let diags = lint_sql(sql);
+        assert_eq!(diags.len(), 1, "{sql}\n{diags:?}");
+        assert_eq!(diags[0].rule, LintRule::SetTransaction, "{sql}");
+        assert!(
+            matches!(diags[0].fix_result, dsql_lint::FixResult::Unfixable),
+            "{sql}"
+        );
+    }
+}
+
+#[test]
+fn isolation_configuration_diagnostic_uses_variable_line() {
+    let sql = "SELECT 1;\nSET LOCAL\n  \"transaction_isolation\" TO 'serializable';";
+    let diags = lint_sql(sql);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!(diags[0].rule, LintRule::SetTransaction);
+    assert_eq!(diags[0].line, 3);
+}
+
+#[test]
+fn supported_session_characteristics_are_clean() {
+    for sql in [
+        "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ;",
+        "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;",
+        "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE;",
+        "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY;",
+    ] {
+        assert!(lint_sql(sql).is_empty(), "{sql}\n{:?}", lint_sql(sql));
+    }
+}
+
+#[test]
+fn unsupported_session_characteristics_are_still_flagged() {
+    for (sql, rule) in [
+        (
+            "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL SERIALIZABLE;",
+            LintRule::TransactionIsolation,
+        ),
+        (
+            "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED;",
+            LintRule::TransactionIsolation,
+        ),
+        (
+            "SET SESSION CHARACTERISTICS AS TRANSACTION DEFERRABLE;",
+            LintRule::ParseError,
+        ),
+        (
+            "SET SESSION CHARACTERISTICS AS TRANSACTION NOT DEFERRABLE;",
+            LintRule::ParseError,
+        ),
+        (
+            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;",
+            LintRule::SetTransaction,
+        ),
+    ] {
+        let diags = lint_sql(sql);
+        assert_eq!(diags.len(), 1, "{sql}\n{diags:?}");
+        assert_eq!(diags[0].rule, rule, "{sql}");
+    }
+}
+
+#[test]
+fn unrelated_settings_and_serializable_values_are_not_isolation_errors() {
+    for sql in [
+        "SET application_name = 'serializable';",
+        "SET custom.transaction_isolation = 'serializable';",
+        "SELECT 'serializable' AS transaction_isolation;",
+    ] {
+        assert!(lint_sql(sql).is_empty(), "{sql}\n{:?}", lint_sql(sql));
+    }
+}
+
+#[test]
+fn malformed_session_characteristics_are_not_normalized() {
+    for sql in [
+        "SET CHARACTERISTICS AS TRANSACTION READ ONLY;",
+        "SET LOCAL CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ;",
+        "SET GLOBAL CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL SERIALIZABLE;",
+        "SET SESSION CHARACTERISTICS AS TRANSACTION;",
+    ] {
+        let diagnostics = lint_sql(sql);
+        assert_eq!(diagnostics.len(), 1, "{sql}\n{diagnostics:?}");
+        assert_eq!(diagnostics[0].rule, LintRule::ParseError, "{sql}");
+        let fixed = fix_sql(sql);
+        assert_eq!(
+            fixed.sql,
+            format!("{sql}\n"),
+            "malformed scope must not be rewritten"
+        );
+        assert_eq!(fixed.diagnostics.len(), 1, "{sql}\n{:?}", fixed.diagnostics);
+        assert_eq!(fixed.diagnostics[0].rule, LintRule::ParseError, "{sql}");
+        assert!(matches!(
+            fixed.diagnostics[0].fix_result,
+            dsql_lint::FixResult::Unfixable
+        ));
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // 7. FIXTURE-BASED TESTS
 // ═══════════════════════════════════════════════════════════════════════

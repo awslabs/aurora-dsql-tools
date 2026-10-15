@@ -2,6 +2,15 @@
 -- Mirrors a curated array in dsql-lint's integration tests. Do not edit by hand.
 -- Source: tests/common/mod.rs::CLEAN_STATEMENTS
 
+-- label: session-repeatable-read
+SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+
+-- label: session-read-only
+SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;
+
+-- label: session-read-write
+SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE;
+
 -- label: expression-collation-c
 SELECT 'a' COLLATE "C";
 

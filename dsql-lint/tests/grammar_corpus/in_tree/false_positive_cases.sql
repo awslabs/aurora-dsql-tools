@@ -122,6 +122,15 @@ ALTER TABLE t ENABLE REPLICA TRIGGER trg1;
 -- label: MATERIALIZED VIEW
 DROP VIEW v;
 
+-- label: Failed to parse SQL
+AWS IAM GRANT app_role TO 'arn:aws:iam::123456789012:role/app';
+
+-- label: Failed to parse SQL
+AWS IAM REVOKE app_role FROM 'arn:aws:iam::123456789012:role/app';
+
+-- label: not supported
+SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+
 -- label: ADD COLUMN
 ALTER TABLE t ADD COLUMN status VARCHAR(50);
 

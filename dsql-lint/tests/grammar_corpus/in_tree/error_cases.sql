@@ -2,6 +2,33 @@
 -- Mirrors a curated array in dsql-lint's integration tests. Do not edit by hand.
 -- Source: tests/common/mod.rs::ADDITIONAL_ERROR_CASES
 
+-- label: Failed to parse SQL
+SET SESSION CHARACTERISTICS AS TRANSACTION;
+
+-- label: Failed to parse SQL
+SET CHARACTERISTICS AS TRANSACTION READ ONLY;
+
+-- label: Failed to parse SQL
+SET LOCAL CHARACTERISTICS AS TRANSACTION READ ONLY;
+
+-- label: Failed to parse SQL
+SET GLOBAL CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+
+-- label: default_transaction_isolation
+SET default_transaction_isolation = 'serializable';
+
+-- label: transaction_isolation
+SET LOCAL transaction_isolation TO 'serializable';
+
+-- label: default_transaction_isolation
+SET default_transaction_isolation = 'repeatable read';
+
+-- label: isolation level
+SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+
+-- label: DEFERRABLE
+SET SESSION CHARACTERISTICS AS TRANSACTION DEFERRABLE;
+
 -- label: ADD COLUMN
 ALTER TABLE t ADD COLUMN status VARCHAR(50) DEFAULT 'pending';
 

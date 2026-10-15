@@ -286,6 +286,9 @@ fn is_ddl(stmt: &Statement) -> bool {
             | Statement::CreateSequence { .. }
             | Statement::CreateType { .. }
             | Statement::CreateFunction(_)
+            | Statement::CreateRole(_)
+            | Statement::CreateUser(_)
+            | Statement::CreateDomain(_)
             | Statement::CreateProcedure { .. }
             | Statement::CreateTrigger(_)
             | Statement::CreateExtension(_)
@@ -299,13 +302,22 @@ fn is_ddl(stmt: &Statement) -> bool {
             | Statement::AlterPolicy(_)
             | Statement::AlterType(_)
             | Statement::AlterRole { .. }
+            | Statement::AlterSchema(_)
             | Statement::AlterUser(_)
             | Statement::AlterDefaultPrivileges { .. }
             | Statement::Drop { .. }
             | Statement::DropRoutine { .. }
+            | Statement::DropFunction(_)
+            | Statement::DropDomain(_)
             | Statement::DropTrigger(_)
             | Statement::DropPolicy(_)
             | Statement::Truncate(_)
+            | Statement::Comment { .. }
+            | Statement::CommentRoutine { .. }
+            | Statement::Grant(_)
+            | Statement::Revoke(_)
+            | Statement::AwsIamGrant { .. }
+            | Statement::AwsIamRevoke { .. }
     )
 }
 
