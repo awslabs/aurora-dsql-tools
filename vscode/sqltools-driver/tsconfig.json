@@ -2,6 +2,7 @@
   "compilerOptions": {
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
+    "strict": false,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "experimentalDecorators": true,
