@@ -1498,29 +1498,51 @@ fn check_unsupported_statements(
     }
 }
 
-/// Transaction isolation level — only REPEATABLE READ is supported.
-/// BEGIN ISOLATION LEVEL can be fixed; SET TRANSACTION is entirely unsupported by DSQL.
 fn check_transaction_isolation(
     stmt: &mut Statement,
     raw_sql: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let (modes, is_set_transaction) = match stmt {
-        Statement::StartTransaction { modes, .. } => (modes, false),
-        Statement::Set(Set::SetTransaction { modes, .. }) => (modes, true),
+    let modes = match stmt {
+        Statement::StartTransaction { modes, .. }
+        | Statement::Set(Set::SetTransaction {
+            modes,
+            session: true,
+            ..
+        }) => modes,
+        Statement::Set(Set::SetTransaction { .. }) => {
+            diagnostics.push(error(
+                LintRule::SetTransaction,
+                find_line(raw_sql, "set transaction"),
+                "SET TRANSACTION is not supported in DSQL.",
+                "Use `BEGIN ISOLATION LEVEL REPEATABLE READ` instead.",
+                FixResult::Unfixable,
+            ));
+            return;
+        }
+        Statement::Set(Set::SingleAssignment { variable, .. }) => {
+            let name = match variable.0.as_slice() {
+                [part] => part.as_ident(),
+                _ => None,
+            };
+            if let Some(name) = name.filter(|name| {
+                name.value.eq_ignore_ascii_case("transaction_isolation")
+                    || name
+                        .value
+                        .eq_ignore_ascii_case("default_transaction_isolation")
+            }) {
+                diagnostics.push(error(
+                    LintRule::SetTransaction,
+                    find_line(raw_sql, &name.value),
+                    format!("Setting configuration parameter '{}' is not supported in DSQL.", name.value),
+                    "Specify isolation with `BEGIN ISOLATION LEVEL REPEATABLE READ` or `SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ` instead.",
+                    FixResult::Unfixable,
+                ));
+            }
+            return;
+        }
         _ => return,
     };
-
-    if is_set_transaction {
-        diagnostics.push(error(
-            LintRule::SetTransaction,
-            find_line(raw_sql, "set transaction"),
-            "SET TRANSACTION is not supported in DSQL.",
-            "Use `BEGIN ISOLATION LEVEL REPEATABLE READ` instead.",
-            FixResult::Unfixable,
-        ));
-        return;
-    }
 
     for mode in modes.iter_mut() {
         if let TransactionMode::IsolationLevel(level) = mode {

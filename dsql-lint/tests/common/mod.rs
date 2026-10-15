@@ -68,6 +68,24 @@ pub const SUPPORTED_TYPES: &[(&str, &str)] = &[
 ///   (e.g. create a table before inserting into it).
 pub const CLEAN_STATEMENTS: &[(&str, &str, &str, &str)] = &[
     (
+        "session-repeatable-read",
+        "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ;",
+        "",
+        "",
+    ),
+    (
+        "session-read-only",
+        "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;",
+        "",
+        "",
+    ),
+    (
+        "session-read-write",
+        "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE;",
+        "",
+        "",
+    ),
+    (
         "expression-collation-c",
         "SELECT 'a' COLLATE \"C\";",
         "",
@@ -488,6 +506,42 @@ pub const FALSE_POSITIVE_CASES: &[(&str, &str)] = &[
 #[allow(dead_code)]
 pub const ADDITIONAL_ERROR_CASES: &[(&str, &str)] = &[
     (
+        "SET SESSION CHARACTERISTICS AS TRANSACTION;",
+        "Failed to parse SQL",
+    ),
+    (
+        "SET CHARACTERISTICS AS TRANSACTION READ ONLY;",
+        "Failed to parse SQL",
+    ),
+    (
+        "SET LOCAL CHARACTERISTICS AS TRANSACTION READ ONLY;",
+        "Failed to parse SQL",
+    ),
+    (
+        "SET GLOBAL CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL SERIALIZABLE;",
+        "Failed to parse SQL",
+    ),
+    (
+        "SET default_transaction_isolation = 'serializable';",
+        "default_transaction_isolation",
+    ),
+    (
+        "SET LOCAL transaction_isolation TO 'serializable';",
+        "transaction_isolation",
+    ),
+    (
+        "SET default_transaction_isolation = 'repeatable read';",
+        "default_transaction_isolation",
+    ),
+    (
+        "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL SERIALIZABLE;",
+        "isolation level",
+    ),
+    (
+        "SET SESSION CHARACTERISTICS AS TRANSACTION DEFERRABLE;",
+        "DEFERRABLE",
+    ),
+    (
         "ALTER TABLE t ADD COLUMN status VARCHAR(50) DEFAULT 'pending';",
         "ADD COLUMN",
     ),
@@ -557,6 +611,18 @@ pub const ADDITIONAL_ERROR_CASES: &[(&str, &str)] = &[
 /// `in_tree/false_positive_cases.sql` (concatenated with `FALSE_POSITIVE_CASES`).
 #[allow(dead_code)]
 pub const ADDITIONAL_FALSE_POSITIVES: &[(&str, &str)] = &[
+    (
+        "AWS IAM GRANT app_role TO 'arn:aws:iam::123456789012:role/app';",
+        "Failed to parse SQL",
+    ),
+    (
+        "AWS IAM REVOKE app_role FROM 'arn:aws:iam::123456789012:role/app';",
+        "Failed to parse SQL",
+    ),
+    (
+        "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ;",
+        "not supported",
+    ),
     ("ALTER TABLE t ADD COLUMN status VARCHAR(50);", "ADD COLUMN"),
     // REPEATABLE READ should not error
     ("BEGIN ISOLATION LEVEL REPEATABLE READ;", "isolation"),
@@ -1047,5 +1113,30 @@ pub const CLEAN_MULTI_STATEMENT_CASES: &[(&str, &str, &str)] = &[
         "separate-single-ddl-txns",
         "BEGIN;\nCREATE TABLE _clust_txn_g (id INT);\nCOMMIT;\nBEGIN;\nCREATE TABLE _clust_txn_h (id INT);\nCOMMIT;",
         "DROP TABLE IF EXISTS _clust_txn_g; DROP TABLE IF EXISTS _clust_txn_h;",
+    ),
+];
+
+#[allow(dead_code)]
+pub const CATALOG_DDL_CASES: &[(&str, &str)] = &[
+    ("create-role", "CREATE ROLE app_role WITH LOGIN;"),
+    ("create-user", "CREATE USER app_user;"),
+    ("create-domain", "CREATE DOMAIN status AS TEXT;"),
+    ("alter-schema", "ALTER SCHEMA app OWNER TO admin;"),
+    ("drop-domain", "DROP DOMAIN IF EXISTS status;"),
+    ("drop-function", "DROP FUNCTION IF EXISTS app_fn();"),
+    ("comment", "COMMENT ON TABLE t IS 'schema comment';"),
+    (
+        "comment-routine",
+        "COMMENT ON ROUTINE app_fn() IS 'routine comment';",
+    ),
+    ("grant", "GRANT SELECT ON t TO app_role;"),
+    ("revoke", "REVOKE SELECT ON t FROM app_role;"),
+    (
+        "iam-grant",
+        "AWS IAM GRANT app_role TO 'arn:aws:iam::123456789012:role/app';",
+    ),
+    (
+        "iam-revoke",
+        "AWS IAM REVOKE app_role FROM 'arn:aws:iam::123456789012:role/app';",
     ),
 ];

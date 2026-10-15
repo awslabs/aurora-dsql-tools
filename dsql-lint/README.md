@@ -83,6 +83,18 @@ cat migration.sql | dsql-lint --fix - > migration-dsql.sql
 
 `dsql-lint -` exits with code `2` and a helpful message if stdin is an interactive terminal (nothing is piped in), rather than hanging indefinitely waiting for input.
 
+Transaction checks apply to explicit `BEGIN`/`COMMIT` blocks. Catalog changes
+include role creation, grants and revokes (including `AWS IAM` mappings),
+comments, domains, and table or index changes. Separate autocommit statements
+are valid; if a migration runner wraps a file in a transaction, include that
+transaction boundary in the SQL being linted.
+
+Use `BEGIN ISOLATION LEVEL REPEATABLE READ` or
+`SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ`
+to specify isolation. Aurora DSQL rejects assignments to
+`transaction_isolation` and `default_transaction_isolation`, even when the
+value is `'repeatable read'`; these assignments require a manual change.
+
 ### Auto-Fix Mode
 
 Use `--fix` to generate DSQL-compatible SQL:

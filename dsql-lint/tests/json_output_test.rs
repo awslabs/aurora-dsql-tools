@@ -5,6 +5,102 @@ fn dsql_lint_bin() -> Command {
 }
 
 #[test]
+fn json_aws_iam_is_clean_in_lint_and_fix_modes() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("iam.sql");
+    let sql = "AWS IAM GRANT app_role TO 'arn:aws:iam::123456789012:role/app';";
+    std::fs::write(&input, sql).unwrap();
+
+    for fix in [false, true] {
+        let mut command = dsql_lint_bin();
+        command.args(["--format", "json"]).arg(&input);
+        if fix {
+            command.arg("--fix");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(0));
+        assert!(output.stderr.is_empty());
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(json["files"][0]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(json["summary"]["errors"], 0);
+        assert_eq!(json["summary"]["warnings"], 0);
+        if fix {
+            let path = json["files"][0]["output_file"].as_str().unwrap();
+            assert_eq!(std::fs::read_to_string(path).unwrap(), format!("{sql}\n"));
+        }
+    }
+}
+
+#[test]
+fn json_catalog_ddl_fix_reports_warning_and_relints_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("catalog.sql");
+    std::fs::write(
+        &input,
+        "BEGIN;\nCREATE ROLE app_role WITH LOGIN;\nCREATE TABLE t (id UUID PRIMARY KEY);\nCOMMIT;",
+    )
+    .unwrap();
+    let output = dsql_lint_bin()
+        .args(["--fix", "--format", "json"])
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    assert!(output.stderr.is_empty());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let diags = json["files"][0]["diagnostics"].as_array().unwrap();
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0]["rule"], "multi_ddl_transaction");
+    assert_eq!(diags[0]["fix_result"]["status"], "fixed_with_warning");
+    assert_eq!(json["summary"]["warnings"], 1);
+    assert_eq!(json["summary"]["errors"], 0);
+    let path = json["files"][0]["output_file"].as_str().unwrap();
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "BEGIN;\n\nCREATE ROLE app_role WITH LOGIN;\n\nCOMMIT;\n\nBEGIN;\n\nCREATE TABLE t (id UUID PRIMARY KEY);\n\nCOMMIT;\n");
+    let relint = dsql_lint_bin()
+        .args(["--format", "json", path])
+        .output()
+        .unwrap();
+    assert_eq!(relint.status.code(), Some(0));
+    let relint_json: serde_json::Value = serde_json::from_slice(&relint.stdout).unwrap();
+    assert!(relint_json["files"][0]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn json_serializable_assignment_remains_unfixable() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("isolation.sql");
+    let sql = "SET default_transaction_isolation = 'serializable';";
+    std::fs::write(&input, sql).unwrap();
+    for fix in [false, true] {
+        let mut command = dsql_lint_bin();
+        command.args(["--format", "json"]).arg(&input);
+        if fix {
+            command.arg("--fix");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stderr.is_empty());
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let diags = json["files"][0]["diagnostics"].as_array().unwrap();
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0]["rule"], "set_transaction");
+        assert_eq!(diags[0]["fix_result"]["status"], "unfixable");
+        assert_eq!(json["summary"]["errors"], 1);
+        assert_eq!(json["summary"]["warnings"], 0);
+        if fix {
+            let path = json["files"][0]["output_file"].as_str().unwrap();
+            assert_eq!(std::fs::read_to_string(path).unwrap(), format!("{sql}\n"));
+        }
+    }
+}
+
+#[test]
 fn json_lint_clean_file() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("clean.sql");

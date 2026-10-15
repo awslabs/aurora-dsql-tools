@@ -951,6 +951,21 @@ fn lint_rule_fixtures_validated_on_cluster() {
 
 const DDL_TXN_FIX_CASES: &[(&str, &str, &str)] = &[
     (
+        "table-and-comment",
+        "BEGIN;\nCREATE TABLE _clust_txn_catalog_comment (id INT);\nCOMMENT ON TABLE _clust_txn_catalog_comment IS 'catalog comment';\nCOMMIT;",
+        "DROP TABLE IF EXISTS _clust_txn_catalog_comment;",
+    ),
+    (
+        "table-and-grant",
+        "BEGIN;\nCREATE TABLE _clust_txn_catalog_grant (id INT);\nGRANT SELECT ON _clust_txn_catalog_grant TO PUBLIC;\nCOMMIT;",
+        "DROP TABLE IF EXISTS _clust_txn_catalog_grant;",
+    ),
+    (
+        "domain-and-table",
+        "BEGIN;\nCREATE DOMAIN _clust_txn_status AS TEXT;\nCREATE TABLE _clust_txn_catalog_domain (id INT);\nCOMMIT;",
+        "DROP TABLE IF EXISTS _clust_txn_catalog_domain; DROP DOMAIN IF EXISTS _clust_txn_status;",
+    ),
+    (
         "two-ddl-in-txn",
         "BEGIN;\nCREATE TABLE _clust_txn_fix_a (id INT);\nCREATE TABLE _clust_txn_fix_b (id INT);\nCOMMIT;",
         "DROP TABLE IF EXISTS _clust_txn_fix_a; DROP TABLE IF EXISTS _clust_txn_fix_b;",
@@ -1003,6 +1018,185 @@ fn ddl_transaction_fix_against_cluster() {
         "DDL transaction fix failures against DSQL cluster:\n\n{}",
         failures.join("\n\n")
     );
+}
+
+#[test]
+fn aws_iam_statements_and_transaction_fixes_execute_on_cluster() {
+    let identity = Command::new("aws")
+        .args([
+            "sts",
+            "get-caller-identity",
+            "--query",
+            "Account",
+            "--output",
+            "text",
+        ])
+        .output()
+        .expect("failed to query the AWS account for the IAM fixture");
+    assert!(
+        identity.status.success(),
+        "{}",
+        String::from_utf8_lossy(&identity.stderr)
+    );
+    let account = String::from_utf8(identity.stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    assert!(account.len() == 12 && account.bytes().all(|b| b.is_ascii_digit()));
+
+    let cx = ClusterScope::new("aws_iam");
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let role = format!("t_iam_{}_{}", std::process::id(), unique);
+    let arn = format!("arn:aws:iam::{account}:role/dsql-lint-disposable-fixture");
+    cx.exec(&format!("CREATE ROLE {role} WITH LOGIN;"))
+        .expect("create fixture role");
+    let mapping_query = format!("SELECT count(*) FROM sys.iam_pg_role_mappings WHERE pg_role_name = '{role}' AND arn = '{arn}';");
+
+    // Capture failures before asserting so the database role is cleaned up
+    // even when a parser, linter, or execution regression is found.
+    let result = (|| -> Result<(), String> {
+        for (action, direction, count) in [("GRANT", "TO", "1"), ("REVOKE", "FROM", "0")] {
+            let sql = format!("AWS IAM {action} \"{role}\" {direction} '{arn}';");
+            let fixed = fix_sql(&sql);
+            if !lint_sql(&sql).is_empty()
+                || !fixed.diagnostics.is_empty()
+                || fixed.sql != format!("{sql}\n")
+            {
+                return Err(format!(
+                    "IAM {action} must lint/fix cleanly without changing the mapping: {:?}",
+                    fixed.diagnostics
+                ));
+            }
+            cx.exec(&fixed.sql)?;
+            let mapping = cx.exec(&mapping_query)?;
+            if !mapping.lines().any(|line| line.trim() == count) {
+                return Err(format!(
+                    "IAM {action} mapping count must be {count}: {mapping}"
+                ));
+            }
+        }
+
+        for (action, direction, ddl, count) in [
+            (
+                "GRANT",
+                "TO",
+                "CREATE TABLE _iam_txn (id UUID PRIMARY KEY);",
+                "1",
+            ),
+            ("REVOKE", "FROM", "DROP TABLE _iam_txn;", "0"),
+        ] {
+            let input =
+                format!("BEGIN;\nAWS IAM {action} {role} {direction} '{arn}';\n{ddl}\nCOMMIT;");
+            let diags = lint_sql(&input);
+            if !diags
+                .iter()
+                .any(|d| d.rule == LintRule::MultiDdlTransaction)
+            {
+                return Err(format!(
+                    "IAM {action} transaction must report multiple DDL: {diags:?}"
+                ));
+            }
+            match cx.exec_file_once(&input) {
+                Err(error) if error.contains("multiple ddl statements") => {}
+                other => {
+                    return Err(format!(
+                        "unfixed IAM {action} transaction must fail for multiple DDL: {other:?}"
+                    ))
+                }
+            }
+            let fixed = fix_sql(&input);
+            if !fixed.diagnostics.iter().any(|d| {
+                d.rule == LintRule::MultiDdlTransaction
+                    && matches!(d.fix_result, FixResult::FixedWithWarning(_))
+            }) || !lint_sql(&fixed.sql).is_empty()
+            {
+                return Err(format!(
+                    "IAM {action} split must warn and re-lint cleanly: {:?}",
+                    fixed.diagnostics
+                ));
+            }
+            let restore = if action == "GRANT" {
+                "DROP TABLE IF EXISTS _iam_txn;".to_string()
+            } else {
+                format!("AWS IAM GRANT {role} TO '{arn}'; CREATE TABLE IF NOT EXISTS _iam_txn (id UUID PRIMARY KEY);")
+            };
+            cx.exec_file_retry(&fixed.sql, &restore)?;
+            let mapping = cx.exec(&mapping_query)?;
+            if !mapping.lines().any(|line| line.trim() == count) {
+                return Err(format!(
+                    "fixed IAM {action} mapping count must be {count}: {mapping}"
+                ));
+            }
+        }
+        Ok(())
+    })();
+
+    let cleanup = (|| -> Result<(), String> {
+        let mapping = cx.exec(&mapping_query)?;
+        if mapping.lines().any(|line| line.trim() == "1") {
+            cx.exec(&format!("AWS IAM REVOKE {role} FROM '{arn}';"))?;
+        }
+        cx.exec(&format!("DROP ROLE {role};"))?;
+        let roles = cx.exec(&format!(
+            "SELECT count(*) FROM pg_roles WHERE rolname = '{role}';"
+        ))?;
+        if !roles.lines().any(|line| line.trim() == "0") {
+            return Err(format!("fixture role still exists after cleanup: {roles}"));
+        }
+        Ok(())
+    })();
+    assert!(cleanup.is_ok(), "IAM fixture cleanup failed: {cleanup:?}");
+    assert!(result.is_ok(), "IAM compatibility check failed: {result:?}");
+}
+
+#[test]
+fn session_isolation_fix_preserves_runtime_access_mode() {
+    let cx = ClusterScope::new("session_isolation");
+    let input =
+        "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL SERIALIZABLE, READ ONLY;";
+    let fixed = fix_sql(input);
+    assert_eq!(fixed.diagnostics.len(), 1);
+    assert_eq!(fixed.diagnostics[0].rule, LintRule::TransactionIsolation);
+    assert!(matches!(
+        fixed.diagnostics[0].fix_result,
+        FixResult::FixedWithWarning(_)
+    ));
+    assert!(lint_sql(&fixed.sql).is_empty());
+    let script = format!("{}BEGIN;\nSELECT current_setting('transaction_isolation') || ':' || current_setting('transaction_read_only');\nCOMMIT;", fixed.sql);
+    let output = cx
+        .exec_file_once(&script)
+        .expect("execute fixed session characteristics");
+    assert!(
+        output
+            .lines()
+            .any(|line| line.trim() == "repeatable read:on"),
+        "{output}"
+    );
+}
+
+#[test]
+fn isolation_configuration_assignments_rejected_by_cluster() {
+    let cx = ClusterScope::new("isolation_configuration");
+    for sql in [
+        "SET default_transaction_isolation = 'serializable';",
+        "SET transaction_isolation TO 'serializable';",
+        "SET default_transaction_isolation = 'repeatable read';",
+    ] {
+        let diags = lint_sql(sql);
+        assert_eq!(diags.len(), 1, "{sql}\n{diags:?}");
+        assert_eq!(diags[0].rule, LintRule::SetTransaction);
+        assert!(matches!(diags[0].fix_result, FixResult::Unfixable));
+        let error = cx
+            .exec(sql)
+            .expect_err("DSQL must reject isolation configuration assignments");
+        assert!(
+            error.contains("setting configuration parameter"),
+            "{sql}\n{error}"
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════

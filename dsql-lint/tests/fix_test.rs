@@ -1,5 +1,8 @@
 use dsql_lint::{fix_sql, FixResult, LintRule};
 
+#[allow(dead_code)]
+mod common;
+
 // ═══════════════════════════════════════════════════════════════════════
 // FIX TIER MATRIX
 // ═══════════════════════════════════════════════════════════════════════
@@ -974,6 +977,159 @@ fn fix_single_ddl_plus_dml_in_txn_emits_diagnostic_and_splits() {
         "Fixed output should re-lint clean:\n  Fixed: {}\n  Re-lint: {re_lint:?}",
         result.sql
     );
+}
+
+#[test]
+fn catalog_ddl_fix_splits_with_atomicity_warning() {
+    for (label, ddl) in common::CATALOG_DDL_CASES {
+        let input = format!("BEGIN;\n{ddl}\nCREATE TABLE t (id UUID PRIMARY KEY);\nCOMMIT;");
+        let result = fix_sql(&input);
+        assert_eq!(
+            result.diagnostics.len(),
+            1,
+            "[{label}] {:?}",
+            result.diagnostics
+        );
+        assert_eq!(
+            result.diagnostics[0].rule,
+            LintRule::MultiDdlTransaction,
+            "[{label}]"
+        );
+        let FixResult::FixedWithWarning(detail) = &result.diagnostics[0].fix_result else {
+            panic!("[{label}] splitting must warn about lost atomicity");
+        };
+        assert!(detail.contains("atomicity"), "[{label}] {detail}");
+        let expected = format!("BEGIN;\n\n{ddl}\n\nCOMMIT;\n\nBEGIN;\n\nCREATE TABLE t (id UUID PRIMARY KEY);\n\nCOMMIT;\n");
+        assert_eq!(result.sql, expected, "[{label}]");
+        assert!(
+            dsql_lint::lint_sql(&result.sql).is_empty(),
+            "[{label}] {}",
+            result.sql
+        );
+    }
+}
+
+#[test]
+fn catalog_ddl_dml_fix_splits_with_warning() {
+    for (label, ddl) in common::CATALOG_DDL_CASES {
+        let input = format!("BEGIN;\n{ddl}\nINSERT INTO t VALUES (gen_random_uuid());\nCOMMIT;");
+        let result = fix_sql(&input);
+        assert_eq!(
+            result.diagnostics.len(),
+            1,
+            "[{label}] {:?}",
+            result.diagnostics
+        );
+        assert_eq!(
+            result.diagnostics[0].rule,
+            LintRule::MixedDdlDmlTransaction,
+            "[{label}]"
+        );
+        assert!(
+            matches!(
+                result.diagnostics[0].fix_result,
+                FixResult::FixedWithWarning(_)
+            ),
+            "[{label}]"
+        );
+        let expected = format!("BEGIN;\n\n{ddl}\n\nCOMMIT;\n\nBEGIN;\n\nINSERT INTO t VALUES (gen_random_uuid());\n\nCOMMIT;\n");
+        assert_eq!(result.sql, expected, "[{label}]");
+        assert!(
+            dsql_lint::lint_sql(&result.sql).is_empty(),
+            "[{label}] {}",
+            result.sql
+        );
+    }
+}
+
+#[test]
+fn aws_iam_fix_preserves_original_sql() {
+    for sql in [
+        "AWS IAM GRANT app_role TO 'arn:aws:iam::123456789012:role/app';",
+        "AWS IAM REVOKE app_role FROM 'arn:aws:iam::123456789012:role/app';",
+        r#"AWS IAM GRANT "App Role", reader TO E'arn:aws:iam::123456789012:role/app', 'arn:aws:iam::123456789012:user/reader';"#,
+        "aws /* mapping */ iam grant app_role to $arn$arn:aws:iam::123456789012:role/app$arn$;",
+    ] {
+        let result = fix_sql(sql);
+        assert!(
+            result.diagnostics.is_empty(),
+            "{sql}\n{:?}",
+            result.diagnostics
+        );
+        assert_eq!(result.sql, format!("{sql}\n"));
+        assert!(
+            dsql_lint::lint_sql(&result.sql).is_empty(),
+            "{}",
+            result.sql
+        );
+    }
+}
+
+#[test]
+fn isolation_assignment_fix_keeps_unfixable_sql() {
+    for sql in [
+        "SET default_transaction_isolation = 'serializable';",
+        "SET LOCAL transaction_isolation TO 'serializable';",
+        "SET \"DEFAULT_TRANSACTION_ISOLATION\" = 'repeatable read';",
+        "SET transaction_isolation = DEFAULT;",
+    ] {
+        let result = fix_sql(sql);
+        assert_eq!(result.sql, format!("{sql}\n"));
+        assert_eq!(
+            result.diagnostics.len(),
+            1,
+            "{sql}\n{:?}",
+            result.diagnostics
+        );
+        assert_eq!(result.diagnostics[0].rule, LintRule::SetTransaction);
+        assert!(matches!(
+            result.diagnostics[0].fix_result,
+            FixResult::Unfixable
+        ));
+        let relint = dsql_lint::lint_sql(&result.sql);
+        assert_eq!(relint.len(), 1, "{relint:?}");
+        assert_eq!(relint[0].rule, LintRule::SetTransaction);
+    }
+}
+
+#[test]
+fn session_characteristics_isolation_fix_warns_and_preserves_access_mode() {
+    for level in ["SERIALIZABLE", "READ COMMITTED"] {
+        let input = format!(
+            "SET SESSION CHARACTERISTICS AS TRANSACTION\nISOLATION LEVEL {level}, READ ONLY;"
+        );
+        let result = fix_sql(&input);
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        assert_eq!(result.diagnostics[0].rule, LintRule::TransactionIsolation);
+        assert_eq!(result.diagnostics[0].line, 2);
+        assert!(matches!(
+            result.diagnostics[0].fix_result,
+            FixResult::FixedWithWarning(_)
+        ));
+        assert_eq!(result.sql, "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY;\n");
+        assert!(
+            dsql_lint::lint_sql(&result.sql).is_empty(),
+            "{}",
+            result.sql
+        );
+    }
+}
+
+#[test]
+fn supported_session_characteristics_fix_is_verbatim() {
+    for sql in [
+        "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ;",
+        "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;",
+        "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE;",
+    ] {
+        let result = fix_sql(sql);
+        assert!(
+            result.diagnostics.is_empty(),
+            "{sql}\n{:?}",
+            result.diagnostics
+        );
+        assert_eq!(result.sql, format!("{sql}\n"));
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
