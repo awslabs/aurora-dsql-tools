@@ -62,7 +62,7 @@
     "licenses:generate": "npx npm-license-crawler --onlyDirectDependencies --exclude .vscode-test --json THIRD-PARTY-LICENSES.json"
   },
   "dependencies": {
-    "@aws/aurora-dsql-node-postgres-connector": "^0.1.6",
+    "@aws/aurora-dsql-node-postgres-connector": "^0.1.9",
     "@sqltools/base-driver": "latest",
     "@sqltools/types": "latest",
     "@types/pg": "^8.23.1",
