@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::process::{Command, Stdio};
 
 fn dsql_lint_bin() -> Command {
@@ -502,19 +503,24 @@ fn json_broken_pipe_exits_0() {
     // Consumer closes stdout before dsql-lint writes the JSON. emit_json must
     // map ErrorKind::BrokenPipe to exit 0, not panic from println! and not
     // surface the wrong exit code to scripts gating on it.
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("a.sql");
-    std::fs::write(&path, "CREATE TABLE t (id SERIAL);").unwrap();
-
+    //
+    // Input comes over stdin so the child can't write until we've closed the
+    // read end. With a file argument the child could finish writing into the
+    // pipe buffer before the drop, succeeding with exit 1 (issues found).
     let mut child = dsql_lint_bin()
         .arg("--format")
         .arg("json")
-        .arg(&path)
+        .arg("-")
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     drop(child.stdout.take().unwrap());
+
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(b"CREATE TABLE t (id SERIAL);").unwrap();
+    drop(stdin);
 
     let out = child.wait_with_output().unwrap();
     assert_eq!(out.status.code(), Some(0));
