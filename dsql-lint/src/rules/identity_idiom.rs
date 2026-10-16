@@ -302,7 +302,7 @@ fn identity_message(column: &str) -> String {
 /// *longer* of table/column until it fits, never the `_seq` suffix. pg_dump emits
 /// this truncated name, so the setval-miss check must compare against it (a naive
 /// `<table>_<column>_seq` would spuriously mismatch for long names).
-fn auto_sequence_name(table: &str, column: &str) -> String {
+pub(crate) fn auto_sequence_name(table: &str, column: &str) -> String {
     const NAMEDATALEN: usize = 64;
     const LABEL: &str = "seq";
     // Overhead: the `_` between table/column plus `_` + the label.

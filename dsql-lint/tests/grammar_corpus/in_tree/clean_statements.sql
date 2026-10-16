@@ -167,3 +167,99 @@ CREATE VIEW _clean_view2 AS SELECT 1;
 -- label: insert-string-with-sql-keywords
 INSERT INTO _clean_base (id, name) VALUES (2, 'TRUNCATE TABLE foo; CREATE TRIGGER bar');
 
+-- label: create-statistics
+CREATE STATISTICS _clean_stats ON id, name FROM _clean_base;
+
+-- label: create-statistics-kinds
+CREATE STATISTICS IF NOT EXISTS _clean_stats_kinds (ndistinct, dependencies, mcv) ON id, name FROM _clean_base;
+
+-- label: create-statistics-expression
+CREATE STATISTICS _clean_stats_expr ON (lower(name)) FROM _clean_base;
+
+-- label: create-statistics-unnamed
+CREATE STATISTICS (mcv) ON id, (id + 1) FROM _clean_base;
+
+-- label: alter-statistics-target
+ALTER STATISTICS _clean_stats SET STATISTICS 100;
+
+-- label: alter-statistics-target-default-value
+ALTER STATISTICS IF EXISTS _clean_stats SET STATISTICS -1;
+
+-- label: alter-statistics-owner
+ALTER STATISTICS _clean_stats OWNER TO CURRENT_USER;
+
+-- label: alter-statistics-rename
+ALTER STATISTICS _clean_stats RENAME TO _clean_stats_renamed;
+
+-- label: drop-statistics
+DROP STATISTICS IF EXISTS _clean_stats_renamed, _clean_stats_missing CASCADE;
+
+-- label: create-recursive-view
+CREATE OR REPLACE RECURSIVE VIEW _clean_nums (n) AS VALUES (1) UNION ALL SELECT n + 1 FROM _clean_nums WHERE n < 10;
+
+-- label: create-view-check-option
+CREATE VIEW _clean_checked AS SELECT id, name FROM _clean_base WHERE id > 0 WITH LOCAL CHECK OPTION;
+
+-- label: create-view-cascaded-check-option
+CREATE VIEW _clean_checked2 AS SELECT id, name FROM _clean_checked WHERE id < 100 WITH CASCADED CHECK OPTION;
+
+-- label: create-view-options
+CREATE VIEW _clean_secure WITH (security_invoker = true, security_barrier) AS SELECT id FROM _clean_base;
+
+-- label: alter-view-column-default
+ALTER VIEW _clean_checked ALTER COLUMN name SET DEFAULT 'n/a';
+
+-- label: alter-view-drop-default
+ALTER VIEW IF EXISTS _clean_checked ALTER name DROP DEFAULT;
+
+-- label: alter-view-set-options
+ALTER VIEW _clean_checked SET (check_option = cascaded, security_barrier);
+
+-- label: alter-view-reset-options
+ALTER VIEW _clean_checked RESET (check_option, security_barrier);
+
+-- label: alter-view-rename-column
+ALTER VIEW _clean_checked RENAME COLUMN name TO label;
+
+-- label: alter-view-owner
+ALTER VIEW _clean_checked OWNER TO CURRENT_USER;
+
+-- label: alter-view-rename
+ALTER VIEW _clean_checked RENAME TO _clean_checked_renamed;
+
+-- label: alter-sequence-options
+ALTER SEQUENCE _clean_seq AS BIGINT INCREMENT BY 2 MINVALUE 1 MAXVALUE 1000000 NO CYCLE CACHE 65536;
+
+-- label: alter-sequence-restart
+ALTER SEQUENCE _clean_seq RESTART WITH 105;
+
+-- label: alter-sequence-as-after-option
+ALTER SEQUENCE _clean_seq RESTART AS BIGINT;
+
+-- label: create-sequence-as-after-option
+CREATE SEQUENCE _clean_seq_as CACHE 1 AS BIGINT;
+
+-- label: create-sequence-options-after-owned-by
+CREATE SEQUENCE _clean_seq_owned OWNED BY _clean_base.id CACHE 1 AS BIGINT;
+
+-- label: create-statistics-builtin-functions
+CREATE STATISTICS _clean_stats_fn ON CEIL(id), SUBSTRING(name FROM 1 FOR 3) FROM _clean_base;
+
+-- label: alter-sequence-restart-bare
+ALTER SEQUENCE IF EXISTS _clean_seq RESTART;
+
+-- label: alter-sequence-cache-1
+ALTER SEQUENCE _clean_seq CACHE 1;
+
+-- label: alter-sequence-owned-by
+ALTER SEQUENCE _clean_seq OWNED BY _clean_base.id;
+
+-- label: alter-sequence-owned-by-none
+ALTER SEQUENCE _clean_seq OWNED BY NONE;
+
+-- label: alter-sequence-owner
+ALTER SEQUENCE _clean_seq OWNER TO CURRENT_USER;
+
+-- label: alter-sequence-rename
+ALTER SEQUENCE _clean_seq RENAME TO _clean_seq_renamed;
+

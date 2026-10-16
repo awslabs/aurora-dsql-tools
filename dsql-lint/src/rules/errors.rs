@@ -2,7 +2,8 @@ use core::ops::ControlFlow;
 
 use sqlparser::ast::{
     visit_expressions, AlterColumnOperation, AlterFunctionKind, AlterFunctionOperation,
-    AlterRoleOperation, AlterTableOperation, ColumnDef, ColumnOption, ColumnOptionDef,
+    AlterRoleOperation, AlterSequence, AlterSequenceOperation, AlterStatistics,
+    AlterStatisticsOperation, AlterTableOperation, ColumnDef, ColumnOption, ColumnOptionDef,
     ConstraintReferenceMatchKind, CopyTarget, CreateTableOptions, DataType, DeclareType,
     ExactNumberInfo, Expr, ForeignKeyConstraint, GeneratedAs, IndexOption, ObjectType, OrderBySort,
     RoleOption, SequenceOptions, Set, SqlOption, Statement, TableConstraint,
@@ -437,6 +438,8 @@ pub(crate) fn check(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<D
     check_truncate(stmt, raw_sql, diagnostics);
     check_create_index(stmt, raw_sql, diagnostics);
     check_create_sequence(stmt, raw_sql, diagnostics);
+    check_alter_sequence(stmt, raw_sql, diagnostics);
+    check_statistics_target(stmt, raw_sql, diagnostics);
     check_unsupported_statements(stmt, raw_sql, diagnostics);
     check_add_column_constraints(stmt, raw_sql, diagnostics);
     check_transaction_isolation(stmt, raw_sql, diagnostics);
@@ -923,41 +926,7 @@ fn validate_cache_options(
         };
 
         // Extract the numeric value, handling both positive literals and unary +/- signs
-        let cache_val = match cache_expr {
-            Expr::Value(ValueWithSpan {
-                value: Value::Number(n, _),
-                ..
-            }) => n.parse::<i64>().ok(),
-            Expr::UnaryOp {
-                op: UnaryOperator::Minus,
-                expr,
-            } => {
-                if let Expr::Value(ValueWithSpan {
-                    value: Value::Number(n, _),
-                    ..
-                }) = expr.as_ref()
-                {
-                    n.parse::<i64>().ok().map(|v| -v)
-                } else {
-                    None
-                }
-            }
-            Expr::UnaryOp {
-                op: UnaryOperator::Plus,
-                expr,
-            } => {
-                if let Expr::Value(ValueWithSpan {
-                    value: Value::Number(n, _),
-                    ..
-                }) = expr.as_ref()
-                {
-                    n.parse::<i64>().ok()
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        };
+        let cache_val = signed_integer_literal(cache_expr);
 
         match cache_val {
             Some(v) if v == 1 || v >= 65536 => {} // valid
@@ -1000,20 +969,7 @@ fn check_create_sequence(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut 
 
     // Non-BIGINT type
     if let Some(dt) = data_type {
-        let is_bigint = matches!(dt, DataType::BigInt(_) | DataType::Int8(_));
-        if !is_bigint {
-            let old_type = dt.to_string();
-            *dt = DataType::BigInt(None);
-            diagnostics.push(error(
-                LintRule::SequenceType,
-                find_line(raw_sql, "create sequence"),
-                format!(
-                    "CREATE SEQUENCE with type {old_type} is not supported in DSQL. Only BIGINT is supported."
-                ),
-                "Use AS BIGINT or omit the type clause (defaults to BIGINT).",
-                FixResult::FixedWithWarning(format!("Changed sequence type from {old_type} to BIGINT — verify application code consuming this sequence handles the wider 8-byte range")),
-            ));
-        }
+        check_sequence_type(dt, "CREATE SEQUENCE", raw_sql, diagnostics);
     }
 
     // Invalid CACHE value
@@ -1023,6 +979,118 @@ fn check_create_sequence(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut 
         raw_sql,
         diagnostics,
     );
+}
+
+/// `ALTER SEQUENCE` keeps the type and cache requirements of `CREATE SEQUENCE`.
+/// An omitted CACHE keeps the sequence's current value, so only explicit values
+/// are checked.
+fn check_alter_sequence(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
+    let Statement::AlterSequence(AlterSequence {
+        operation:
+            AlterSequenceOperation::Options {
+                data_type,
+                sequence_options,
+                ..
+            },
+        ..
+    }) = stmt
+    else {
+        return;
+    };
+
+    if let Some(dt) = data_type {
+        check_sequence_type(dt, "ALTER SEQUENCE", raw_sql, diagnostics);
+    }
+
+    validate_cache_options(
+        LintRule::SequenceCache,
+        sequence_options,
+        raw_sql,
+        diagnostics,
+    );
+}
+
+fn check_sequence_type(
+    dt: &mut DataType,
+    statement: &str,
+    raw_sql: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let is_bigint = matches!(dt, DataType::BigInt(_) | DataType::Int8(_));
+    if !is_bigint {
+        let old_type = dt.to_string();
+        *dt = DataType::BigInt(None);
+        diagnostics.push(error(
+            LintRule::SequenceType,
+            find_line(raw_sql, &statement.to_lowercase()),
+            format!(
+                "{statement} with type {old_type} is not supported in DSQL. Only BIGINT is supported."
+            ),
+            "Use AS BIGINT or omit the type clause (defaults to BIGINT).",
+            FixResult::FixedWithWarning(format!("Changed sequence type from {old_type} to BIGINT — verify application code consuming this sequence handles the wider 8-byte range")),
+        ));
+    }
+}
+
+/// Extended statistics targets range from -1 (the default target) to 100.
+fn check_statistics_target(stmt: &mut Statement, raw_sql: &str, diagnostics: &mut Vec<Diagnostic>) {
+    let Statement::AlterStatistics(AlterStatistics {
+        operation: AlterStatisticsOperation::SetStatistics(target),
+        ..
+    }) = stmt
+    else {
+        return;
+    };
+
+    match target {
+        None => {
+            *target = Some(Expr::UnaryOp {
+                op: UnaryOperator::Minus,
+                expr: Box::new(Expr::value(Value::Number("1".into(), false))),
+            });
+            diagnostics.push(error(
+                LintRule::StatisticsTarget,
+                find_line(raw_sql, "set statistics"),
+                "SET STATISTICS DEFAULT is not supported in DSQL.",
+                "Use SET STATISTICS -1 to restore the default statistics target.",
+                FixResult::Fixed("Changed SET STATISTICS DEFAULT to SET STATISTICS -1".into()),
+            ));
+        }
+        Some(expr) => {
+            if let Some(value) = signed_integer_literal(expr) {
+                if !(-1..=100).contains(&value) {
+                    diagnostics.push(error(
+                        LintRule::StatisticsTarget,
+                        find_line(raw_sql, "set statistics"),
+                        format!(
+                            "The statistics target {value} is outside DSQL's range of -1 to 100."
+                        ),
+                        "Use a statistics target from 0 to 100, or -1 for the default target.",
+                        FixResult::Unfixable,
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// An integer literal with an optional unary sign, e.g. `100`, `-1`, `+5`.
+fn signed_integer_literal(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::Value(ValueWithSpan {
+            value: Value::Number(n, _),
+            ..
+        }) => n.parse::<i64>().ok(),
+        Expr::UnaryOp { op, expr } => {
+            let value = signed_integer_literal(expr)?;
+            match op {
+                UnaryOperator::Minus => Some(-value),
+                UnaryOperator::Plus => Some(value),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 fn check_unsupported_statements(
@@ -1218,6 +1286,17 @@ fn check_unsupported_statements(
                 find_line(raw_sql, "alter index"),
                 "ALTER INDEX is not supported in DSQL.",
                 "Drop and recreate the index with the desired properties.",
+                FixResult::Unfixable,
+            ));
+        }
+
+        // ALTER VIEW ... AS query
+        Statement::AlterView { .. } => {
+            diagnostics.push(error(
+                LintRule::UnsupportedAlterViewAsQuery,
+                find_line(raw_sql, "alter view"),
+                "ALTER VIEW ... AS is not supported in DSQL.",
+                "Use CREATE OR REPLACE VIEW to change the view's query.",
                 FixResult::Unfixable,
             ));
         }

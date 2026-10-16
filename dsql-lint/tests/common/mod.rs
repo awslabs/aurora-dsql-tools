@@ -382,6 +382,201 @@ pub const CLEAN_STATEMENTS: &[(&str, &str, &str, &str)] = &[
         "",
         "",
     ),
+    // Extended statistics, recursive and check-option views, ALTER VIEW, and
+    // ALTER SEQUENCE. `_clean_base` is (id INT, name TEXT); each setup is a
+    // single DDL so the cluster runs it in its own transaction.
+    (
+        "create-statistics",
+        "CREATE STATISTICS _clean_stats ON id, name FROM _clean_base;",
+        "",
+        "",
+    ),
+    (
+        "create-statistics-kinds",
+        "CREATE STATISTICS IF NOT EXISTS _clean_stats_kinds (ndistinct, dependencies, mcv) ON id, name FROM _clean_base;",
+        "",
+        "DROP STATISTICS IF EXISTS _clean_stats_kinds;",
+    ),
+    (
+        "create-statistics-expression",
+        "CREATE STATISTICS _clean_stats_expr ON (lower(name)) FROM _clean_base;",
+        "",
+        "DROP STATISTICS IF EXISTS _clean_stats_expr;",
+    ),
+    (
+        "create-statistics-unnamed",
+        "CREATE STATISTICS (mcv) ON id, (id + 1) FROM _clean_base;",
+        "",
+        "",
+    ),
+    (
+        "alter-statistics-target",
+        "ALTER STATISTICS _clean_stats SET STATISTICS 100;",
+        "",
+        "",
+    ),
+    (
+        "alter-statistics-target-default-value",
+        "ALTER STATISTICS IF EXISTS _clean_stats SET STATISTICS -1;",
+        "",
+        "",
+    ),
+    (
+        "alter-statistics-owner",
+        "ALTER STATISTICS _clean_stats OWNER TO CURRENT_USER;",
+        "",
+        "",
+    ),
+    (
+        "alter-statistics-rename",
+        "ALTER STATISTICS _clean_stats RENAME TO _clean_stats_renamed;",
+        "",
+        "",
+    ),
+    (
+        "drop-statistics",
+        "DROP STATISTICS IF EXISTS _clean_stats_renamed, _clean_stats_missing CASCADE;",
+        "",
+        "",
+    ),
+    (
+        "create-recursive-view",
+        "CREATE OR REPLACE RECURSIVE VIEW _clean_nums (n) AS VALUES (1) UNION ALL SELECT n + 1 FROM _clean_nums WHERE n < 10;",
+        "",
+        "DROP VIEW IF EXISTS _clean_nums;",
+    ),
+    (
+        "create-view-check-option",
+        "CREATE VIEW _clean_checked AS SELECT id, name FROM _clean_base WHERE id > 0 WITH LOCAL CHECK OPTION;",
+        "",
+        "",
+    ),
+    (
+        "create-view-cascaded-check-option",
+        "CREATE VIEW _clean_checked2 AS SELECT id, name FROM _clean_checked WHERE id < 100 WITH CASCADED CHECK OPTION;",
+        "",
+        "DROP VIEW IF EXISTS _clean_checked2;",
+    ),
+    (
+        "create-view-options",
+        "CREATE VIEW _clean_secure WITH (security_invoker = true, security_barrier) AS SELECT id FROM _clean_base;",
+        "",
+        "DROP VIEW IF EXISTS _clean_secure;",
+    ),
+    (
+        "alter-view-column-default",
+        "ALTER VIEW _clean_checked ALTER COLUMN name SET DEFAULT 'n/a';",
+        "",
+        "",
+    ),
+    (
+        "alter-view-drop-default",
+        "ALTER VIEW IF EXISTS _clean_checked ALTER name DROP DEFAULT;",
+        "",
+        "",
+    ),
+    (
+        "alter-view-set-options",
+        "ALTER VIEW _clean_checked SET (check_option = cascaded, security_barrier);",
+        "",
+        "",
+    ),
+    (
+        "alter-view-reset-options",
+        "ALTER VIEW _clean_checked RESET (check_option, security_barrier);",
+        "",
+        "",
+    ),
+    (
+        "alter-view-rename-column",
+        "ALTER VIEW _clean_checked RENAME COLUMN name TO label;",
+        "",
+        "",
+    ),
+    (
+        "alter-view-owner",
+        "ALTER VIEW _clean_checked OWNER TO CURRENT_USER;",
+        "",
+        "",
+    ),
+    (
+        "alter-view-rename",
+        "ALTER VIEW _clean_checked RENAME TO _clean_checked_renamed;",
+        "",
+        "DROP VIEW IF EXISTS _clean_checked_renamed;",
+    ),
+    (
+        "alter-sequence-options",
+        "ALTER SEQUENCE _clean_seq AS BIGINT INCREMENT BY 2 MINVALUE 1 MAXVALUE 1000000 NO CYCLE CACHE 65536;",
+        "CREATE SEQUENCE _clean_seq CACHE 1;",
+        "",
+    ),
+    (
+        "alter-sequence-restart",
+        "ALTER SEQUENCE _clean_seq RESTART WITH 105;",
+        "",
+        "",
+    ),
+    (
+        "alter-sequence-as-after-option",
+        "ALTER SEQUENCE _clean_seq RESTART AS BIGINT;",
+        "",
+        "",
+    ),
+    (
+        "create-sequence-as-after-option",
+        "CREATE SEQUENCE _clean_seq_as CACHE 1 AS BIGINT;",
+        "",
+        "DROP SEQUENCE IF EXISTS _clean_seq_as;",
+    ),
+    (
+        "create-sequence-options-after-owned-by",
+        "CREATE SEQUENCE _clean_seq_owned OWNED BY _clean_base.id CACHE 1 AS BIGINT;",
+        "",
+        "DROP SEQUENCE IF EXISTS _clean_seq_owned;",
+    ),
+    (
+        "create-statistics-builtin-functions",
+        "CREATE STATISTICS _clean_stats_fn ON CEIL(id), SUBSTRING(name FROM 1 FOR 3) FROM _clean_base;",
+        "",
+        "DROP STATISTICS IF EXISTS _clean_stats_fn;",
+    ),
+    (
+        "alter-sequence-restart-bare",
+        "ALTER SEQUENCE IF EXISTS _clean_seq RESTART;",
+        "",
+        "",
+    ),
+    (
+        "alter-sequence-cache-1",
+        "ALTER SEQUENCE _clean_seq CACHE 1;",
+        "",
+        "",
+    ),
+    (
+        "alter-sequence-owned-by",
+        "ALTER SEQUENCE _clean_seq OWNED BY _clean_base.id;",
+        "",
+        "",
+    ),
+    (
+        "alter-sequence-owned-by-none",
+        "ALTER SEQUENCE _clean_seq OWNED BY NONE;",
+        "",
+        "",
+    ),
+    (
+        "alter-sequence-owner",
+        "ALTER SEQUENCE _clean_seq OWNER TO CURRENT_USER;",
+        "",
+        "",
+    ),
+    (
+        "alter-sequence-rename",
+        "ALTER SEQUENCE _clean_seq RENAME TO _clean_seq_renamed;",
+        "",
+        "DROP SEQUENCE IF EXISTS _clean_seq_renamed;",
+    ),
 ];
 
 /// Valid SQL that must NOT trigger specific rule diagnostics. Each row is
@@ -605,6 +800,44 @@ pub const ADDITIONAL_ERROR_CASES: &[(&str, &str)] = &[
     ("DEALLOCATE PREPARE _foo;", "DEALLOCATE"),
     // DROP TRIGGER requires IF EXISTS and an ON target.
     ("DROP TRIGGER IF EXISTS _rej_trg;", "DROP TRIGGER"),
+    // ALTER SEQUENCE keeps DSQL's sequence type and cache requirements.
+    ("ALTER SEQUENCE s AS INTEGER;", "Only BIGINT"),
+    ("ALTER SEQUENCE s CACHE 100;", "CACHE value 100"),
+    ("ALTER SEQUENCE s CACHE 65535;", "CACHE value 65535"),
+    ("ALTER SEQUENCE s CACHE 0;", "CACHE value 0"),
+    // Extended statistics targets range from -1 to 100.
+    ("ALTER STATISTICS s SET STATISTICS 101;", "statistics target 101"),
+    ("ALTER STATISTICS s SET STATISTICS 10000;", "statistics target 10000"),
+    ("ALTER STATISTICS s SET STATISTICS -2;", "statistics target -2"),
+    ("ALTER STATISTICS s SET STATISTICS DEFAULT;", "SET STATISTICS DEFAULT"),
+    ("ALTER STATISTICS s SET STATISTICS 50.5;", "an integer"),
+    // A view's query changes through CREATE OR REPLACE VIEW.
+    ("ALTER VIEW v AS SELECT 1;", "ALTER VIEW ... AS"),
+    // Statistics, view, and sequence changes are DDL.
+    (
+        "BEGIN;\nCREATE STATISTICS s1 ON a, b FROM t;\nCREATE STATISTICS s2 ON b, c FROM t;\nCOMMIT;",
+        "2 DDL statements",
+    ),
+    (
+        "BEGIN;\nALTER SEQUENCE s RESTART WITH 10;\nINSERT INTO t VALUES (1);\nCOMMIT;",
+        "DDL and DML",
+    ),
+    (
+        "BEGIN;\nALTER STATISTICS s SET STATISTICS 50;\nINSERT INTO t VALUES (1);\nCOMMIT;",
+        "DDL and DML",
+    ),
+    (
+        "BEGIN;\nALTER VIEW v RENAME TO v2;\nINSERT INTO t VALUES (1);\nCOMMIT;",
+        "DDL and DML",
+    ),
+    (
+        "BEGIN;\nALTER VIEW v AS SELECT 1;\nINSERT INTO t VALUES (1);\nCOMMIT;",
+        "DDL and DML",
+    ),
+    (
+        "BEGIN;\nDROP STATISTICS s;\nINSERT INTO t VALUES (1);\nCOMMIT;",
+        "DDL and DML",
+    ),
 ];
 
 /// Additional false-positive guards. Mirror in
@@ -865,6 +1098,18 @@ pub fn fixture_for_rule(rule: LintRule) -> Option<RuleFixture> {
             "DDL and DML",
             "",
             "DROP TABLE IF EXISTS _r_a;",
+        ),
+        LintRule::StatisticsTarget => fix_with(
+            "ALTER STATISTICS _r_stats SET STATISTICS DEFAULT;",
+            "SET STATISTICS DEFAULT",
+            "CREATE STATISTICS _r_stats ON id, col FROM _clust_base;",
+            "DROP STATISTICS IF EXISTS _r_stats;",
+        ),
+        LintRule::UnsupportedAlterViewAsQuery => fix_with(
+            "ALTER VIEW _r_view AS SELECT col FROM _clust_base;",
+            "ALTER VIEW ... AS",
+            "CREATE VIEW _r_view AS SELECT id FROM _clust_base;",
+            "DROP VIEW IF EXISTS _r_view;",
         ),
 
         // ─── ALTER TABLE per-arm rules ────────────────────────────────────
