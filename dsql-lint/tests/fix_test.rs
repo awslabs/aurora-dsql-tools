@@ -968,9 +968,10 @@ SELECT pg_catalog.setval('public.order_numbers', 42, true);
     assert_eq!(renamed.len(), 1, "got: {:?}", result.diagnostics);
     assert_eq!(renamed[0].rule, LintRule::SerialSequenceIdiom);
     assert!(
-        renamed[0].message.contains("`public.orders_id_seq`")
-            && renamed[0].message.contains("`public.order_numbers`"),
-        "the diagnostic must name both sequences, got: {}",
+        renamed[0].message.contains(
+            "gets the identity sequence `public.orders_id_seq` in place of `public.order_numbers`"
+        ),
+        "the diagnostic must name the new and the old sequence, got: {}",
         renamed[0].message
     );
     assert!(
@@ -997,20 +998,43 @@ SELECT pg_catalog.setval('public.order_numbers', 42, true);
         mixed.diagnostics
     );
 
-    // pg_dump's default `<table>_<column>_seq` name carries over unchanged.
-    let default_named = fix_sql(
-        "CREATE TABLE public.orders (id integer NOT NULL);\n\
-         CREATE SEQUENCE public.orders_id_seq CACHE 1;\n\
-         ALTER TABLE ONLY public.orders ALTER COLUMN id SET DEFAULT nextval('public.orders_id_seq'::regclass);\n",
-    );
-    assert!(
-        !default_named
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.fix_result, FixResult::Unfixable)),
-        "got: {:?}",
-        default_named.diagnostics
-    );
+    // PostgreSQL's default `<table>_<column>_seq` name carries over unchanged,
+    // including case folding, quoted names, and the 63-byte name limit.
+    let long_table = "a".repeat(60);
+    let long_sequence = format!("{}_id_seq", "a".repeat(56));
+    for (table, column, sequence) in [
+        ("public.orders", "id", "public.orders_id_seq"),
+        ("public.Orders", "ID", "public.orders_id_seq"),
+        ("public.\"Orders\"", "\"Id\"", "public.\"Orders_Id_seq\""),
+        (
+            &format!("public.{long_table}"),
+            "id",
+            &format!("public.{long_sequence}"),
+        ),
+    ] {
+        let default_named = fix_sql(&format!(
+            "CREATE TABLE {table} ({column} integer NOT NULL);\n\
+             CREATE SEQUENCE {sequence} CACHE 1;\n\
+             ALTER TABLE ONLY {table} ALTER COLUMN {column} \
+             SET DEFAULT nextval('{sequence}'::regclass);\n"
+        ));
+        assert!(
+            default_named
+                .diagnostics
+                .iter()
+                .any(|d| d.rule == LintRule::SerialSequenceIdiom),
+            "{table}.{column} must collapse, got: {:?}",
+            default_named.diagnostics
+        );
+        assert!(
+            !default_named
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.fix_result, FixResult::Unfixable)),
+            "{sequence} is the default name for {table}.{column}, got: {:?}",
+            default_named.diagnostics
+        );
+    }
 }
 
 /// L1 end-to-end: an out-of-range source cache is preserved through the
