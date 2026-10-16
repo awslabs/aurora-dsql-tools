@@ -15,6 +15,7 @@ const PLATFORM_PKGS = {
   "linux-arm64": "@aws/dsql-lint-linux-arm64",
   "linux-x64": "@aws/dsql-lint-linux-x64",
   "win32-x64": "@aws/dsql-lint-win32-x64",
+  "win32-arm64": "@aws/dsql-lint-win32-arm64",
 };
 
 const currentPlatformPkg = PLATFORM_PKGS[`${process.platform}-${process.arch}`];

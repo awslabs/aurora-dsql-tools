@@ -37,7 +37,7 @@ static string GetRid()
     };
 
     var rid = $"{os}-{arch}";
-    string[] supported = ["linux-arm64", "linux-x64", "osx-arm64", "osx-x64", "win-x64"];
+    string[] supported = ["linux-arm64", "linux-x64", "osx-arm64", "osx-x64", "win-arm64", "win-x64"];
     if (!supported.Contains(rid))
         throw new PlatformNotSupportedException(
             $"Unsupported platform: {rid}. Supported: {string.Join(", ", supported)}");
