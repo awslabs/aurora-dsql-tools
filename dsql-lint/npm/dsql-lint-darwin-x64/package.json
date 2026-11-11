@@ -9,9 +9,6 @@
   },
   "os": ["darwin"],
   "cpu": ["x64"],
-  "bin": {
-    "dsql-lint": "bin/dsql-lint"
-  },
   "files": ["bin/"],
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
