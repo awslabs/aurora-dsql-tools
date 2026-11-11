@@ -9,9 +9,6 @@
   },
   "os": ["win32"],
   "cpu": ["x64"],
-  "bin": {
-    "dsql-lint": "bin/dsql-lint.exe"
-  },
   "files": ["bin/"],
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
